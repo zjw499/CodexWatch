@@ -1,0 +1,17 @@
+CodexWatch.xcodeproj/
+DerivedData/
+.build/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+*.xcuserdatad/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+.venv/
+env/
+venv/
+data/*.json
+macos/CodexWatch/Config/Local.xcconfig

@@ -1,0 +1,6 @@
+// Copy this file to Local.xcconfig on the Mac and fill in the real values.
+
+DEVELOPMENT_TEAM = REPLACE_WITH_TEAM_ID
+PRODUCT_BUNDLE_IDENTIFIER = com.yourname.codexwatch
+CODEX_WATCH_RELAY_BASE_URL = http://192.168.1.50:8790
+CODEX_WATCH_RELAY_TOKEN = REPLACE_WITH_RELAY_TOKEN
