@@ -31,6 +31,9 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
       - target: CodexWatch Watch App
+    scheme:
+      testTargets: []
+      gatherCoverageData: false
 
   CodexWatch Watch App:
     type: application.watchapp2
@@ -82,6 +85,3 @@ targets:
         SKIP_INSTALL: YES
         TARGETED_DEVICE_FAMILY: 4
         WK_APP_BUNDLE_IDENTIFIER: com.zachwyatt.codexwatch.watchkitapp
-    scheme:
-      testTargets: []
-      gatherCoverageData: false
