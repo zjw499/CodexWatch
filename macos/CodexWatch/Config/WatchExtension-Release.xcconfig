@@ -1,0 +1,7 @@
+#include "Release.xcconfig"
+
+PRODUCT_BUNDLE_IDENTIFIER = com.zachwyatt.codexwatch.watchkitapp.watchkitextension
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = Apple Distribution
+PROVISIONING_PROFILE_SPECIFIER = CodexWatch Watch Extension Store
+
