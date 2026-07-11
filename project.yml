@@ -49,14 +49,13 @@ targets:
       Release: macos/CodexWatch/Config/WatchApp-Release.xcconfig
     sources: []
     resources:
-      - path: macos/CodexWatch/Resources
+      - path: macos/CodexWatch/Resources/Assets.xcassets
     info:
       path: macos/CodexWatch/Support/WatchApp-Info.plist
       properties:
         CFBundleDisplayName: Codex Watch
         CFBundleIconFiles:
           - AppIcon
-        CFBundleIconName: AppIcon
         WKWatchKitApp: true
     settings:
       base:
