@@ -47,6 +47,10 @@ targets:
       - path: macos/CodexWatch/Resources
     info:
       path: macos/CodexWatch/Support/WatchApp-Info.plist
+      properties:
+        WKApplication: true
+        WKWatchKitApp: true
+        WKWatchOnly: true
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
