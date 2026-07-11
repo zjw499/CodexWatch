@@ -5,7 +5,7 @@ options:
   groupSortPosition: top
   deploymentTarget:
     watchOS: "10.0"
-  xcodeVersion: "16.0"
+  xcodeVersion: "26.0"
 
 configs:
   Debug: debug
@@ -21,7 +21,8 @@ targets:
     info:
       path: macos/CodexWatch/Support/Info.plist
       properties:
-        WKWatchKitApp: true
+        CFBundleDisplayName: Codex Watch
+        CFBundlePackageType: APPL
     settings:
       base:
         CODE_SIGN_STYLE: Automatic
@@ -52,6 +53,10 @@ targets:
     info:
       path: macos/CodexWatch/Support/WatchApp-Info.plist
       properties:
+        CFBundleDisplayName: Codex Watch
+        CFBundleIconFiles:
+          - AppIcon
+        CFBundleIconName: AppIcon
         WKWatchKitApp: true
     settings:
       base:
@@ -81,6 +86,7 @@ targets:
     info:
       path: macos/CodexWatch/Support/WatchExtension-Info.plist
       properties:
+        CFBundleDisplayName: Codex Watch Extension
         CODEX_WATCH_RELAY_BASE_URL: $(CODEX_WATCH_RELAY_BASE_URL)
         CODEX_WATCH_RELAY_TOKEN: $(CODEX_WATCH_RELAY_TOKEN)
         NSExtension:
