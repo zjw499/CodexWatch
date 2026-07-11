@@ -48,6 +48,7 @@ targets:
     info:
       path: macos/CodexWatch/Support/WatchApp-Info.plist
       properties:
+        WKCompanionAppBundleIdentifier: com.zachwyatt.codexwatch
         WKApplication: true
         WKWatchKitApp: true
         WKWatchOnly: true
