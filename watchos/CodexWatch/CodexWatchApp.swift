@@ -8,17 +8,12 @@ struct CodexWatchApp: App {
             relayToken: CodexWatchConfiguration.relayToken
         )
     )
+    @StateObject private var recorder = AudioRecorderService()
 
     var body: some Scene {
         WindowGroup {
             NavigationStack {
-                Group {
-                    if store.selectedDesktop == nil {
-                        DesktopPickerView()
-                    } else {
-                        HomeView()
-                    }
-                }
+                RecorderView()
                 .task {
                     if store.desktops.isEmpty {
                         await store.loadBootstrap()
@@ -26,6 +21,7 @@ struct CodexWatchApp: App {
                 }
             }
             .environmentObject(store)
+            .environmentObject(recorder)
             .background(Color.black)
             .preferredColorScheme(.dark)
             .onOpenURL { url in
