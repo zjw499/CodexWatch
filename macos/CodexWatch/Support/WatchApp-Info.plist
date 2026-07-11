@@ -6,7 +6,5 @@
     <string>Codex Watch</string>
     <key>WKWatchKitApp</key>
     <true/>
-    <key>WKWatchOnly</key>
-    <true/>
 </dict>
 </plist>

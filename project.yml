@@ -22,7 +22,6 @@ targets:
       path: macos/CodexWatch/Support/Info.plist
       properties:
         WKWatchKitApp: true
-        WKWatchOnly: true
     settings:
       base:
         CODE_SIGN_STYLE: Automatic
@@ -54,7 +53,6 @@ targets:
       path: macos/CodexWatch/Support/WatchApp-Info.plist
       properties:
         WKWatchKitApp: true
-        WKWatchOnly: true
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
