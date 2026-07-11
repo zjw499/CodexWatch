@@ -196,6 +196,8 @@ jobs:
           while IFS= read -r plist; do
             echo "--- processed $plist ---"
             /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist" 2>/dev/null || true
             /usr/libexec/PlistBuddy -c 'Print :WKApplication' "$plist" 2>/dev/null || true
             /usr/libexec/PlistBuddy -c 'Print :WKWatchKitApp' "$plist" 2>/dev/null || true
             /usr/libexec/PlistBuddy -c 'Print :WKCompanionAppBundleIdentifier' "$plist" 2>/dev/null || true
