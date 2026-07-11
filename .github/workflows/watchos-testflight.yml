@@ -133,7 +133,7 @@ jobs:
             -project CodexWatch.xcodeproj \
             -scheme CodexWatch \
             -configuration Release \
-            -destination 'generic/platform=watchOS' \
+            -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/CodexWatch.xcarchive" \
             -allowProvisioningUpdates \
             -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_${APPSTORE_KEY_ID}.p8" \
