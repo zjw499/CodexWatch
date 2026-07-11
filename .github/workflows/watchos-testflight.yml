@@ -155,6 +155,16 @@ jobs:
           set -euo pipefail
           sed -i '' -E "s/CURRENT_PROJECT_VERSION = [^;]+;/CURRENT_PROJECT_VERSION = ${GITHUB_RUN_NUMBER};/g" CodexWatch.xcodeproj/project.pbxproj
           printf '\nCURRENT_PROJECT_VERSION = %s\n' "$GITHUB_RUN_NUMBER" >> macos/CodexWatch/Config/Base.xcconfig
+          for plist in \
+            macos/CodexWatch/Support/Info.plist \
+            macos/CodexWatch/Support/WatchApp-Info.plist \
+            macos/CodexWatch/Support/WatchExtension-Info.plist; do
+            if /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist" >/dev/null 2>&1; then
+              /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GITHUB_RUN_NUMBER}" "$plist"
+            else
+              /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${GITHUB_RUN_NUMBER}" "$plist"
+            fi
+          done
 
       - name: Verify generated WatchKit metadata
         shell: bash
