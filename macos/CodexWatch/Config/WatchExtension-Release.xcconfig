@@ -4,4 +4,6 @@ PRODUCT_BUNDLE_IDENTIFIER = com.zachwyatt.codexwatch.watchkitapp.watchkitextensi
 CODE_SIGN_STYLE = Manual
 CODE_SIGN_IDENTITY = Apple Distribution
 PROVISIONING_PROFILE_SPECIFIER = CodexWatch Watch Extension Store
-
+CODEX_WATCH_AUDIO_UPLOAD_URL = https://zwyattpc.tail488e93.ts.net:8787/upload
+CODEX_WATCH_AUDIO_UPLOAD_USERNAME =
+CODEX_WATCH_AUDIO_UPLOAD_PASSWORD =
