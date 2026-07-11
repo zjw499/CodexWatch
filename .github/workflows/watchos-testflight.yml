@@ -154,6 +154,7 @@ jobs:
         run: |
           set -euo pipefail
           sed -i '' -E "s/CURRENT_PROJECT_VERSION = [^;]+;/CURRENT_PROJECT_VERSION = ${GITHUB_RUN_NUMBER};/g" CodexWatch.xcodeproj/project.pbxproj
+          printf '\nCURRENT_PROJECT_VERSION = %s\n' "$GITHUB_RUN_NUMBER" >> macos/CodexWatch/Config/Base.xcconfig
 
       - name: Verify generated WatchKit metadata
         shell: bash
