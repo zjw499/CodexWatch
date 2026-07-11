@@ -139,6 +139,20 @@ jobs:
         shell: bash
         run: xcodegen generate
 
+      - name: Verify generated WatchKit metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          for plist in \
+            macos/CodexWatch/Support/WatchApp-Info.plist \
+            macos/CodexWatch/Support/WatchExtension-Info.plist; do
+            echo "--- $plist ---"
+            /usr/libexec/PlistBuddy -c 'Print :WKWatchKitApp' "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c 'Print :WKApplication' "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c 'Print :WKAppBundleIdentifier' "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$plist" 2>/dev/null || true
+          done
+
       - name: Archive watchOS app
         shell: bash
         env:

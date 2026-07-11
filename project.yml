@@ -99,4 +99,5 @@ targets:
         PRODUCT_NAME: Codex Watch Extension
         SKIP_INSTALL: YES
         TARGETED_DEVICE_FAMILY: 4
+        INFOPLIST_KEY_WKAppBundleIdentifier: com.zachwyatt.codexwatch.watchkitapp
         WK_APP_BUNDLE_IDENTIFIER: com.zachwyatt.codexwatch.watchkitapp
