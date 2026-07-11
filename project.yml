@@ -23,6 +23,7 @@ targets:
       properties:
         CFBundleDisplayName: Codex Watch
         CFBundlePackageType: APPL
+        NSMicrophoneUsageDescription: Codex Watch uses the microphone to record audio for your private local transcription workflow.
     settings:
       base:
         CODE_SIGN_STYLE: Automatic
