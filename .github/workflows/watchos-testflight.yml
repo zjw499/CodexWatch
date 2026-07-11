@@ -149,6 +149,12 @@ jobs:
         shell: bash
         run: xcodegen generate
 
+      - name: Set unique archive build number
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i '' -E "s/CURRENT_PROJECT_VERSION = [^;]+;/CURRENT_PROJECT_VERSION = ${GITHUB_RUN_NUMBER};/g" CodexWatch.xcodeproj/project.pbxproj
+
       - name: Verify generated WatchKit metadata
         shell: bash
         run: |
