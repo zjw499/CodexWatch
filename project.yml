@@ -18,12 +18,17 @@ targets:
     configFiles:
       Debug: macos/CodexWatch/Config/Debug.xcconfig
       Release: macos/CodexWatch/Config/Release.xcconfig
+    info:
+      path: macos/CodexWatch/Support/Info.plist
+      properties:
+        WKWatchKitApp: true
+        WKWatchOnly: true
     settings:
       base:
         CODE_SIGN_STYLE: Automatic
         CURRENT_PROJECT_VERSION: $(CURRENT_PROJECT_VERSION)
         DEVELOPMENT_TEAM: $(DEVELOPMENT_TEAM)
-        GENERATE_INFOPLIST_FILE: YES
+        GENERATE_INFOPLIST_FILE: NO
         MARKETING_VERSION: $(MARKETING_VERSION)
         PRODUCT_BUNDLE_IDENTIFIER: $(PRODUCT_BUNDLE_IDENTIFIER)
         PRODUCT_NAME: Codex Watch
