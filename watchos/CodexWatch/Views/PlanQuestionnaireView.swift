@@ -31,89 +31,10 @@ struct PlanQuestionnaireView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                CodexCard(
-                    title: "\(selectedQuestionIndex + 1) of \(questionnaire.questions.count)",
-                    subtitle: "Crown: \(crownMode.rawValue)"
-                ) {
-                    Text(currentQuestion.header)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.6))
-                    Text(currentQuestion.question)
-                        .foregroundStyle(.white)
-                }
-                .onTapGesture {
-                    crownMode = .option
-                }
-
-                if !answers.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Answers")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.6))
-
-                        ForEach(questionnaire.questions, id: \.id) { question in
-                            if let response = answers[question.id]?.first {
-                                HStack {
-                                    FolderChip(label: question.header)
-                                    Text(response)
-                                        .font(.caption2)
-                                        .foregroundStyle(.white.opacity(0.8))
-                                        .lineLimit(1)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(optionLabels.enumerated()), id: \.offset) { index, option in
-                        Button {
-                            Task {
-                                await selectOption(option, at: index)
-                            }
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(option)
-                                        .foregroundStyle(.white)
-                                    Spacer()
-                                    if answers[currentQuestion.id]?.first == option {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundStyle(.green)
-                                    }
-                                }
-                                if let description = descriptionForOption(named: option) {
-                                    Text(description)
-                                        .font(.caption2)
-                                        .foregroundStyle(.white.opacity(0.6))
-                                }
-                            }
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .fill(highlightedOptionIndex == index ? Color.white.opacity(0.12) : Color.white.opacity(0.05))
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-
-                HStack {
-                    Button(crownMode == .question ? "Focus Answers" : "Focus Questions") {
-                        crownMode = crownMode == .question ? .option : .question
-                    }
-                    .font(.caption2)
-
-                    Spacer()
-
-                    Button(isSubmitting ? "Sending..." : "Submit") {
-                        Task {
-                            await submit()
-                        }
-                    }
-                    .disabled(answers.count < questionnaire.questions.count || isSubmitting)
-                }
+                questionCard
+                answerSummary
+                optionList
+                footerControls
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 12)
@@ -143,6 +64,103 @@ struct PlanQuestionnaireView: View {
         .navigationTitle("Plan Mode")
         .task {
             syncHighlightedOption()
+        }
+    }
+
+    private var questionCard: some View {
+        CodexCard(
+            title: "\(selectedQuestionIndex + 1) of \(questionnaire.questions.count)",
+            subtitle: "Crown: \(crownMode.rawValue)"
+        ) {
+            Text(currentQuestion.header)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.6))
+            Text(currentQuestion.question)
+                .foregroundStyle(.white)
+        }
+        .onTapGesture {
+            crownMode = .option
+        }
+    }
+
+    @ViewBuilder
+    private var answerSummary: some View {
+        if !answers.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Answers")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.6))
+
+                ForEach(questionnaire.questions, id: \.id) { question in
+                    if let response = answers[question.id]?.first {
+                        HStack {
+                            FolderChip(label: question.header)
+                            Text(response)
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.8))
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var optionList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(optionLabels.enumerated()), id: \.offset) { index, option in
+                Button {
+                    Task {
+                        await selectOption(option, at: index)
+                    }
+                } label: {
+                    optionRow(option, at: index)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func optionRow(_ option: String, at index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(option)
+                    .foregroundStyle(.white)
+                Spacer()
+                if answers[currentQuestion.id]?.first == option {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+            }
+            if let description = descriptionForOption(named: option) {
+                Text(description)
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(highlightedOptionIndex == index ? Color.white.opacity(0.12) : Color.white.opacity(0.05))
+        )
+    }
+
+    private var footerControls: some View {
+        HStack {
+            Button(crownMode == .question ? "Focus Answers" : "Focus Questions") {
+                crownMode = crownMode == .question ? .option : .question
+            }
+            .font(.caption2)
+
+            Spacer()
+
+            Button(isSubmitting ? "Sending..." : "Submit") {
+                Task {
+                    await submit()
+                }
+            }
+            .disabled(answers.count < questionnaire.questions.count || isSubmitting)
         }
     }
 
