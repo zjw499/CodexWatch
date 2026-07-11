@@ -47,8 +47,7 @@ targets:
     configFiles:
       Debug: macos/CodexWatch/Config/WatchApp-Debug.xcconfig
       Release: macos/CodexWatch/Config/WatchApp-Release.xcconfig
-    sources: []
-    resources:
+    sources:
       - path: macos/CodexWatch/Resources/Assets.xcassets
     info:
       path: macos/CodexWatch/Support/WatchApp-Info.plist
