@@ -1,0 +1,185 @@
+name: Build watchOS and upload to TestFlight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: watchos-testflight
+  cancel-in-progress: false
+
+jobs:
+  build-and-upload:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      APP_BUNDLE_ID: com.zachwyatt.codexwatch
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      PROFILE_NAME: CodexWatch App Store
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          APPSTORE_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+          APPSTORE_PRIVATE_KEY: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in \
+            APPLE_TEAM_ID \
+            APPLE_CERTIFICATE_BASE64 \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_PROVISIONING_PROFILE_BASE64 \
+            APPSTORE_ISSUER_ID \
+            APPSTORE_KEY_ID \
+            APPSTORE_PRIVATE_KEY \
+            KEYCHAIN_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required GitHub Actions secret: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Select Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -d /Applications/Xcode_16.4.app/Contents/Developer ]]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          elif [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
+            sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          fi
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        shell: bash
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+
+      - name: Install signing assets
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/apple-distribution.p12"
+          PROFILE_PATH="$RUNNER_TEMP/CodexWatch_App_Store.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/codexwatch-signing.keychain-db"
+
+          printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          printf '%s' "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
+          security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+
+      - name: Install App Store Connect API key
+        shell: bash
+        env:
+          APPSTORE_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+          APPSTORE_PRIVATE_KEY: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          API_KEY_DIR="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$API_KEY_DIR"
+          printf '%s' "$APPSTORE_PRIVATE_KEY" > "$API_KEY_DIR/AuthKey_${APPSTORE_KEY_ID}.p8"
+          chmod 600 "$API_KEY_DIR/AuthKey_${APPSTORE_KEY_ID}.p8"
+
+      - name: Generate Xcode project
+        shell: bash
+        run: xcodegen generate
+
+      - name: Archive watchOS app
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project CodexWatch.xcodeproj \
+            -scheme CodexWatch \
+            -configuration Release \
+            -destination 'generic/platform=watchOS' \
+            -archivePath "$RUNNER_TEMP/CodexWatch.xcarchive" \
+            clean archive \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY='Apple Distribution' \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            PRODUCT_BUNDLE_IDENTIFIER="$APP_BUNDLE_ID" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME"
+
+      - name: Upload archive to TestFlight
+        shell: bash
+        env:
+          APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          APPSTORE_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+        run: |
+          set -euo pipefail
+
+          EXPORT_OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
+          cat > "$EXPORT_OPTIONS" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>destination</key>
+            <string>upload</string>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>teamID</key>
+            <string>${APPLE_TEAM_ID}</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${APP_BUNDLE_ID}</key>
+              <string>${PROFILE_NAME}</string>
+            </dict>
+            <key>manageAppVersionAndBuildNumber</key>
+            <true/>
+            <key>uploadSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$RUNNER_TEMP/CodexWatch.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$EXPORT_OPTIONS" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_${APPSTORE_KEY_ID}.p8" \
+            -authenticationKeyID "$APPSTORE_KEY_ID" \
+            -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID"
