@@ -87,10 +87,11 @@ targets:
         CODEX_WATCH_RELAY_BASE_URL: $(CODEX_WATCH_RELAY_BASE_URL)
         CODEX_WATCH_RELAY_TOKEN: $(CODEX_WATCH_RELAY_TOKEN)
         NSExtension:
+          NSExtensionAttributes:
+            WKAppBundleIdentifier: com.zachwyatt.codexwatch.watchkitapp
           NSExtensionPointIdentifier: com.apple.watchkit
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-        WKAppBundleIdentifier: com.zachwyatt.codexwatch.watchkitapp
         WKRunsIndependentlyOfCompanionApp: true
     settings:
       base:

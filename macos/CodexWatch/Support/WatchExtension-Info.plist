@@ -10,6 +10,11 @@
     <string>$(CODEX_WATCH_RELAY_TOKEN)</string>
     <key>NSExtension</key>
     <dict>
+        <key>NSExtensionAttributes</key>
+        <dict>
+            <key>WKAppBundleIdentifier</key>
+            <string>com.zachwyatt.codexwatch.watchkitapp</string>
+        </dict>
         <key>NSExtensionPointIdentifier</key>
         <string>com.apple.watchkit</string>
     </dict>
@@ -18,8 +23,6 @@
         <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>
-    <key>WKAppBundleIdentifier</key>
-    <string>com.zachwyatt.codexwatch.watchkitapp</string>
     <key>WKRunsIndependentlyOfCompanionApp</key>
     <true/>
 </dict>
