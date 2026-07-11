@@ -81,10 +81,15 @@ targets:
       Release: macos/CodexWatch/Config/WatchExtension-Release.xcconfig
     sources:
       - path: watchos/CodexWatch
+    resources:
+      - path: macos/CodexWatch/Resources/watch-audio-ca.crt
     info:
       path: macos/CodexWatch/Support/WatchExtension-Info.plist
       properties:
         CFBundleDisplayName: Codex Watch Extension
+        CODEX_WATCH_AUDIO_UPLOAD_PASSWORD: $(CODEX_WATCH_AUDIO_UPLOAD_PASSWORD)
+        CODEX_WATCH_AUDIO_UPLOAD_URL: $(CODEX_WATCH_AUDIO_UPLOAD_URL)
+        CODEX_WATCH_AUDIO_UPLOAD_USERNAME: $(CODEX_WATCH_AUDIO_UPLOAD_USERNAME)
         CODEX_WATCH_RELAY_BASE_URL: $(CODEX_WATCH_RELAY_BASE_URL)
         CODEX_WATCH_RELAY_TOKEN: $(CODEX_WATCH_RELAY_TOKEN)
         NSExtension:
@@ -93,6 +98,7 @@ targets:
           NSExtensionPointIdentifier: com.apple.watchkit
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        NSMicrophoneUsageDescription: Codex Watch uses the microphone to record audio for your private local transcription workflow.
         WKWatchOnly: true
     settings:
       base:
