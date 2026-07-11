@@ -92,7 +92,6 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         WKWatchOnly: true
-        WKRunsIndependentlyOfCompanionApp: true
     settings:
       base:
         CODE_SIGN_STYLE: Automatic
