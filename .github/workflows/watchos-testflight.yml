@@ -18,6 +18,8 @@ jobs:
       APP_BUNDLE_ID: com.zachwyatt.codexwatch
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       PROFILE_NAME: CodexWatch App Store
+      WATCH_APP_PROFILE_NAME: CodexWatch Watch App Store
+      WATCH_EXTENSION_PROFILE_NAME: CodexWatch Watch Extension Store
 
     steps:
       - name: Check out source
@@ -29,6 +31,8 @@ jobs:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          APPLE_WATCH_APP_PROFILE_BASE64: ${{ secrets.APPLE_WATCH_APP_PROFILE_BASE64 }}
+          APPLE_WATCH_EXTENSION_PROFILE_BASE64: ${{ secrets.APPLE_WATCH_EXTENSION_PROFILE_BASE64 }}
           APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
           APPSTORE_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
           APPSTORE_PRIVATE_KEY: ${{ secrets.APPSTORE_PRIVATE_KEY }}
@@ -40,6 +44,8 @@ jobs:
             APPLE_CERTIFICATE_BASE64 \
             APPLE_CERTIFICATE_PASSWORD \
             APPLE_PROVISIONING_PROFILE_BASE64 \
+            APPLE_WATCH_APP_PROFILE_BASE64 \
+            APPLE_WATCH_EXTENSION_PROFILE_BASE64 \
             APPSTORE_ISSUER_ID \
             APPSTORE_KEY_ID \
             APPSTORE_PRIVATE_KEY \
@@ -74,16 +80,16 @@ jobs:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+          APPLE_WATCH_APP_PROFILE_BASE64: ${{ secrets.APPLE_WATCH_APP_PROFILE_BASE64 }}
+          APPLE_WATCH_EXTENSION_PROFILE_BASE64: ${{ secrets.APPLE_WATCH_EXTENSION_PROFILE_BASE64 }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           set -euo pipefail
 
           CERTIFICATE_PATH="$RUNNER_TEMP/apple-distribution.p12"
-          PROFILE_PATH="$RUNNER_TEMP/CodexWatch_App_Store.mobileprovision"
           KEYCHAIN_PATH="$RUNNER_TEMP/codexwatch-signing.keychain-db"
 
           printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
-          printf '%s' "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -100,11 +106,22 @@ jobs:
             "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
-          PROFILE_PLIST="$RUNNER_TEMP/profile.plist"
-          security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
-          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          install_profile() {
+            local profile_name="$1"
+            local profile_base64="$2"
+            local profile_path="$RUNNER_TEMP/${profile_name// /_}.mobileprovision"
+            local profile_plist="$RUNNER_TEMP/${profile_name// /_}.plist"
+            printf '%s' "$profile_base64" | base64 --decode > "$profile_path"
+            security cms -D -i "$profile_path" > "$profile_plist"
+            local profile_uuid
+            profile_uuid=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")
+            cp "$profile_path" "$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
+          }
+
+          install_profile "$PROFILE_NAME" "$APPLE_PROVISIONING_PROFILE_BASE64"
+          install_profile "$WATCH_APP_PROFILE_NAME" "$APPLE_WATCH_APP_PROFILE_BASE64"
+          install_profile "$WATCH_EXTENSION_PROFILE_NAME" "$APPLE_WATCH_EXTENSION_PROFILE_BASE64"
 
       - name: Install App Store Connect API key
         shell: bash
@@ -135,14 +152,14 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/CodexWatch.xcarchive" \
-            -allowProvisioningUpdates \
             -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_${APPSTORE_KEY_ID}.p8" \
             -authenticationKeyID "$APPSTORE_KEY_ID" \
             -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID" \
             clean archive \
-            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY='Apple Distribution' \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            PRODUCT_BUNDLE_IDENTIFIER="$APP_BUNDLE_ID"
+            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}"
 
       - name: Upload archive to TestFlight
         shell: bash
@@ -164,6 +181,15 @@ jobs:
             <string>app-store</string>
             <key>teamID</key>
             <string>${APPLE_TEAM_ID}</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>com.zachwyatt.codexwatch</key>
+              <string>${PROFILE_NAME}</string>
+              <key>com.zachwyatt.codexwatch.watchkitapp</key>
+              <string>${WATCH_APP_PROFILE_NAME}</string>
+              <key>com.zachwyatt.codexwatch.watchkitapp.watchkitextension</key>
+              <string>${WATCH_EXTENSION_PROFILE_NAME}</string>
+            </dict>
             <key>manageAppVersionAndBuildNumber</key>
             <true/>
             <key>uploadSymbols</key>

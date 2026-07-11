@@ -40,8 +40,8 @@ targets:
     platform: watchOS
     deploymentTarget: "10.0"
     configFiles:
-      Debug: macos/CodexWatch/Config/Debug.xcconfig
-      Release: macos/CodexWatch/Config/Release.xcconfig
+      Debug: macos/CodexWatch/Config/WatchApp-Debug.xcconfig
+      Release: macos/CodexWatch/Config/WatchApp-Release.xcconfig
     sources: []
     resources:
       - path: macos/CodexWatch/Resources
@@ -67,8 +67,8 @@ targets:
     platform: watchOS
     deploymentTarget: "10.0"
     configFiles:
-      Debug: macos/CodexWatch/Config/Debug.xcconfig
-      Release: macos/CodexWatch/Config/Release.xcconfig
+      Debug: macos/CodexWatch/Config/WatchExtension-Debug.xcconfig
+      Release: macos/CodexWatch/Config/WatchExtension-Release.xcconfig
     sources:
       - path: watchos/CodexWatch
     info:
