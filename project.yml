@@ -92,6 +92,7 @@ targets:
           NSExtensionPointIdentifier: com.apple.watchkit
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        WKWatchOnly: true
         WKRunsIndependentlyOfCompanionApp: true
     settings:
       base:
