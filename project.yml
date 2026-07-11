@@ -55,6 +55,7 @@ targets:
         CFBundleDisplayName: Codex Watch
         CFBundleIconFiles:
           - AppIcon
+        ITSAppUsesNonExemptEncryption: false
         WKWatchKitApp: true
     settings:
       base:
