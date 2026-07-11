@@ -20,6 +20,9 @@ jobs:
       PROFILE_NAME: CodexWatch App Store
       WATCH_APP_PROFILE_NAME: CodexWatch Watch App Store
       WATCH_EXTENSION_PROFILE_NAME: CodexWatch Watch Extension Store
+      WATCH_AUDIO_UPLOAD_URL: ${{ secrets.WATCH_AUDIO_UPLOAD_URL }}
+      WATCH_AUDIO_BASIC_AUTH_USERNAME: ${{ secrets.WATCH_AUDIO_BASIC_AUTH_USERNAME }}
+      WATCH_AUDIO_BASIC_AUTH_PASSWORD: ${{ secrets.WATCH_AUDIO_BASIC_AUTH_PASSWORD }}
 
     steps:
       - name: Check out source
@@ -49,7 +52,10 @@ jobs:
             APPSTORE_ISSUER_ID \
             APPSTORE_KEY_ID \
             APPSTORE_PRIVATE_KEY \
-            KEYCHAIN_PASSWORD; do
+            KEYCHAIN_PASSWORD \
+            WATCH_AUDIO_UPLOAD_URL \
+            WATCH_AUDIO_BASIC_AUTH_USERNAME \
+            WATCH_AUDIO_BASIC_AUTH_PASSWORD; do
             if [[ -z "${!name:-}" ]]; then
               echo "Missing required GitHub Actions secret: $name" >&2
               exit 1
@@ -180,7 +186,10 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY='Apple Distribution' \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}"
+            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
+            CODEX_WATCH_AUDIO_UPLOAD_URL="$WATCH_AUDIO_UPLOAD_URL" \
+            CODEX_WATCH_AUDIO_UPLOAD_USERNAME="$WATCH_AUDIO_BASIC_AUTH_USERNAME" \
+            CODEX_WATCH_AUDIO_UPLOAD_PASSWORD="$WATCH_AUDIO_BASIC_AUTH_PASSWORD"
           archive_status=$?
           set -e
 
