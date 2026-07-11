@@ -8,6 +8,8 @@
     <array>
         <string>AppIcon</string>
     </array>
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
     <key>WKWatchKitApp</key>
     <true/>
 </dict>
