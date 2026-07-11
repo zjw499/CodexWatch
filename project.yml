@@ -79,6 +79,15 @@ targets:
       - path: watchos/CodexWatch
     info:
       path: macos/CodexWatch/Support/WatchExtension-Info.plist
+      properties:
+        CODEX_WATCH_RELAY_BASE_URL: $(CODEX_WATCH_RELAY_BASE_URL)
+        CODEX_WATCH_RELAY_TOKEN: $(CODEX_WATCH_RELAY_TOKEN)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.watchkit
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        WKAppBundleIdentifier: com.zachwyatt.codexwatch.watchkitapp
+        WKRunsIndependentlyOfCompanionApp: true
     settings:
       base:
         CODE_SIGN_STYLE: Automatic
