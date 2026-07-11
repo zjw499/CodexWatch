@@ -13,18 +13,37 @@ configs:
 
 targets:
   CodexWatch:
-    type: application
+    type: application.watchapp2-container
+    platform: iOS
+    configFiles:
+      Debug: macos/CodexWatch/Config/Debug.xcconfig
+      Release: macos/CodexWatch/Config/Release.xcconfig
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        CURRENT_PROJECT_VERSION: $(CURRENT_PROJECT_VERSION)
+        DEVELOPMENT_TEAM: $(DEVELOPMENT_TEAM)
+        GENERATE_INFOPLIST_FILE: YES
+        MARKETING_VERSION: $(MARKETING_VERSION)
+        PRODUCT_BUNDLE_IDENTIFIER: $(PRODUCT_BUNDLE_IDENTIFIER)
+        PRODUCT_NAME: Codex Watch
+        SKIP_INSTALL: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+    dependencies:
+      - target: CodexWatch Watch App
+
+  CodexWatch Watch App:
+    type: application.watchapp2
     platform: watchOS
     deploymentTarget: "10.0"
     configFiles:
       Debug: macos/CodexWatch/Config/Debug.xcconfig
       Release: macos/CodexWatch/Config/Release.xcconfig
-    sources:
-      - path: watchos/CodexWatch
+    sources: []
+    resources:
       - path: macos/CodexWatch/Resources
-        buildPhase: resources
     info:
-      path: macos/CodexWatch/Support/Info.plist
+      path: macos/CodexWatch/Support/WatchApp-Info.plist
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -33,10 +52,36 @@ targets:
         DEVELOPMENT_TEAM: $(DEVELOPMENT_TEAM)
         GENERATE_INFOPLIST_FILE: NO
         MARKETING_VERSION: $(MARKETING_VERSION)
-        PRODUCT_BUNDLE_IDENTIFIER: $(PRODUCT_BUNDLE_IDENTIFIER)
+        PRODUCT_BUNDLE_IDENTIFIER: com.zachwyatt.codexwatch.watchkitapp
         PRODUCT_NAME: Codex Watch
-        SWIFT_VERSION: 5.10
+        SKIP_INSTALL: YES
         TARGETED_DEVICE_FAMILY: 4
+    dependencies:
+      - target: CodexWatch Watch Extension
+
+  CodexWatch Watch Extension:
+    type: watchkit2-extension
+    platform: watchOS
+    deploymentTarget: "10.0"
+    configFiles:
+      Debug: macos/CodexWatch/Config/Debug.xcconfig
+      Release: macos/CodexWatch/Config/Release.xcconfig
+    sources:
+      - path: watchos/CodexWatch
+    info:
+      path: macos/CodexWatch/Support/WatchExtension-Info.plist
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        CURRENT_PROJECT_VERSION: $(CURRENT_PROJECT_VERSION)
+        DEVELOPMENT_TEAM: $(DEVELOPMENT_TEAM)
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: $(MARKETING_VERSION)
+        PRODUCT_BUNDLE_IDENTIFIER: com.zachwyatt.codexwatch.watchkitapp.watchkitextension
+        PRODUCT_NAME: Codex Watch Extension
+        SKIP_INSTALL: YES
+        TARGETED_DEVICE_FAMILY: 4
+        WK_APP_BUNDLE_IDENTIFIER: com.zachwyatt.codexwatch.watchkitapp
     scheme:
       testTargets: []
       gatherCoverageData: false
