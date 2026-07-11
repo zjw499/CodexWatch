@@ -124,6 +124,9 @@ jobs:
 
       - name: Archive watchOS app
         shell: bash
+        env:
+          APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          APPSTORE_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
         run: |
           set -euo pipefail
           xcodebuild \
@@ -132,12 +135,15 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=watchOS' \
             -archivePath "$RUNNER_TEMP/CodexWatch.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_${APPSTORE_KEY_ID}.p8" \
+            -authenticationKeyID "$APPSTORE_KEY_ID" \
+            -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID" \
             clean archive \
-            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_STYLE=Automatic \
             CODE_SIGN_IDENTITY='Apple Distribution' \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            PRODUCT_BUNDLE_IDENTIFIER="$APP_BUNDLE_ID" \
-            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME"
+            PRODUCT_BUNDLE_IDENTIFIER="$APP_BUNDLE_ID"
 
       - name: Upload archive to TestFlight
         shell: bash
@@ -155,15 +161,10 @@ jobs:
           <dict>
             <key>destination</key>
             <string>upload</string>
-            <key>signingStyle</key>
-            <string>manual</string>
+            <key>method</key>
+            <string>app-store</string>
             <key>teamID</key>
             <string>${APPLE_TEAM_ID}</string>
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>${APP_BUNDLE_ID}</key>
-              <string>${PROFILE_NAME}</string>
-            </dict>
             <key>manageAppVersionAndBuildNumber</key>
             <true/>
             <key>uploadSymbols</key>
