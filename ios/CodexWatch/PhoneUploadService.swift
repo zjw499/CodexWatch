@@ -6,17 +6,31 @@ import WatchConnectivity
 final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, URLSessionDelegate, URLSessionTaskDelegate {
     static let shared = PhoneUploadService()
     static let backgroundIdentifier = "com.zachwyatt.codexwatch.audio-upload"
+    private static let statusDefaultsKey = "CodexWatch.PhoneUploadStatus"
 
-    @Published private(set) var statusMessage = "Ready"
+    @Published private(set) var statusMessage: String
 
     private let stateQueue = DispatchQueue(label: "com.zachwyatt.codexwatch.upload-state")
     private var uploadSession: URLSession?
     private var bodyURLs: [Int: URL] = [:]
+    private var sourceURLs: [Int: URL] = [:]
     private var completionHandlers: [String: () -> Void] = [:]
     private var started = false
 
+    override init() {
+        statusMessage = UserDefaults.standard.string(forKey: Self.statusDefaultsKey) ?? "Ready"
+        super.init()
+    }
+
+    var configurationStatus: String {
+        CodexWatchPhoneConfiguration.isConfigured
+            ? "PC upload configured"
+            : "PC upload configuration missing"
+    }
+
     func start() {
-        stateQueue.async {
+        var shouldStart = false
+        stateQueue.sync {
             guard !self.started else { return }
             self.started = true
 
@@ -25,49 +39,39 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             configuration.isDiscretionary = false
             configuration.waitsForConnectivity = true
             self.uploadSession = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+            shouldStart = true
+        }
 
-            guard WCSession.isSupported() else {
-                self.setStatus("Watch transfer unavailable")
-                return
-            }
+        guard shouldStart else { return }
+        guard WCSession.isSupported() else {
+            setStatus("Watch transfer unavailable")
+            return
+        }
+        DispatchQueue.main.async {
             WCSession.default.delegate = self
             WCSession.default.activate()
         }
+        retryPendingRecordings()
     }
 
     func enqueue(fileURL: URL) {
         start()
         stateQueue.async {
-            do {
-                let bodyURL = try self.makeMultipartBody(fileURL: fileURL)
-                guard let uploadURL = CodexWatchPhoneConfiguration.audioUploadURL,
-                      let username = CodexWatchPhoneConfiguration.audioUploadUsername,
-                      let password = CodexWatchPhoneConfiguration.audioUploadPassword,
-                      !username.isEmpty,
-                      !password.isEmpty else {
-                    try? FileManager.default.removeItem(at: bodyURL)
-                    self.setStatus("PC upload is not configured")
-                    return
-                }
+            self.queueUpload(fileURL: fileURL)
+        }
+    }
 
-                var request = URLRequest(url: uploadURL)
-                request.httpMethod = "POST"
-                let boundary = bodyURL.deletingPathExtension().lastPathComponent
-                request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-                request.setValue("Basic \(self.basicAuth(username: username, password: password))", forHTTPHeaderField: "Authorization")
-                request.setValue("Codex Watch", forHTTPHeaderField: "User-Agent")
-
-                guard let uploadSession = self.uploadSession else {
-                    try? FileManager.default.removeItem(at: bodyURL)
-                    self.setStatus("Upload service unavailable")
-                    return
-                }
-                let task = uploadSession.uploadTask(with: request, fromFile: bodyURL)
-                self.bodyURLs[task.taskIdentifier] = bodyURL
-                task.resume()
-                self.setStatus("Uploading to PC")
-            } catch {
-                self.setStatus("Upload queued for retry: \(error.localizedDescription)")
+    func retryPendingRecordings() {
+        start()
+        stateQueue.async {
+            guard let directory = try? self.recordingsDirectory() else { return }
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            for fileURL in files where ["m4a", "mp3", "wav", "caf"].contains(fileURL.pathExtension.lowercased()) {
+                self.queueUpload(fileURL: fileURL)
             }
         }
     }
@@ -84,8 +88,8 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             let destination = directory.appendingPathComponent(file.fileURL.lastPathComponent)
             try? FileManager.default.removeItem(at: destination)
             try FileManager.default.copyItem(at: file.fileURL, to: destination)
-            enqueue(fileURL: destination)
             setStatus("Watch recording received")
+            enqueue(fileURL: destination)
         } catch {
             setStatus("Could not receive watch recording: \(error.localizedDescription)")
         }
@@ -116,6 +120,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     ) {
         stateQueue.async {
             let bodyURL = self.bodyURLs.removeValue(forKey: task.taskIdentifier)
+            let sourceURL = self.sourceURLs.removeValue(forKey: task.taskIdentifier)
             let statusCode = (task.response as? HTTPURLResponse)?.statusCode
 
             if let error {
@@ -130,6 +135,9 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
 
             if let bodyURL {
                 try? FileManager.default.removeItem(at: bodyURL)
+            }
+            if let sourceURL {
+                try? FileManager.default.removeItem(at: sourceURL)
             }
             self.setStatus("Uploaded to PC")
         }
@@ -174,8 +182,44 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     }
 
     private func setStatus(_ message: String) {
+        UserDefaults.standard.set(message, forKey: Self.statusDefaultsKey)
         DispatchQueue.main.async {
             self.statusMessage = message
+        }
+    }
+
+    private func queueUpload(fileURL: URL) {
+        do {
+            let bodyURL = try makeMultipartBody(fileURL: fileURL)
+            guard let uploadURL = CodexWatchPhoneConfiguration.audioUploadURL,
+                  let username = CodexWatchPhoneConfiguration.audioUploadUsername,
+                  let password = CodexWatchPhoneConfiguration.audioUploadPassword,
+                  !username.isEmpty,
+                  !password.isEmpty else {
+                try? FileManager.default.removeItem(at: bodyURL)
+                setStatus("PC upload is not configured")
+                return
+            }
+
+            var request = URLRequest(url: uploadURL)
+            request.httpMethod = "POST"
+            let boundary = bodyURL.deletingPathExtension().lastPathComponent
+            request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+            request.setValue("Basic \(basicAuth(username: username, password: password))", forHTTPHeaderField: "Authorization")
+            request.setValue("Codex Watch", forHTTPHeaderField: "User-Agent")
+
+            guard let uploadSession else {
+                try? FileManager.default.removeItem(at: bodyURL)
+                setStatus("Upload service unavailable")
+                return
+            }
+            let task = uploadSession.uploadTask(with: request, fromFile: bodyURL)
+            bodyURLs[task.taskIdentifier] = bodyURL
+            sourceURLs[task.taskIdentifier] = fileURL
+            task.resume()
+            setStatus("Uploading to PC")
+        } catch {
+            setStatus("Upload queued for retry: \(error.localizedDescription)")
         }
     }
 
@@ -222,6 +266,12 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
 }
 
 private enum CodexWatchPhoneConfiguration {
+    static let isConfigured: Bool = {
+        audioUploadURL != nil &&
+        !(audioUploadUsername ?? "").isEmpty &&
+        !(audioUploadPassword ?? "").isEmpty
+    }()
+
     static let audioUploadURL: URL? = {
         guard let value = Bundle.main.object(forInfoDictionaryKey: "CODEX_WATCH_AUDIO_UPLOAD_URL") as? String,
               !value.isEmpty,
