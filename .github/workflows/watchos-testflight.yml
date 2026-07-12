@@ -11,6 +11,10 @@ on:
         description: Existing build number to check when check_only is true
         required: false
         default: "49"
+      diagnose_only:
+        description: Print the App Store Connect app and latest visible builds without polling
+        required: false
+        default: "false"
 
 permissions:
   contents: read
@@ -308,6 +312,7 @@ jobs:
     env:
       APP_ID: "6789821399"
       BUILD_NUMBER: ${{ inputs.build_number }}
+      DIAGNOSE_ONLY: ${{ inputs.diagnose_only }}
       BETA_GROUP_NAME: Personal Internal Testing
       APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
       APPSTORE_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
@@ -350,6 +355,16 @@ jobs:
 
           api="https://api.appstoreconnect.apple.com/v1"
           auth=(-H "Authorization: Bearer $ASC_JWT")
+          if [[ "$DIAGNOSE_ONLY" == "true" ]]; then
+            app_json="$(curl -fsSL "${auth[@]}" "$api/apps/$APP_ID")"
+            echo "$app_json" | jq -c '{id: .data.id, name: .data.attributes.name, bundleId: .data.attributes.bundleId}'
+            all_builds="$(curl -fsSL "${auth[@]}" -G "$api/builds" \
+              --data-urlencode "sort=-uploadedDate" \
+              --data-urlencode "limit=25")"
+            echo "Latest visible builds:"
+            echo "$all_builds" | jq -r '.data[] | [.id, .attributes.buildNumber, .attributes.version, .attributes.processingState, .attributes.uploadedDate] | @tsv'
+            exit 0
+          fi
           processing_state=""
           for attempt in $(seq 1 20); do
             build_json="$(curl -fsSL "${auth[@]}" -G "$api/builds" \
