@@ -381,12 +381,16 @@ jobs:
               --data-urlencode "limit=50")"
             build_row="$(jq -r --arg build "$BUILD_NUMBER" '
               .data[] | select((.attributes.version | tostring) == $build) |
-              [.id, .attributes.version, .attributes.processingState] | @tsv
+              [.id, .attributes.version, .attributes.processingState, (.attributes.usesNonExemptEncryption | tostring)] | @tsv
             ' <<< "$build_json" | head -n 1)"
             if [[ -n "$build_row" ]]; then
-              IFS=$'\t' read -r build_id version processing_state <<< "$build_row"
-              echo "Build $BUILD_NUMBER version $version processing state: $processing_state"
-              if [[ "$processing_state" == "VALID" ]]; then break; fi
+              IFS=$'\t' read -r build_id version processing_state encryption_value <<< "$build_row"
+              echo "Build $BUILD_NUMBER version $version processing state: $processing_state encryption: $encryption_value"
+              if [[ "$processing_state" == "VALID" && "$encryption_value" == "false" ]]; then break; fi
+              if [[ "$processing_state" == "VALID" ]]; then
+                echo "Build $BUILD_NUMBER is valid but export compliance is incomplete." >&2
+                exit 1
+              fi
               if [[ "$processing_state" == "FAILED" || "$processing_state" == "INVALID" ]]; then exit 1; fi
             else
               echo "Build $BUILD_NUMBER is not visible in App Store Connect yet."
@@ -419,9 +423,14 @@ jobs:
             "$api/betaGroups/$group_id/relationships/builds" \
             --data "{\"data\":[{\"type\":\"builds\",\"id\":\"$build_id\"}]}" \
             --output "$assignment_response" --write-out '%{http_code}')"
-          if [[ "$assignment_status" -lt 200 || "$assignment_status" -ge 300 ]]; then
+          if [[ "$assignment_status" -ge 200 && "$assignment_status" -lt 300 ]]; then
+            echo "Assigned build $BUILD_NUMBER to $BETA_GROUP_NAME."
+          elif [[ "$assignment_status" == "422" ]] && jq -e '
+            .errors[] | select(.detail == "Cannot add internal group to a build.")
+          ' "$assignment_response" >/dev/null; then
+            echo "$BETA_GROUP_NAME is an all-build internal group; build $BUILD_NUMBER is available automatically."
+          else
             echo "App Store Connect assignment returned HTTP $assignment_status" >&2
             jq -c '.' "$assignment_response" >&2 || cat "$assignment_response" >&2
             exit 1
           fi
-          echo "Assigned build $BUILD_NUMBER to $BETA_GROUP_NAME."
