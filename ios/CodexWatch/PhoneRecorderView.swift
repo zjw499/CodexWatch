@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PhoneRecorderView: View {
     @EnvironmentObject private var recorder: PhoneRecorderService
+    @EnvironmentObject private var uploader: PhoneUploadService
     private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -41,6 +42,18 @@ struct PhoneRecorderView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+
+            VStack(spacing: 6) {
+                Text(uploader.statusMessage)
+                    .font(.footnote.weight(.medium))
+                Text(uploader.configurationStatus)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Button("Retry Pending Uploads") {
+                    uploader.retryPendingRecordings()
+                }
+                .font(.caption)
+            }
 
             Spacer()
         }
