@@ -3,82 +3,59 @@ import SwiftUI
 struct RecorderView: View {
     @EnvironmentObject private var recorder: AudioRecorderService
     @EnvironmentObject private var store: CodexWatchStore
+    @ObservedObject private var transfer = WatchConnectivityTransferService.shared
     private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
+    private let coral = Color(red: 1.0, green: 0.36, blue: 0.24)
+    private let aqua = Color(red: 0.25, green: 0.82, blue: 0.78)
+
     var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                Text("Codex Watch")
-                    .font(.headline)
+        ZStack {
+            LinearGradient(
+                colors: [Color.black, Color(red: 0.08, green: 0.04, blue: 0.06)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
 
-                Text(recorder.isRecording ? "Recording" : recorder.statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(recorder.isRecording ? .red : .white.opacity(0.7))
-                    .multilineTextAlignment(.center)
+            ScrollView {
+                VStack(spacing: 12) {
+                    header
+                    recordControl
+                    transferStatus
 
-                if recorder.isRecording {
-                    Text(formatDuration(recorder.elapsedTime))
-                        .font(.system(size: 30, weight: .semibold, design: .monospaced))
-
-                    Button {
-                        recorder.stopRecording()
-                    } label: {
-                        Label("Stop", systemImage: "stop.fill")
-                            .frame(maxWidth: .infinity)
+                    if let recordingURL = recorder.lastRecordingURL, !recorder.isRecording {
+                        pendingRecording(url: recordingURL)
                     }
-                    .tint(.red)
-                    .buttonStyle(.borderedProminent)
-                } else {
-                    Button {
-                        Task { await recorder.startRecording() }
+
+                    NavigationLink {
+                        if store.selectedDesktop == nil {
+                            DesktopPickerView()
+                        } else {
+                            HomeView()
+                        }
                     } label: {
-                        Label("Record", systemImage: "record.circle.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .tint(.red)
-                    .buttonStyle(.borderedProminent)
-                }
-
-                if let recordingURL = recorder.lastRecordingURL, !recorder.isRecording {
-                    Text(recordingURL.lastPathComponent)
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.55))
-                        .lineLimit(2)
-
-                    Button {
-                        recorder.queueLastRecording()
-                    } label: {
-                        Label("Retry to iPhone", systemImage: "iphone.and.arrow.forward")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.blue)
-
-                    Button("Delete Recording", role: .destructive) {
-                        recorder.deleteLastRecording()
+                        HStack {
+                            Image(systemName: "desktopcomputer")
+                            Text("Codex desktop")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.bold))
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.76))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(.white.opacity(0.07), in: Capsule())
                     }
                 }
-
-                Text("The iPhone sends queued recordings to your PC in the background.")
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.55))
-                    .multilineTextAlignment(.center)
-
-                NavigationLink("Codex Desktop") {
-                    if store.selectedDesktop == nil {
-                        DesktopPickerView()
-                    } else {
-                        HomeView()
-                    }
-                }
-                .font(.caption2)
-                .buttonStyle(.plain)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
             }
-            .padding(.horizontal, 8)
+            .scrollIndicators(.hidden)
         }
-        .scrollIndicators(.hidden)
-        .background(Color.black)
-        .navigationTitle("Record")
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
         .onReceive(timer) { _ in
             recorder.updateElapsedTime()
         }
@@ -92,6 +69,136 @@ struct RecorderView: View {
             Button("OK") { recorder.errorMessage = nil }
         } message: {
             Text(recorder.errorMessage ?? "Unknown recorder error")
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("CODEX")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .tracking(2)
+                    .foregroundStyle(.white.opacity(0.5))
+                Text(recorder.isRecording ? "Recording" : "Ready")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(.white)
+            }
+            Spacer()
+            Circle()
+                .fill(recorder.isRecording ? coral : aqua)
+                .frame(width: 9, height: 9)
+                .shadow(color: (recorder.isRecording ? coral : aqua).opacity(0.7), radius: 5)
+        }
+        .padding(.horizontal, 6)
+    }
+
+    private var recordControl: some View {
+        VStack(spacing: 9) {
+            ZStack {
+                Circle()
+                    .stroke((recorder.isRecording ? coral : aqua).opacity(0.22), lineWidth: 1)
+                    .frame(width: 142, height: 142)
+                Circle()
+                    .fill((recorder.isRecording ? coral : aqua).opacity(0.13))
+                    .frame(width: 118, height: 118)
+                Circle()
+                    .fill(recorder.isRecording ? coral : .white.opacity(0.12))
+                    .frame(width: 92, height: 92)
+                    .shadow(color: (recorder.isRecording ? coral : aqua).opacity(0.4), radius: 14)
+                Image(systemName: recorder.isRecording ? "stop.fill" : "mic.fill")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(recorder.isRecording ? .white : aqua)
+            }
+            .animation(.easeInOut(duration: 0.2), value: recorder.isRecording)
+
+            if recorder.isRecording {
+                Text(formatDuration(recorder.elapsedTime))
+                    .font(.system(size: 25, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .contentTransition(.numericText())
+            } else {
+                Text("Tap to capture")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.65))
+            }
+
+            Button {
+                if recorder.isRecording {
+                    recorder.stopRecording()
+                } else {
+                    Task { await recorder.startRecording() }
+                }
+            } label: {
+                Text(recorder.isRecording ? "Finish" : "Record")
+                    .font(.headline.weight(.bold))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(recorder.isRecording ? coral : aqua)
+        }
+        .padding(.vertical, 9)
+    }
+
+    private var transferStatus: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "iphone.and.arrow.forward")
+                .foregroundStyle(aqua)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("To iPhone")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                Text(transfer.statusMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
+            }
+            Spacer()
+            Image(systemName: transfer.statusMessage == "Delivered to iPhone" ? "checkmark.circle.fill" : "arrow.up.circle")
+                .foregroundStyle(transfer.statusMessage == "Delivered to iPhone" ? aqua : .white.opacity(0.4))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+    }
+
+    private func pendingRecording(url: URL) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Last capture", systemImage: "waveform")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Text(formatDuration(recorder.elapsedTime))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.45))
+            }
+            Text(url.deletingPathExtension().lastPathComponent)
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.48))
+                .lineLimit(1)
+
+            HStack(spacing: 8) {
+                Button {
+                    recorder.queueLastRecording()
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(aqua)
+
+                Button(role: .destructive) {
+                    recorder.deleteLastRecording()
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(12)
+        .background(coral.opacity(0.1), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(coral.opacity(0.22), lineWidth: 1)
         }
     }
 
