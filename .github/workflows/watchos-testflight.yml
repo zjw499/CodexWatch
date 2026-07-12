@@ -390,10 +390,18 @@ jobs:
             exit 1
           fi
 
-          groups_json="$(curl -fsSL "${auth[@]}" -G "$api/betaGroups" \
-            --data-urlencode "filter[app]=$APP_ID" \
-            --data-urlencode "filter[name]=$BETA_GROUP_NAME")"
-          group_id="$(jq -r '.data[0].id // empty' <<< "$groups_json")"
+          group_ids="$(curl --fail --silent --show-error --max-time 60 "${auth[@]}" \
+            "$api/apps/$APP_ID/relationships/betaGroups")"
+          group_id=""
+          while IFS= read -r candidate; do
+            [[ -n "$candidate" ]] || continue
+            group_json="$(curl --fail --silent --show-error --max-time 60 "${auth[@]}" "$api/betaGroups/$candidate")"
+            group_name="$(jq -r '.data.attributes.name // empty' <<< "$group_json")"
+            if [[ "$group_name" == "$BETA_GROUP_NAME" ]]; then
+              group_id="$candidate"
+              break
+            fi
+          done < <(jq -r '.data[].id' <<< "$group_ids")
           [[ -n "$group_id" ]] || { echo "Internal testing group not found" >&2; exit 1; }
 
           curl --fail --silent --show-error --max-time 60 -X POST "${auth[@]}" \
