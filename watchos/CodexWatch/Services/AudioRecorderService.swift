@@ -5,18 +5,15 @@ import Foundation
 @MainActor
 final class AudioRecorderService: NSObject, ObservableObject {
     @Published private(set) var isRecording = false
-    @Published private(set) var isUploading = false
     @Published private(set) var elapsedTime: TimeInterval = 0
     @Published private(set) var lastRecordingURL: URL?
     @Published private(set) var statusMessage = "Ready to record"
     @Published var errorMessage: String?
 
     private var recorder: AVAudioRecorder?
-    private let uploader = AudioUploadClient()
+    static let shared = AudioRecorderService()
 
-    var hasUploadConfiguration: Bool {
-        CodexWatchConfiguration.audioUploadURL != nil
-    }
+    private let transferService = WatchConnectivityTransferService.shared
 
     func prepare() async {
         guard !isRecording else { return }
@@ -77,24 +74,16 @@ final class AudioRecorderService: NSObject, ObservableObject {
         isRecording = false
         elapsedTime = recorder.currentTime
         lastRecordingURL = recorder.url
-        statusMessage = "Recording saved"
+        transferService.enqueue(fileURL: recorder.url)
+        statusMessage = "Queued for iPhone"
         try? AVAudioSession.sharedInstance().setActive(false)
     }
 
-    func uploadLastRecording() async {
+    func queueLastRecording() {
         guard let lastRecordingURL else { return }
-        isUploading = true
         errorMessage = nil
-        statusMessage = "Sending to PC"
-        defer { isUploading = false }
-
-        do {
-            try await uploader.upload(fileURL: lastRecordingURL)
-            statusMessage = "Sent to PC"
-        } catch {
-            statusMessage = "Upload failed"
-            errorMessage = error.localizedDescription
-        }
+        transferService.enqueue(fileURL: lastRecordingURL)
+        statusMessage = "Queued for iPhone"
     }
 
     func deleteLastRecording() {
