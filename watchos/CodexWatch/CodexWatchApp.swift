@@ -8,7 +8,7 @@ struct CodexWatchApp: App {
             relayToken: CodexWatchConfiguration.relayToken
         )
     )
-    @StateObject private var recorder = AudioRecorderService()
+    @StateObject private var recorder = AudioRecorderService.shared
 
     var body: some Scene {
         WindowGroup {
