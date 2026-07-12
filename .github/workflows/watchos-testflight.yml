@@ -396,12 +396,8 @@ jobs:
           group_id="$(jq -r '.data[0].id // empty' <<< "$groups_json")"
           [[ -n "$group_id" ]] || { echo "Internal testing group not found" >&2; exit 1; }
 
-          relationships="$(curl -fsSL "${auth[@]}" "$api/builds/$build_id/relationships/betaGroups")"
-          if jq -e --arg group "$group_id" '.data[] | select(.id == $group)' <<< "$relationships" >/dev/null; then
-            echo "Build $BUILD_NUMBER is already assigned to $BETA_GROUP_NAME."
-          else
-            curl -fsSL -X POST "${auth[@]}" -H "Content-Type: application/json" \
-              "$api/betaGroups/$group_id/relationships/builds" \
-              --data "{\"data\":[{\"type\":\"builds\",\"id\":\"$build_id\"}]}" >/dev/null
-            echo "Assigned build $BUILD_NUMBER to $BETA_GROUP_NAME."
-          fi
+          curl --fail --silent --show-error --max-time 60 -X POST "${auth[@]}" \
+            -H "Content-Type: application/json" \
+            "$api/betaGroups/$group_id/relationships/builds" \
+            --data "{\"data\":[{\"type\":\"builds\",\"id\":\"$build_id\"}]}" >/dev/null
+          echo "Assigned build $BUILD_NUMBER to $BETA_GROUP_NAME."
