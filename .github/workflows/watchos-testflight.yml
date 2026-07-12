@@ -256,6 +256,11 @@ jobs:
               exit 1
             fi
           done
+          encryption_value="$(/usr/libexec/PlistBuddy -c 'Print :ITSAppUsesNonExemptEncryption' "$APP_PATH/Info.plist")"
+          if [[ "$encryption_value" != "false" ]]; then
+            echo "ITSAppUsesNonExemptEncryption must be false in the archived iPhone app"
+            exit 1
+          fi
           echo "iPhone upload certificate and configuration keys are present"
 
       - name: Upload archive to TestFlight
