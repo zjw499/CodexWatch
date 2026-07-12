@@ -1,49 +1,49 @@
 {
   "images" : [
     {
-      "filename" : "CodexWatchIcon.png",
+      "filename" : "CodexWatchIcon-40.png",
       "idiom" : "universal",
       "scale" : "2x",
       "size" : "20x20"
     },
     {
-      "filename" : "CodexWatchIcon.png",
+      "filename" : "CodexWatchIcon-60.png",
       "idiom" : "universal",
       "scale" : "3x",
       "size" : "20x20"
     },
     {
-      "filename" : "CodexWatchIcon.png",
+      "filename" : "CodexWatchIcon-58.png",
       "idiom" : "universal",
       "scale" : "2x",
       "size" : "29x29"
     },
     {
-      "filename" : "CodexWatchIcon.png",
+      "filename" : "CodexWatchIcon-87.png",
       "idiom" : "universal",
       "scale" : "3x",
       "size" : "29x29"
     },
     {
-      "filename" : "CodexWatchIcon.png",
+      "filename" : "CodexWatchIcon-80.png",
       "idiom" : "universal",
       "scale" : "2x",
       "size" : "40x40"
     },
     {
-      "filename" : "CodexWatchIcon.png",
+      "filename" : "CodexWatchIcon-120.png",
       "idiom" : "universal",
       "scale" : "3x",
       "size" : "40x40"
     },
     {
-      "filename" : "CodexWatchIcon.png",
+      "filename" : "CodexWatchIcon-120.png",
       "idiom" : "universal",
       "scale" : "2x",
       "size" : "60x60"
     },
     {
-      "filename" : "CodexWatchIcon.png",
+      "filename" : "CodexWatchIcon-180.png",
       "idiom" : "universal",
       "scale" : "3x",
       "size" : "60x60"
