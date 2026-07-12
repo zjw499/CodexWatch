@@ -95,7 +95,12 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             try? FileManager.default.removeItem(at: destination)
             try FileManager.default.copyItem(at: file.fileURL, to: destination)
             setStatus("Watch recording received")
-            enqueue(fileURL: destination)
+            Task { @MainActor in
+                let transcribed = await PhoneTranscriptionService.shared.transcribeAndSubmit(fileURL: destination)
+                if !transcribed {
+                    PhoneUploadService.shared.enqueue(fileURL: destination)
+                }
+            }
         } catch {
             setStatus("Could not receive watch recording: \(error.localizedDescription)")
         }
