@@ -404,8 +404,15 @@ jobs:
           done < <(jq -r '.data[].id' <<< "$group_ids")
           [[ -n "$group_id" ]] || { echo "Internal testing group not found" >&2; exit 1; }
 
-          curl --fail --silent --show-error --max-time 60 -X POST "${auth[@]}" \
+          assignment_response="$RUNNER_TEMP/testflight-assignment.json"
+          assignment_status="$(curl --silent --show-error --max-time 60 -X POST "${auth[@]}" \
             -H "Content-Type: application/json" \
             "$api/betaGroups/$group_id/relationships/builds" \
-            --data "{\"data\":[{\"type\":\"builds\",\"id\":\"$build_id\"}]}" >/dev/null
+            --data "{\"data\":[{\"type\":\"builds\",\"id\":\"$build_id\"}]}" \
+            --output "$assignment_response" --write-out '%{http_code}')"
+          if [[ "$assignment_status" -lt 200 || "$assignment_status" -ge 300 ]]; then
+            echo "App Store Connect assignment returned HTTP $assignment_status" >&2
+            jq -c '.' "$assignment_response" >&2 || cat "$assignment_response" >&2
+            exit 1
+          fi
           echo "Assigned build $BUILD_NUMBER to $BETA_GROUP_NAME."
