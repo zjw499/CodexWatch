@@ -94,13 +94,8 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             let destination = directory.appendingPathComponent(file.fileURL.lastPathComponent)
             try? FileManager.default.removeItem(at: destination)
             try FileManager.default.copyItem(at: file.fileURL, to: destination)
-            setStatus("Watch recording received")
-            Task { @MainActor in
-                let transcribed = await PhoneTranscriptionService.shared.transcribeAndSubmit(fileURL: destination)
-                if !transcribed {
-                    PhoneUploadService.shared.enqueue(fileURL: destination)
-                }
-            }
+            setStatus("Watch recording received; uploading to PC")
+            enqueue(fileURL: destination)
         } catch {
             setStatus("Could not receive watch recording: \(error.localizedDescription)")
         }
@@ -369,7 +364,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     }
 }
 
-private enum CodexWatchPhoneConfiguration {
+enum CodexWatchPhoneConfiguration {
     static let isConfigured: Bool = {
         audioUploadURL != nil &&
         !(audioUploadUsername ?? "").isEmpty &&
