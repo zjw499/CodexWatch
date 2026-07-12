@@ -6,6 +6,12 @@
     <string>Codex Watch</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CODEX_WATCH_AUDIO_UPLOAD_PASSWORD</key>
+    <string>$(CODEX_WATCH_AUDIO_UPLOAD_PASSWORD)</string>
+    <key>CODEX_WATCH_AUDIO_UPLOAD_URL</key>
+    <string>$(CODEX_WATCH_AUDIO_UPLOAD_URL)</string>
+    <key>CODEX_WATCH_AUDIO_UPLOAD_USERNAME</key>
+    <string>$(CODEX_WATCH_AUDIO_UPLOAD_USERNAME)</string>
     <key>CODEX_WATCH_RELAY_BASE_URL</key>
     <string>$(CODEX_WATCH_RELAY_BASE_URL)</string>
     <key>CODEX_WATCH_RELAY_TOKEN</key>
