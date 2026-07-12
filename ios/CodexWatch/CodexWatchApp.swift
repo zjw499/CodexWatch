@@ -7,15 +7,17 @@ struct CodexWatchApp: App {
     @StateObject private var recorder = PhoneRecorderService.shared
     @StateObject private var uploader = PhoneUploadService.shared
     @StateObject private var transcriber = PhoneTranscriptionService.shared
+    @StateObject private var memoService = PhoneMemoService.shared
 
     var body: some Scene {
         WindowGroup {
             NavigationStack {
-                PhoneRecorderView()
+                PhoneMemosView()
             }
             .environmentObject(recorder)
             .environmentObject(uploader)
             .environmentObject(transcriber)
+            .environmentObject(memoService)
             .preferredColorScheme(.dark)
         }
     }
