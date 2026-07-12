@@ -363,6 +363,10 @@ jobs:
               --data-urlencode "limit=25")"
             echo "Latest visible builds:"
             echo "$all_builds" | jq -r '.data[] | [.id, .attributes.buildNumber, .attributes.version, .attributes.processingState, .attributes.uploadedDate] | @tsv'
+            echo "Target build attributes:"
+            echo "$all_builds" | jq -c --arg build "$BUILD_NUMBER" '
+              .data[] | select((.attributes.version | tostring) == $build) | .attributes
+            '
             exit 0
           fi
           processing_state=""
