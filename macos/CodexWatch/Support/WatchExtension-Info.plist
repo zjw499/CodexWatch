@@ -8,12 +8,6 @@
     <string>$(CODEX_WATCH_RELAY_BASE_URL)</string>
     <key>CODEX_WATCH_RELAY_TOKEN</key>
     <string>$(CODEX_WATCH_RELAY_TOKEN)</string>
-    <key>CODEX_WATCH_AUDIO_UPLOAD_PASSWORD</key>
-    <string>$(CODEX_WATCH_AUDIO_UPLOAD_PASSWORD)</string>
-    <key>CODEX_WATCH_AUDIO_UPLOAD_URL</key>
-    <string>$(CODEX_WATCH_AUDIO_UPLOAD_URL)</string>
-    <key>CODEX_WATCH_AUDIO_UPLOAD_USERNAME</key>
-    <string>$(CODEX_WATCH_AUDIO_UPLOAD_USERNAME)</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Codex Watch uses the microphone to record audio for your private local transcription workflow.</string>
     <key>NSExtension</key>
@@ -31,7 +25,5 @@
         <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>
-    <key>WKWatchOnly</key>
-    <true/>
 </dict>
 </plist>
