@@ -163,7 +163,7 @@ struct PhoneRecorderView: View {
             PipelineRow(
                 number: "02",
                 title: "Transcribe",
-                detail: transcriber.isTranscribing ? "Whisper is working on iPhone" : compactStatus(transcriber.statusMessage, fallback: "Local Whisper transcription"),
+                detail: transcriber.isTranscribing ? "Local fallback is working" : "PC Whisper transcription",
                 tint: transcriber.isTranscribing ? coral : .white.opacity(0.62)
             )
             PipelineRow(
@@ -189,7 +189,7 @@ struct PhoneRecorderView: View {
             .buttonStyle(.bordered)
             .tint(.white.opacity(0.72))
 
-            Text("The watch can record independently. Your iPhone handles local transcription, then the PC sends the email.")
+            Text("The watch can record independently. Your iPhone relays the audio, then the PC transcribes and sends the email.")
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.42))
                 .multilineTextAlignment(.center)
