@@ -9,6 +9,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
 
     private var activated = false
     private var pendingFiles: [URL] = []
+    private let sentFilesKey = "CodexWatch.SentWatchRecordings"
 
     private override init() {
         super.init()
@@ -16,8 +17,10 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             statusMessage = "iPhone transfer unavailable"
             return
         }
-        WCSession.default.delegate = self
-        WCSession.default.activate()
+        DispatchQueue.main.async {
+            WCSession.default.delegate = self
+            WCSession.default.activate()
+        }
     }
 
     func enqueue(fileURL: URL) {
@@ -28,7 +31,19 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
 
     private func flushPendingFiles() {
         guard activated else { return }
-        for fileURL in pendingFiles {
+        let recordedFiles = (try? FileManager.default.contentsOfDirectory(
+            at: recordingsDirectory(),
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        let sentFiles = UserDefaults.standard.stringArray(forKey: sentFilesKey) ?? []
+        let candidates = (pendingFiles + recordedFiles)
+            .filter { !sentFiles.contains($0.lastPathComponent) }
+            .reduce(into: [String: URL]()) { result, url in
+                result[url.lastPathComponent] = url
+            }
+
+        for fileURL in candidates.values {
             WCSession.default.transferFile(
                 fileURL,
                 metadata: [
@@ -56,8 +71,19 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             if let error {
                 self.statusMessage = "iPhone transfer failed: \(error.localizedDescription)"
             } else {
+                var sentFiles = UserDefaults.standard.stringArray(forKey: self.sentFilesKey) ?? []
+                let filename = fileTransfer.file.fileURL.lastPathComponent
+                if !sentFiles.contains(filename) {
+                    sentFiles.append(filename)
+                    UserDefaults.standard.set(sentFiles, forKey: self.sentFilesKey)
+                }
                 self.statusMessage = "Delivered to iPhone"
             }
         }
+    }
+
+    private func recordingsDirectory() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Recordings", isDirectory: true)
     }
 }
