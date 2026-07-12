@@ -371,7 +371,7 @@ jobs:
               --data-urlencode "sort=-uploadedDate" \
               --data-urlencode "limit=50")"
             build_row="$(jq -r --arg build "$BUILD_NUMBER" '
-              .data[] | select(.attributes.buildNumber == $build) |
+              .data[] | select((.attributes.buildNumber | tostring) == $build) |
               [.id, .attributes.version, .attributes.processingState] | @tsv
             ' <<< "$build_json" | head -n 1)"
             if [[ -n "$build_row" ]]; then
