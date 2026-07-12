@@ -28,26 +28,24 @@ struct RecorderView: View {
                         pendingRecording(url: recordingURL)
                     }
 
-                    NavigationLink {
-                        if store.selectedDesktop == nil {
-                            DesktopPickerView()
-                        } else {
-                            HomeView()
+                    HStack(spacing: 8) {
+                        Image(systemName: "desktopcomputer")
+                            .foregroundStyle(aqua)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("PC processing")
+                                .font(.caption.weight(.semibold))
+                            Text("iPhone relays the audio automatically")
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.5))
                         }
-                    } label: {
-                        HStack {
-                            Image(systemName: "desktopcomputer")
-                            Text("Codex desktop")
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption2.weight(.bold))
-                        }
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.76))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(.white.opacity(0.07), in: Capsule())
+                        Spacer()
+                        Image(systemName: "checkmark.shield.fill")
+                            .foregroundStyle(aqua.opacity(0.8))
                     }
+                    .foregroundStyle(.white.opacity(0.76))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
