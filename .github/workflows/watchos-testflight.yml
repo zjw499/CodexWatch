@@ -228,7 +228,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP_PATH="$RUNNER_TEMP/CodexWatchDerivedData/Build/Intermediates.noindex/ArchiveIntermediates/CodexWatch/InstallationBuildProductsLocation/Applications/Codex Watch.app"
+          APP_PATH="$(find "$RUNNER_TEMP/CodexWatchDerivedData" -type d -path '*/Release-iphoneos/Codex Watch.app' -print -quit)"
+          test -n "$APP_PATH"
           CA_PATH="$(find "$APP_PATH" -type f -name 'watch-audio-ca.crt' -print -quit)"
           test -n "$CA_PATH"
           echo "iPhone upload CA found at app-relative path: ${CA_PATH#"$APP_PATH/"}"
