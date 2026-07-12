@@ -45,8 +45,12 @@ final class PhoneTranscriptionService: ObservableObject {
             }
 
             statusMessage = "Transcribing on iPhone"
-            guard let result = try await whisperKit?.transcribe(audioPath: fileURL.path),
-                  !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let results = try await whisperKit?.transcribe(audioPath: fileURL.path) ?? []
+            let transcript = results
+                .map(\.text)
+                .joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !transcript.isEmpty else {
                 throw NSError(
                     domain: "CodexWatch",
                     code: 2,
@@ -55,7 +59,7 @@ final class PhoneTranscriptionService: ObservableObject {
             }
 
             PhoneUploadService.shared.enqueueTranscript(
-                text: result.text,
+                text: transcript,
                 filename: fileURL.lastPathComponent,
                 sourceURL: fileURL
             )
