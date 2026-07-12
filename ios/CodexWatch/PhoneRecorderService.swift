@@ -68,9 +68,14 @@ final class PhoneRecorderService: NSObject, ObservableObject {
         self.recorder = nil
         isRecording = false
         elapsedTime = recorder.currentTime
-        statusMessage = "Queued for PC"
+        statusMessage = "Transcribing on iPhone"
         try? AVAudioSession.sharedInstance().setActive(false)
-        PhoneUploadService.shared.enqueue(fileURL: recorder.url)
+        Task { @MainActor in
+            let transcribed = await PhoneTranscriptionService.shared.transcribeAndSubmit(fileURL: recorder.url)
+            if !transcribed {
+                PhoneUploadService.shared.enqueue(fileURL: recorder.url)
+            }
+        }
     }
 
     private func requestMicrophonePermission() async -> Bool {
