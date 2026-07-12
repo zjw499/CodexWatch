@@ -228,8 +228,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP_PATH="$(find "$RUNNER_TEMP/CodexWatchDerivedData" -type d -path '*/Release-iphoneos/Codex Watch.app' -print -quit)"
-          test -n "$APP_PATH"
+          APP_PATH="$RUNNER_TEMP/CodexWatch.xcarchive/Products/Applications/Codex Watch.app"
+          test -d "$APP_PATH"
           CA_PATH="$(find "$APP_PATH" -type f -name 'watch-audio-ca.crt' -print -quit)"
           test -n "$CA_PATH"
           echo "iPhone upload CA found at app-relative path: ${CA_PATH#"$APP_PATH/"}"
@@ -237,7 +237,10 @@ jobs:
             CODEX_WATCH_AUDIO_UPLOAD_URL \
             CODEX_WATCH_AUDIO_UPLOAD_USERNAME \
             CODEX_WATCH_AUDIO_UPLOAD_PASSWORD; do
-            /usr/libexec/PlistBuddy -c "Print :$key" "$APP_PATH/Info.plist" >/dev/null
+            if ! /usr/libexec/PlistBuddy -c "Print :$key" "$APP_PATH/Info.plist" >/dev/null; then
+              echo "Missing required iPhone configuration key: $key"
+              exit 1
+            fi
           done
           echo "iPhone upload certificate and configuration keys are present"
 
