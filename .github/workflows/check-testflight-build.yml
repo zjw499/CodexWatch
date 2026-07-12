@@ -1,0 +1,115 @@
+name: Check TestFlight build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: Build number to check and add to internal testing
+        required: true
+        default: "49"
+
+permissions:
+  contents: read
+
+jobs:
+  check-build:
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      APP_ID: "6789821399"
+      BUILD_NUMBER: ${{ inputs.build_number }}
+      BETA_GROUP_NAME: Personal Internal Testing
+      APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+      APPSTORE_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+      APPSTORE_PRIVATE_KEY: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+
+    steps:
+      - name: Check processing and internal-test access
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for name in APPSTORE_ISSUER_ID APPSTORE_KEY_ID APPSTORE_PRIVATE_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required secret: $name" >&2
+              exit 1
+            fi
+          done
+
+          export ASC_JWT="$(ruby <<'RUBY'
+          require "base64"
+          require "digest"
+          require "json"
+          require "openssl"
+
+          def encode(value)
+            Base64.urlsafe_encode64(value, padding: false)
+          end
+
+          header = encode({ alg: "ES256", kid: ENV.fetch("APPSTORE_KEY_ID"), typ: "JWT" }.to_json)
+          now = Time.now.to_i
+          payload = encode({ iss: ENV.fetch("APPSTORE_ISSUER_ID"), iat: now, exp: now + 900, aud: "appstoreconnect-v1" }.to_json)
+          unsigned = "#{header}.#{payload}"
+          key = OpenSSL::PKey::EC.new(ENV.fetch("APPSTORE_PRIVATE_KEY"))
+          der = key.dsa_sign_asn1(Digest::SHA256.digest(unsigned))
+          values = OpenSSL::ASN1.decode(der).value
+          r = [values[0].value.to_i.to_s(16).rjust(64, "0")].pack("H*")
+          s = [values[1].value.to_i.to_s(16).rjust(64, "0")].pack("H*")
+          puts "#{unsigned}.#{encode(r + s)}"
+          RUBY
+          )"
+
+          api="https://api.appstoreconnect.apple.com/v1"
+          auth=(-H "Authorization: Bearer $ASC_JWT")
+
+          for attempt in $(seq 1 20); do
+            build_json="$(curl -fsSL "${auth[@]}" -G "$api/builds" \
+              --data-urlencode "filter[app]=$APP_ID" \
+              --data-urlencode "sort=-uploadedDate" \
+              --data-urlencode "limit=50")"
+            build_row="$(jq -r --arg build "$BUILD_NUMBER" '
+              .data[] | select(.attributes.buildNumber == $build) |
+              [.id, .attributes.version, .attributes.processingState] | @tsv
+            ' <<< "$build_json" | head -n 1)"
+
+            if [[ -n "$build_row" ]]; then
+              IFS=$'\t' read -r build_id version processing_state <<< "$build_row"
+              echo "Build $BUILD_NUMBER version $version processing state: $processing_state"
+              if [[ "$processing_state" == "VALID" ]]; then
+                break
+              fi
+              if [[ "$processing_state" == "FAILED" || "$processing_state" == "INVALID" ]]; then
+                exit 1
+              fi
+            else
+              echo "Build $BUILD_NUMBER is not visible in App Store Connect yet."
+            fi
+
+            if [[ "$attempt" -lt 20 ]]; then
+              sleep 30
+            fi
+          done
+
+          if [[ "${processing_state:-}" != "VALID" ]]; then
+            echo "Build $BUILD_NUMBER did not reach VALID processing state." >&2
+            exit 1
+          fi
+
+          groups_json="$(curl -fsSL "${auth[@]}" -G "$api/betaGroups" \
+            --data-urlencode "filter[app]=$APP_ID" \
+            --data-urlencode "filter[name]=$BETA_GROUP_NAME")"
+          group_id="$(jq -r '.data[0].id // empty' <<< "$groups_json")"
+          if [[ -z "$group_id" ]]; then
+            echo "Internal testing group '$BETA_GROUP_NAME' was not found." >&2
+            exit 1
+          fi
+
+          relationships="$(curl -fsSL "${auth[@]}" "$api/builds/$build_id/relationships/betaGroups")"
+          if jq -e --arg group "$group_id" '.data[] | select(.id == $group)' <<< "$relationships" >/dev/null; then
+            echo "Build $BUILD_NUMBER is already assigned to $BETA_GROUP_NAME."
+          else
+            curl -fsSL -X POST "${auth[@]}" -H "Content-Type: application/json" \
+              "$api/betaGroups/$group_id/relationships/builds" \
+              --data "{\"data\":[{\"type\":\"builds\",\"id\":\"$build_id\"}]}" >/dev/null
+            echo "Assigned build $BUILD_NUMBER to $BETA_GROUP_NAME."
+          fi
