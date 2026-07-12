@@ -22,19 +22,17 @@ struct StopRecordingIntent: AppIntent {
 
 struct CodexWatchShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
-        [
-            AppShortcut(
-                intent: StartRecordingIntent(),
-                phrases: ["Start a recording with \(.applicationName)"],
-                shortTitle: "Start Recording",
-                systemImageName: "record.circle"
-            ),
-            AppShortcut(
-                intent: StopRecordingIntent(),
-                phrases: ["Stop recording with \(.applicationName)"],
-                shortTitle: "Stop Recording",
-                systemImageName: "stop.circle"
-            ),
-        ]
+        AppShortcut(
+            intent: StartRecordingIntent(),
+            phrases: ["Start a recording with \(.applicationName)"],
+            shortTitle: "Start Recording",
+            systemImageName: "record.circle"
+        )
+        AppShortcut(
+            intent: StopRecordingIntent(),
+            phrases: ["Stop recording with \(.applicationName)"],
+            shortTitle: "Stop Recording",
+            systemImageName: "stop.circle"
+        )
     }
 }
