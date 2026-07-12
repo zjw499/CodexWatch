@@ -5,6 +5,7 @@ import UIKit
 struct CodexWatchApp: App {
     @UIApplicationDelegateAdaptor(CodexWatchAppDelegate.self) private var appDelegate
     @StateObject private var recorder = PhoneRecorderService.shared
+    @StateObject private var uploader = PhoneUploadService.shared
 
     var body: some Scene {
         WindowGroup {
@@ -12,6 +13,7 @@ struct CodexWatchApp: App {
                 PhoneRecorderView()
             }
             .environmentObject(recorder)
+            .environmentObject(uploader)
             .preferredColorScheme(.dark)
         }
     }
