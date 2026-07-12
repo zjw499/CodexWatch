@@ -46,27 +46,23 @@ struct RecorderView: View {
                         .lineLimit(2)
 
                     Button {
-                        Task { await recorder.uploadLastRecording() }
+                        recorder.queueLastRecording()
                     } label: {
-                        Label("Send to PC", systemImage: "arrow.up.circle.fill")
+                        Label("Retry to iPhone", systemImage: "iphone.and.arrow.forward")
                             .frame(maxWidth: .infinity)
                     }
-                    .disabled(recorder.isUploading || !recorder.hasUploadConfiguration)
                     .buttonStyle(.borderedProminent)
                     .tint(.blue)
 
                     Button("Delete Recording", role: .destructive) {
                         recorder.deleteLastRecording()
                     }
-                    .disabled(recorder.isUploading)
                 }
 
-                if !recorder.hasUploadConfiguration {
-                    Text("This build has no PC upload endpoint configured.")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                        .multilineTextAlignment(.center)
-                }
+                Text("The iPhone sends queued recordings to your PC in the background.")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.55))
+                    .multilineTextAlignment(.center)
 
                 NavigationLink("Codex Desktop") {
                     if store.selectedDesktop == nil {
