@@ -31,6 +31,7 @@ targets:
         CODEX_WATCH_AUDIO_UPLOAD_PASSWORD: $(CODEX_WATCH_AUDIO_UPLOAD_PASSWORD)
         CODEX_WATCH_AUDIO_UPLOAD_URL: $(CODEX_WATCH_AUDIO_UPLOAD_URL)
         CODEX_WATCH_AUDIO_UPLOAD_USERNAME: $(CODEX_WATCH_AUDIO_UPLOAD_USERNAME)
+        ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: Codex Watch uses the microphone to record audio for your private local transcription workflow.
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
@@ -80,6 +81,7 @@ targets:
         CFBundleDisplayName: Codex Watch
         CFBundleIconFiles:
           - AppIcon
+        ITSAppUsesNonExemptEncryption: false
         WKCompanionAppBundleIdentifier: com.zachwyatt.codexwatch
         WKWatchKitApp: true
     settings:
@@ -113,6 +115,7 @@ targets:
         CFBundleDisplayName: Codex Watch Extension
         CODEX_WATCH_RELAY_BASE_URL: $(CODEX_WATCH_RELAY_BASE_URL)
         CODEX_WATCH_RELAY_TOKEN: $(CODEX_WATCH_RELAY_TOKEN)
+        ITSAppUsesNonExemptEncryption: false
         NSExtension:
           NSExtensionAttributes:
             WKAppBundleIdentifier: com.zachwyatt.codexwatch.watchkitapp
