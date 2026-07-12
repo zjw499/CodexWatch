@@ -8,6 +8,8 @@
     <array>
         <string>AppIcon</string>
     </array>
+    <key>WKCompanionAppBundleIdentifier</key>
+    <string>com.zachwyatt.codexwatch</string>
     <key>WKWatchKitApp</key>
     <true/>
 </dict>
