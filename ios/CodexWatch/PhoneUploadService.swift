@@ -134,8 +134,13 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             let sourceURL = self.sourceURLs.removeValue(forKey: task.taskIdentifier)
             let statusCode = (task.response as? HTTPURLResponse)?.statusCode
 
+            if let bodyURL {
+                try? FileManager.default.removeItem(at: bodyURL)
+            }
+
             if let error {
-                self.setStatus("PC upload failed: \(error.localizedDescription)")
+                let nsError = error as NSError
+                self.setStatus("PC upload failed (\(nsError.code)): \(error.localizedDescription)")
                 return
             }
 
@@ -144,9 +149,6 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 return
             }
 
-            if let bodyURL {
-                try? FileManager.default.removeItem(at: bodyURL)
-            }
             if let sourceURL {
                 try? FileManager.default.removeItem(at: sourceURL)
             }
@@ -169,27 +171,67 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust,
-              let rootCertificateData = Bundle.main.url(forResource: "watch-audio-ca", withExtension: "crt")
-                .flatMap({ try? Data(contentsOf: $0) }),
-              let rootCertificate = SecCertificateCreateWithData(nil, rootCertificateData as CFData) else {
+        handleAuthenticationChallenge(challenge, completionHandler: completionHandler)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        handleAuthenticationChallenge(challenge, completionHandler: completionHandler)
+    }
+
+    private func handleAuthenticationChallenge(
+        _ challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        guard let trust = challenge.protectionSpace.serverTrust,
+              let rootCertificate = bundledRootCertificate() else {
             completionHandler(.cancelAuthenticationChallenge, nil)
             return
         }
 
         let host = challenge.protectionSpace.host as CFString
-        SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, host))
-        SecTrustSetAnchorCertificates(trust, [rootCertificate] as CFArray)
-        SecTrustSetAnchorCertificatesOnly(trust, true)
+        guard SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, host)) == errSecSuccess,
+              SecTrustSetAnchorCertificates(trust, [rootCertificate] as CFArray) == errSecSuccess,
+              SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
 
-        var result = SecTrustResultType.invalid
-        let status = SecTrustEvaluate(trust, &result)
-        if status == errSecSuccess && (result == .unspecified || result == .proceed) {
+        if SecTrustEvaluateWithError(trust, nil) {
             completionHandler(.useCredential, URLCredential(trust: trust))
         } else {
             completionHandler(.cancelAuthenticationChallenge, nil)
         }
+    }
+
+    private func bundledRootCertificate() -> SecCertificate? {
+        guard let certificateURL = Bundle.main.url(forResource: "watch-audio-ca", withExtension: "crt"),
+              let certificateData = try? Data(contentsOf: certificateURL) else {
+            return nil
+        }
+
+        if let certificate = SecCertificateCreateWithData(nil, certificateData as CFData) {
+            return certificate
+        }
+
+        guard let pem = String(data: certificateData, encoding: .utf8) else { return nil }
+        let base64 = pem
+            .components(separatedBy: .newlines)
+            .filter { !$0.hasPrefix("-----") }
+            .joined()
+        guard let decoded = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) else {
+            return nil
+        }
+        return SecCertificateCreateWithData(nil, decoded as CFData)
     }
 
     private func setStatus(_ message: String) {
