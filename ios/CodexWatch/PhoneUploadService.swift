@@ -3,6 +3,15 @@ import Foundation
 import Security
 import WatchConnectivity
 
+private struct ImmediateWatchChunkEnvelope: Codable {
+    let version: Int
+    let filename: String
+    let recordingID: String
+    let chunkIndex: Int
+    let isFinal: Bool
+    let audioData: Data
+}
+
 final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, URLSessionDelegate, URLSessionTaskDelegate {
     static let shared = PhoneUploadService()
     static let backgroundIdentifier = "com.zachwyatt.codexwatch.audio-upload"
@@ -33,6 +42,9 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     private var sourceURLs: [Int: URL] = [:]
     private var chunkContexts: [Int: ChunkContext] = [:]
     private var completionHandlers: [String: () -> Void] = [:]
+    private var immediateChunkKeys: Set<String> = []
+    private var receivedChunkKeys: Set<String> = []
+    private var uploadedChunkKeys: Set<String> = []
     private var started = false
 
     override init() {
@@ -128,6 +140,9 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             } else {
                 destination = directory.appendingPathComponent(file.fileURL.lastPathComponent)
             }
+            if let context, immediateChunkKeys.contains(chunkKey(context)) {
+                return
+            }
             try? FileManager.default.removeItem(at: destination)
             try FileManager.default.copyItem(at: file.fileURL, to: destination)
             if let context {
@@ -194,6 +209,8 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             }
             if let chunkContext {
                 DispatchQueue.main.async {
+                    let key = self.chunkKey(chunkContext)
+                    guard self.uploadedChunkKeys.insert(key).inserted else { return }
                     self.uploadedChunkCount += 1
                     if chunkContext.isFinal {
                         self.finalUploadSequence += 1
@@ -376,6 +393,45 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         }
     }
 
+    func session(
+        _ session: WCSession,
+        didReceiveMessageData messageData: Data,
+        replyHandler: @escaping (Data) -> Void
+    ) {
+        do {
+            let envelope = try PropertyListDecoder().decode(
+                ImmediateWatchChunkEnvelope.self,
+                from: messageData
+            )
+            guard envelope.version == 1, !envelope.audioData.isEmpty else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            let context = ChunkContext(
+                recordingID: envelope.recordingID,
+                chunkIndex: envelope.chunkIndex,
+                isFinal: envelope.isFinal
+            )
+            let destination = try streamChunksDirectory().appendingPathComponent(
+                String(
+                    format: "stream_%@_%06d_%d.m4a",
+                    context.recordingID,
+                    context.chunkIndex,
+                    context.isFinal ? 1 : 0
+                )
+            )
+            try envelope.audioData.write(to: destination, options: [.atomic])
+            immediateChunkKeys.insert(chunkKey(context))
+            markChunkReceived(context)
+            stateQueue.async {
+                self.queueChunkUpload(fileURL: destination, context: context)
+            }
+            replyHandler(Data("accepted".utf8))
+        } catch {
+            setStatus("Immediate watch chunk failed; waiting for fallback: \(error.localizedDescription)")
+            replyHandler(Data("rejected".utf8))
+        }
+    }
+
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
         guard userInfo["command"] as? String == "retry-recording",
               let recordingID = userInfo["recording_id"] as? String else { return }
@@ -491,7 +547,10 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 self.receivedChunkCount = 0
                 self.uploadedChunkCount = 0
                 self.finalChunkReceived = false
+                self.receivedChunkKeys.removeAll()
+                self.uploadedChunkKeys.removeAll()
             }
+            guard self.receivedChunkKeys.insert(self.chunkKey(context)).inserted else { return }
             self.receivedChunkCount += 1
             self.finalChunkReceived = self.finalChunkReceived || context.isFinal
             self.statusMessage = context.isFinal
@@ -499,6 +558,10 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 : "Received watch chunk \(context.chunkIndex + 1)"
             UserDefaults.standard.set(self.statusMessage, forKey: Self.statusDefaultsKey)
         }
+    }
+
+    private func chunkKey(_ context: ChunkContext) -> String {
+        "\(context.recordingID):\(context.chunkIndex)"
     }
 
     private func taskDescription(bodyURL: URL, sourceURL: URL?, chunk: ChunkContext?) -> String {

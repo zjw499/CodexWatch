@@ -2,6 +2,15 @@ import Combine
 import Foundation
 import WatchConnectivity
 
+private struct ImmediateWatchChunkEnvelope: Codable {
+    let version: Int
+    let filename: String
+    let recordingID: String
+    let chunkIndex: Int
+    let isFinal: Bool
+    let audioData: Data
+}
+
 final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSessionDelegate {
     static let shared = WatchConnectivityTransferService()
 
@@ -20,6 +29,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
 
     private var pendingFiles: [PendingFile] = []
     private var inFlightFiles: Set<String> = []
+    private var countedDeliveredFiles: Set<String> = []
     private var counterRecordingID: String?
     private var finalChunkQueued = false
     private let sentFilesKey = "CodexWatch.SentWatchRecordings"
@@ -54,6 +64,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         UserDefaults.standard.set(recordingID, forKey: lastRecordingIDKey)
         queuedChunkCount = 0
         deliveredChunkCount = 0
+        countedDeliveredFiles.removeAll()
         finalChunkQueued = false
         statusMessage = "Recording \(recordingID.prefix(6))"
     }
@@ -75,6 +86,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         UserDefaults.standard.set(sentFiles, forKey: sentFilesKey)
         counterRecordingID = recordingID
         deliveredChunkCount = 0
+        countedDeliveredFiles.subtract(matchingNames)
         queuedChunkCount = matchingFiles.count
         finalChunkQueued = matchingFiles.contains { $0.lastPathComponent.contains("_1.m4a") }
         pendingFiles.append(contentsOf: matchingFiles.map {
@@ -91,22 +103,61 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func enqueueChunk(fileURL: URL, recordingID: String, chunkIndex: Int, isFinal: Bool) {
+        let metadata: [String: Any] = [
+            "kind": "audio-recording-chunk",
+            "filename": fileURL.lastPathComponent,
+            "recording_id": recordingID,
+            "chunk_index": chunkIndex,
+            "is_final": isFinal,
+        ]
         pendingFiles.append(PendingFile(
             url: fileURL,
-            metadata: [
-                "kind": "audio-recording-chunk",
-                "filename": fileURL.lastPathComponent,
-                "recording_id": recordingID,
-                "chunk_index": chunkIndex,
-                "is_final": isFinal,
-            ]
+            metadata: metadata
         ))
         queuedChunkCount += 1
         finalChunkQueued = finalChunkQueued || isFinal
         statusMessage = isFinal
             ? "Final chunk queued"
             : "Sending chunk \(chunkIndex + 1)"
+        sendImmediateChunk(fileURL: fileURL, metadata: metadata)
         flushPendingFiles()
+    }
+
+    private func sendImmediateChunk(fileURL: URL, metadata: [String: Any]) {
+        let session = WCSession.default
+        guard activated, session.isReachable,
+              let recordingID = metadata["recording_id"] as? String,
+              let chunkIndex = metadata["chunk_index"] as? Int,
+              let isFinal = metadata["is_final"] as? Bool else { return }
+
+        do {
+            let envelope = ImmediateWatchChunkEnvelope(
+                version: 1,
+                filename: fileURL.lastPathComponent,
+                recordingID: recordingID,
+                chunkIndex: chunkIndex,
+                isFinal: isFinal,
+                audioData: try Data(contentsOf: fileURL, options: .mappedIfSafe)
+            )
+            let encoder = PropertyListEncoder()
+            encoder.outputFormat = .binary
+            let payload = try encoder.encode(envelope)
+            session.sendMessageData(payload) { [weak self] response in
+                guard String(data: response, encoding: .utf8) == "accepted" else { return }
+                DispatchQueue.main.async {
+                    self?.markChunkDelivered(
+                        filename: fileURL.lastPathComponent,
+                        recordingID: recordingID,
+                        isFinal: isFinal,
+                        immediate: true
+                    )
+                }
+            } errorHandler: { _ in
+                // The queued file transfer remains the durable fallback.
+            }
+        } catch {
+            // The queued file transfer remains the durable fallback.
+        }
     }
 
     private func flushPendingFiles() {
@@ -151,10 +202,9 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         DispatchQueue.main.async {
             let metadata = fileTransfer.file.metadata
             let transferRecordingID = metadata?["recording_id"] as? String
-            let belongsToCurrentRecording = transferRecordingID == self.counterRecordingID
             if let error {
                 self.inFlightFiles.remove(fileTransfer.file.fileURL.lastPathComponent)
-                if belongsToCurrentRecording || transferRecordingID == nil {
+                if transferRecordingID == self.counterRecordingID || transferRecordingID == nil {
                     self.statusMessage = "iPhone transfer failed: \(error.localizedDescription)"
                 }
             } else {
@@ -167,19 +217,37 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                 self.inFlightFiles.remove(filename)
                 let isChunk = metadata?["kind"] as? String == "audio-recording-chunk"
                 if isChunk {
-                    if belongsToCurrentRecording {
-                        self.deliveredChunkCount += 1
-                        if self.finalChunkQueued && self.deliveredChunkCount >= self.queuedChunkCount {
-                            self.statusMessage = "Recording delivered to iPhone"
-                        } else {
-                            self.statusMessage = "Delivered \(self.deliveredChunkCount) of \(self.queuedChunkCount) chunks"
-                        }
-                    }
+                    self.markChunkDelivered(
+                        filename: filename,
+                        recordingID: transferRecordingID,
+                        isFinal: metadata?["is_final"] as? Bool ?? false,
+                        immediate: false
+                    )
                 } else {
                     self.statusMessage = "Delivered to iPhone"
                 }
                 self.flushPendingFiles()
             }
+        }
+    }
+
+    private func markChunkDelivered(
+        filename: String,
+        recordingID: String?,
+        isFinal: Bool,
+        immediate: Bool
+    ) {
+        guard recordingID == counterRecordingID,
+              countedDeliveredFiles.insert(filename).inserted else { return }
+        deliveredChunkCount += 1
+        if finalChunkQueued && deliveredChunkCount >= queuedChunkCount {
+            statusMessage = "Recording delivered to iPhone"
+        } else if immediate {
+            statusMessage = isFinal
+                ? "Final chunk reached iPhone"
+                : "Streaming \(deliveredChunkCount) of \(queuedChunkCount) chunks"
+        } else {
+            statusMessage = "Delivered \(deliveredChunkCount) of \(queuedChunkCount) chunks"
         }
     }
 
