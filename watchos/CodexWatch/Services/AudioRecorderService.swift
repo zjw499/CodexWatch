@@ -14,7 +14,7 @@ final class AudioRecorderService: NSObject, ObservableObject {
     private var recorder: AVAudioRecorder?
     private var recordingID: String?
     private var chunkIndex = 0
-    private var recordingStartedAt: Date?
+    private var completedDuration: TimeInterval = 0
     private var rotationTask: Task<Void, Never>?
     private let chunkInterval: TimeInterval = 30
     static let shared = AudioRecorderService()
@@ -43,7 +43,7 @@ final class AudioRecorderService: NSObject, ObservableObject {
             self.recordingID = recordingID
             chunkIndex = 0
             chunkCount = 0
-            recordingStartedAt = Date()
+            completedDuration = 0
             self.recorder = try startChunk(recordingID: recordingID, index: chunkIndex)
             transferService.beginRecording(recordingID: recordingID)
             lastRecordingURL = nil
@@ -59,20 +59,24 @@ final class AudioRecorderService: NSObject, ObservableObject {
     }
 
     func updateElapsedTime() {
-        guard isRecording, let recordingStartedAt else { return }
-        elapsedTime = Date().timeIntervalSince(recordingStartedAt)
+        guard isRecording, let recorder else { return }
+        guard recorder.isRecording else {
+            stopRecording()
+            errorMessage = "Recording was interrupted. The audio captured so far was saved and queued."
+            return
+        }
+        elapsedTime = completedDuration + recorder.currentTime
     }
 
     func stopRecording() {
         guard let recorder, let recordingID else { return }
         rotationTask?.cancel()
         rotationTask = nil
+        let finalDuration = recorder.currentTime
         recorder.stop()
         self.recorder = nil
         isRecording = false
-        if let recordingStartedAt {
-            elapsedTime = Date().timeIntervalSince(recordingStartedAt)
-        }
+        elapsedTime = completedDuration + finalDuration
         chunkCount = chunkIndex + 1
         let preferredFinalURL = completedChunkURL(
             recordingID: recordingID,
@@ -94,7 +98,6 @@ final class AudioRecorderService: NSObject, ObservableObject {
             isFinal: true
         )
         self.recordingID = nil
-        recordingStartedAt = nil
         lastRecordingURL = nil
         statusMessage = "Final chunk queued"
         try? AVAudioSession.sharedInstance().setActive(false)
@@ -171,7 +174,9 @@ final class AudioRecorderService: NSObject, ObservableObject {
 
     private func rotateChunk() {
         guard isRecording, let recorder, let recordingID else { return }
+        let completedChunkDuration = recorder.currentTime
         recorder.stop()
+        completedDuration += completedChunkDuration
         let completedIndex = chunkIndex
         let preferredCompletedURL = completedChunkURL(
             recordingID: recordingID,
@@ -220,7 +225,6 @@ final class AudioRecorderService: NSObject, ObservableObject {
                 isFinal: true
             )
             self.recordingID = nil
-            recordingStartedAt = nil
             errorMessage = "Recording stopped after chunk \(completedIndex + 1): \(error.localizedDescription)"
             statusMessage = "Final chunk queued"
             try? AVAudioSession.sharedInstance().setActive(false)
