@@ -151,8 +151,14 @@ struct RecorderView: View {
                     .lineLimit(1)
             }
             Spacer()
-            Image(systemName: transfer.statusMessage == "Delivered to iPhone" ? "checkmark.circle.fill" : "arrow.up.circle")
-                .foregroundStyle(transfer.statusMessage == "Delivered to iPhone" ? aqua : .white.opacity(0.4))
+            if transfer.queuedChunkCount > 0 {
+                Text("\(transfer.deliveredChunkCount)/\(transfer.queuedChunkCount)")
+                    .font(.caption2.monospacedDigit().weight(.bold))
+                    .foregroundStyle(aqua)
+            } else {
+                Image(systemName: transfer.statusMessage.contains("delivered") ? "checkmark.circle.fill" : "arrow.up.circle")
+                    .foregroundStyle(transfer.statusMessage.contains("delivered") ? aqua : .white.opacity(0.4))
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)

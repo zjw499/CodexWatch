@@ -32,6 +32,12 @@ struct PhoneMemosView: View {
                     if recorder.isRecording {
                         activeRecordingCard
                     }
+                    if uploader.activeRecordingID != nil || ![
+                        "Ready",
+                        "Ready for watch recordings",
+                    ].contains(uploader.statusMessage) {
+                        watchRelayCard
+                    }
                     if sections.isEmpty {
                         emptyState
                     } else {
@@ -74,6 +80,14 @@ struct PhoneMemosView: View {
         }
         .onReceive(timer) { _ in
             recorder.updateElapsedTime()
+        }
+        .onChange(of: uploader.finalUploadSequence) { _, _ in
+            Task {
+                for _ in 0..<12 {
+                    try? await Task.sleep(for: .seconds(5))
+                    await memoService.refresh()
+                }
+            }
         }
     }
 
@@ -133,6 +147,37 @@ struct PhoneMemosView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(coral.opacity(0.38), lineWidth: 1)
+        }
+    }
+
+    private var watchRelayCard: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "applewatch.radiowaves.left.and.right")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(accent)
+                .frame(width: 38, height: 38)
+                .background(accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(uploader.finalChunkReceived ? "Finishing watch recording" : "Receiving from Apple Watch")
+                    .font(.subheadline.weight(.bold))
+                Text(uploader.statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.55))
+                    .lineLimit(2)
+            }
+            Spacer()
+            if uploader.receivedChunkCount > 0 {
+                Text("\(uploader.uploadedChunkCount)/\(uploader.receivedChunkCount)")
+                    .font(.caption.monospacedDigit().weight(.bold))
+                    .foregroundStyle(accent)
+            }
+        }
+        .padding(15)
+        .foregroundStyle(.white)
+        .background(accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(accent.opacity(0.28), lineWidth: 1)
         }
     }
 

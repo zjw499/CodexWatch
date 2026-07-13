@@ -9,11 +9,29 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     private static let statusDefaultsKey = "CodexWatch.PhoneUploadStatus"
 
     @Published private(set) var statusMessage: String
+    @Published private(set) var activeRecordingID: String?
+    @Published private(set) var receivedChunkCount = 0
+    @Published private(set) var uploadedChunkCount = 0
+    @Published private(set) var finalChunkReceived = false
+    @Published private(set) var finalUploadSequence = 0
+
+    private struct ChunkContext {
+        let recordingID: String
+        let chunkIndex: Int
+        let isFinal: Bool
+    }
+
+    private struct PersistedTaskContext {
+        let bodyURL: URL
+        let sourceURL: URL?
+        let chunk: ChunkContext?
+    }
 
     private let stateQueue = DispatchQueue(label: "com.zachwyatt.codexwatch.upload-state")
     private var uploadSession: URLSession?
     private var bodyURLs: [Int: URL] = [:]
     private var sourceURLs: [Int: URL] = [:]
+    private var chunkContexts: [Int: ChunkContext] = [:]
     private var completionHandlers: [String: () -> Void] = [:]
     private var started = false
 
@@ -72,6 +90,16 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             for fileURL in files where ["m4a", "mp3", "wav", "caf"].contains(fileURL.pathExtension.lowercased()) {
                 self.queueUpload(fileURL: fileURL)
             }
+            guard let chunkDirectory = try? self.streamChunksDirectory() else { return }
+            let chunks = (try? FileManager.default.contentsOfDirectory(
+                at: chunkDirectory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            for fileURL in chunks {
+                guard let context = self.chunkContext(from: fileURL) else { continue }
+                self.queueChunkUpload(fileURL: fileURL, context: context)
+            }
         }
     }
 
@@ -90,12 +118,34 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
 
     func session(_ session: WCSession, didReceive file: WCSessionFile) {
         do {
-            let directory = try recordingsDirectory()
-            let destination = directory.appendingPathComponent(file.fileURL.lastPathComponent)
+            let metadata = file.metadata ?? [:]
+            let isChunk = metadata["kind"] as? String == "audio-recording-chunk"
+            let context = chunkContext(from: metadata)
+            let directory = isChunk ? try streamChunksDirectory() : try recordingsDirectory()
+            let destination: URL
+            if let context {
+                destination = directory.appendingPathComponent(
+                    String(
+                        format: "stream_%@_%06d_%d.m4a",
+                        context.recordingID,
+                        context.chunkIndex,
+                        context.isFinal ? 1 : 0
+                    )
+                )
+            } else {
+                destination = directory.appendingPathComponent(file.fileURL.lastPathComponent)
+            }
             try? FileManager.default.removeItem(at: destination)
             try FileManager.default.copyItem(at: file.fileURL, to: destination)
-            setStatus("Watch recording received; uploading to PC")
-            enqueue(fileURL: destination)
+            if let context {
+                markChunkReceived(context)
+                stateQueue.async {
+                    self.queueChunkUpload(fileURL: destination, context: context)
+                }
+            } else {
+                setStatus("Watch recording received; uploading to PC")
+                enqueue(fileURL: destination)
+            }
         } catch {
             setStatus("Could not receive watch recording: \(error.localizedDescription)")
         }
@@ -125,8 +175,10 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         didCompleteWithError error: Error?
     ) {
         stateQueue.async {
-            let bodyURL = self.bodyURLs.removeValue(forKey: task.taskIdentifier)
-            let sourceURL = self.sourceURLs.removeValue(forKey: task.taskIdentifier)
+            let persisted = self.persistedTaskContext(from: task.taskDescription)
+            let bodyURL = self.bodyURLs.removeValue(forKey: task.taskIdentifier) ?? persisted?.bodyURL
+            let sourceURL = self.sourceURLs.removeValue(forKey: task.taskIdentifier) ?? persisted?.sourceURL
+            let chunkContext = self.chunkContexts.removeValue(forKey: task.taskIdentifier) ?? persisted?.chunk
             let statusCode = (task.response as? HTTPURLResponse)?.statusCode
 
             if let bodyURL {
@@ -147,7 +199,21 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             if let sourceURL {
                 try? FileManager.default.removeItem(at: sourceURL)
             }
-            self.setStatus("Uploaded to PC")
+            if let chunkContext {
+                DispatchQueue.main.async {
+                    self.uploadedChunkCount += 1
+                    if chunkContext.isFinal {
+                        self.finalUploadSequence += 1
+                        self.statusMessage = "Final chunk uploaded; PC is finishing the transcript"
+                        UserDefaults.standard.set(self.statusMessage, forKey: Self.statusDefaultsKey)
+                    } else {
+                        self.statusMessage = "Uploaded \(self.uploadedChunkCount) of \(self.receivedChunkCount) chunks"
+                        UserDefaults.standard.set(self.statusMessage, forKey: Self.statusDefaultsKey)
+                    }
+                }
+            } else {
+                self.setStatus("Uploaded to PC")
+            }
         }
     }
 
@@ -262,12 +328,58 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 return
             }
             let task = uploadSession.uploadTask(with: request, fromFile: bodyURL)
+            task.taskDescription = taskDescription(bodyURL: bodyURL, sourceURL: fileURL, chunk: nil)
             bodyURLs[task.taskIdentifier] = bodyURL
             sourceURLs[task.taskIdentifier] = fileURL
             task.resume()
             setStatus("Uploading to PC")
         } catch {
             setStatus("Upload queued for retry: \(error.localizedDescription)")
+        }
+    }
+
+    private func queueChunkUpload(fileURL: URL, context: ChunkContext) {
+        do {
+            let fields = [
+                "recording_id": context.recordingID,
+                "chunk_index": String(context.chunkIndex),
+                "is_final": context.isFinal ? "true" : "false",
+                "source": "apple-watch-stream",
+            ]
+            let bodyURL = try makeMultipartBody(fileURL: fileURL, fields: fields)
+            guard let uploadURL = CodexWatchPhoneConfiguration.chunkUploadURL,
+                  let username = CodexWatchPhoneConfiguration.audioUploadUsername,
+                  let password = CodexWatchPhoneConfiguration.audioUploadPassword,
+                  !username.isEmpty,
+                  !password.isEmpty else {
+                try? FileManager.default.removeItem(at: bodyURL)
+                setStatus("PC chunk upload is not configured")
+                return
+            }
+            var request = URLRequest(url: uploadURL)
+            request.httpMethod = "POST"
+            let boundary = bodyURL.deletingPathExtension().lastPathComponent
+            request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+            request.setValue("Basic \(basicAuth(username: username, password: password))", forHTTPHeaderField: "Authorization")
+            request.setValue("Codex Watch", forHTTPHeaderField: "User-Agent")
+            guard let uploadSession else {
+                try? FileManager.default.removeItem(at: bodyURL)
+                setStatus("Upload service unavailable")
+                return
+            }
+            let task = uploadSession.uploadTask(with: request, fromFile: bodyURL)
+            task.taskDescription = taskDescription(bodyURL: bodyURL, sourceURL: fileURL, chunk: context)
+            bodyURLs[task.taskIdentifier] = bodyURL
+            sourceURLs[task.taskIdentifier] = fileURL
+            chunkContexts[task.taskIdentifier] = context
+            task.resume()
+            setStatus(
+                context.isFinal
+                    ? "Uploading final chunk to PC"
+                    : "Uploading chunk \(context.chunkIndex + 1) to PC"
+            )
+        } catch {
+            setStatus("Chunk upload queued for retry: \(error.localizedDescription)")
         }
     }
 
@@ -296,6 +408,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 return
             }
             let task = uploadSession.uploadTask(with: request, fromFile: bodyURL)
+            task.taskDescription = taskDescription(bodyURL: bodyURL, sourceURL: sourceURL, chunk: nil)
             bodyURLs[task.taskIdentifier] = bodyURL
             if let sourceURL {
                 sourceURLs[task.taskIdentifier] = sourceURL
@@ -314,7 +427,14 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         return directory
     }
 
-    private func makeMultipartBody(fileURL: URL) throws -> URL {
+    private func streamChunksDirectory() throws -> URL {
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("StreamChunks", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private func makeMultipartBody(fileURL: URL, fields: [String: String] = [:]) throws -> URL {
         let boundary = "CodexWatch-\(UUID().uuidString)"
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Uploads", isDirectory: true)
@@ -326,7 +446,12 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         }
 
         let fileName = fileURL.lastPathComponent.replacingOccurrences(of: "\"", with: "")
-        let header = "--\(boundary)\r\n" +
+        let fieldData = fields.sorted(by: { $0.key < $1.key }).map { key, value in
+            "--\(boundary)\r\n" +
+                "Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n" +
+                "\(value)\r\n"
+        }.joined()
+        let header = fieldData + "--\(boundary)\r\n" +
             "Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n" +
             "Content-Type: audio/mp4\r\n\r\n"
         let footer = "\r\n--\(boundary)--\r\n"
@@ -362,6 +487,77 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     private func basicAuth(username: String, password: String) -> String {
         Data("\(username):\(password)".utf8).base64EncodedString()
     }
+
+    private func chunkContext(from metadata: [String: Any]) -> ChunkContext? {
+        guard let recordingID = metadata["recording_id"] as? String,
+              let chunkIndex = metadata["chunk_index"] as? Int else { return nil }
+        let isFinal = metadata["is_final"] as? Bool ?? false
+        return ChunkContext(recordingID: recordingID, chunkIndex: chunkIndex, isFinal: isFinal)
+    }
+
+    private func chunkContext(from fileURL: URL) -> ChunkContext? {
+        let parts = fileURL.deletingPathExtension().lastPathComponent.split(separator: "_")
+        guard parts.count == 4,
+              parts[0] == "stream",
+              let chunkIndex = Int(parts[2]),
+              let finalFlag = Int(parts[3]) else { return nil }
+        return ChunkContext(
+            recordingID: String(parts[1]),
+            chunkIndex: chunkIndex,
+            isFinal: finalFlag == 1
+        )
+    }
+
+    private func markChunkReceived(_ context: ChunkContext) {
+        DispatchQueue.main.async {
+            if self.activeRecordingID != context.recordingID {
+                self.activeRecordingID = context.recordingID
+                self.receivedChunkCount = 0
+                self.uploadedChunkCount = 0
+                self.finalChunkReceived = false
+            }
+            self.receivedChunkCount += 1
+            self.finalChunkReceived = self.finalChunkReceived || context.isFinal
+            self.statusMessage = context.isFinal
+                ? "Final watch chunk received"
+                : "Received watch chunk \(context.chunkIndex + 1)"
+            UserDefaults.standard.set(self.statusMessage, forKey: Self.statusDefaultsKey)
+        }
+    }
+
+    private func taskDescription(bodyURL: URL, sourceURL: URL?, chunk: ChunkContext?) -> String {
+        [
+            chunk == nil ? "file" : "chunk",
+            bodyURL.path,
+            sourceURL?.path ?? "",
+            chunk?.recordingID ?? "",
+            chunk.map { String($0.chunkIndex) } ?? "",
+            chunk?.isFinal == true ? "1" : "0",
+        ].joined(separator: "\t")
+    }
+
+    private func persistedTaskContext(from description: String?) -> PersistedTaskContext? {
+        guard let description else { return nil }
+        let fields = description
+            .split(separator: "\t", omittingEmptySubsequences: false)
+            .map(String.init)
+        guard fields.count == 6 else { return nil }
+        let chunk: ChunkContext?
+        if fields[0] == "chunk", let index = Int(fields[4]) {
+            chunk = ChunkContext(
+                recordingID: fields[3],
+                chunkIndex: index,
+                isFinal: fields[5] == "1"
+            )
+        } else {
+            chunk = nil
+        }
+        return PersistedTaskContext(
+            bodyURL: URL(fileURLWithPath: fields[1]),
+            sourceURL: fields[2].isEmpty ? nil : URL(fileURLWithPath: fields[2]),
+            chunk: chunk
+        )
+    }
 }
 
 enum CodexWatchPhoneConfiguration {
@@ -384,6 +580,13 @@ enum CodexWatchPhoneConfiguration {
         guard let audioUploadURL else { return nil }
         var components = URLComponents(url: audioUploadURL, resolvingAgainstBaseURL: false)
         components?.path = "/transcript"
+        return components?.url
+    }()
+
+    static let chunkUploadURL: URL? = {
+        guard let audioUploadURL else { return nil }
+        var components = URLComponents(url: audioUploadURL, resolvingAgainstBaseURL: false)
+        components?.path = "/upload/chunk"
         return components?.url
     }()
 

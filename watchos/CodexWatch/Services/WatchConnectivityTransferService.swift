@@ -6,9 +6,18 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     static let shared = WatchConnectivityTransferService()
 
     @Published private(set) var statusMessage = "Ready"
+    @Published private(set) var queuedChunkCount = 0
+    @Published private(set) var deliveredChunkCount = 0
 
     private var activated = false
-    private var pendingFiles: [URL] = []
+    private struct PendingFile {
+        let url: URL
+        let metadata: [String: Any]
+    }
+
+    private var pendingFiles: [PendingFile] = []
+    private var inFlightFiles: Set<String> = []
+    private var finalChunkQueued = false
     private let sentFilesKey = "CodexWatch.SentWatchRecordings"
 
     private override init() {
@@ -24,8 +33,37 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func enqueue(fileURL: URL) {
-        pendingFiles.append(fileURL)
+        pendingFiles.append(PendingFile(
+            url: fileURL,
+            metadata: ["kind": "audio-recording", "filename": fileURL.lastPathComponent]
+        ))
         statusMessage = "Queued for iPhone"
+        flushPendingFiles()
+    }
+
+    func beginRecording(recordingID: String) {
+        queuedChunkCount = 0
+        deliveredChunkCount = 0
+        finalChunkQueued = false
+        statusMessage = "Recording \(recordingID.prefix(6))"
+    }
+
+    func enqueueChunk(fileURL: URL, recordingID: String, chunkIndex: Int, isFinal: Bool) {
+        pendingFiles.append(PendingFile(
+            url: fileURL,
+            metadata: [
+                "kind": "audio-recording-chunk",
+                "filename": fileURL.lastPathComponent,
+                "recording_id": recordingID,
+                "chunk_index": chunkIndex,
+                "is_final": isFinal,
+            ]
+        ))
+        queuedChunkCount += 1
+        finalChunkQueued = finalChunkQueued || isFinal
+        statusMessage = isFinal
+            ? "Final chunk queued"
+            : "Sending chunk \(chunkIndex + 1)"
         flushPendingFiles()
     }
 
@@ -35,22 +73,23 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             at: recordingsDirectory(),
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
-        )) ?? []
+        ))?.filter { !$0.lastPathComponent.hasPrefix("active_") } ?? []
         let sentFiles = UserDefaults.standard.stringArray(forKey: sentFilesKey) ?? []
-        let candidates = (pendingFiles + recordedFiles)
-            .filter { !sentFiles.contains($0.lastPathComponent) }
-            .reduce(into: [String: URL]()) { result, url in
-                result[url.lastPathComponent] = url
+        let recovered = recordedFiles.map { fileURL in
+            PendingFile(url: fileURL, metadata: metadata(for: fileURL))
+        }
+        let candidates = (pendingFiles + recovered)
+            .filter {
+                !sentFiles.contains($0.url.lastPathComponent) &&
+                !inFlightFiles.contains($0.url.lastPathComponent)
+            }
+            .reduce(into: [String: PendingFile]()) { result, pending in
+                result[pending.url.lastPathComponent] = pending
             }
 
-        for fileURL in candidates.values {
-            WCSession.default.transferFile(
-                fileURL,
-                metadata: [
-                    "kind": "audio-recording",
-                    "filename": fileURL.lastPathComponent,
-                ]
-            )
+        for pending in candidates.values {
+            inFlightFiles.insert(pending.url.lastPathComponent)
+            WCSession.default.transferFile(pending.url, metadata: pending.metadata)
         }
         pendingFiles.removeAll()
     }
@@ -69,6 +108,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
         DispatchQueue.main.async {
             if let error {
+                self.inFlightFiles.remove(fileTransfer.file.fileURL.lastPathComponent)
                 self.statusMessage = "iPhone transfer failed: \(error.localizedDescription)"
             } else {
                 var sentFiles = UserDefaults.standard.stringArray(forKey: self.sentFilesKey) ?? []
@@ -77,9 +117,39 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                     sentFiles.append(filename)
                     UserDefaults.standard.set(sentFiles, forKey: self.sentFilesKey)
                 }
-                self.statusMessage = "Delivered to iPhone"
+                self.inFlightFiles.remove(filename)
+                let isChunk = fileTransfer.file.metadata?["kind"] as? String == "audio-recording-chunk"
+                if isChunk {
+                    self.deliveredChunkCount += 1
+                    try? FileManager.default.removeItem(at: fileTransfer.file.fileURL)
+                    if self.finalChunkQueued && self.deliveredChunkCount >= self.queuedChunkCount {
+                        self.statusMessage = "Recording delivered to iPhone"
+                    } else {
+                        self.statusMessage = "Delivered \(self.deliveredChunkCount) of \(self.queuedChunkCount) chunks"
+                    }
+                } else {
+                    self.statusMessage = "Delivered to iPhone"
+                }
+                self.flushPendingFiles()
             }
         }
+    }
+
+    private func metadata(for fileURL: URL) -> [String: Any] {
+        let parts = fileURL.deletingPathExtension().lastPathComponent.split(separator: "_")
+        if parts.count == 4,
+           parts[0] == "stream",
+           let index = Int(parts[2]),
+           let finalFlag = Int(parts[3]) {
+            return [
+                "kind": "audio-recording-chunk",
+                "filename": fileURL.lastPathComponent,
+                "recording_id": String(parts[1]),
+                "chunk_index": index,
+                "is_final": finalFlag == 1,
+            ]
+        }
+        return ["kind": "audio-recording", "filename": fileURL.lastPathComponent]
     }
 
     private func recordingsDirectory() -> URL {
