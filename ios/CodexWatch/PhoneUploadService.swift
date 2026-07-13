@@ -383,6 +383,41 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         }
     }
 
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
+        guard userInfo["command"] as? String == "retry-recording",
+              let recordingID = userInfo["recording_id"] as? String else { return }
+        retryRecording(recordingID: recordingID)
+    }
+
+    private func retryRecording(recordingID: String) {
+        setStatus("Retrying watch recording")
+        stateQueue.async {
+            let directory = try? self.streamChunksDirectory()
+            let files = directory.flatMap {
+                try? FileManager.default.contentsOfDirectory(
+                    at: $0,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                )
+            } ?? []
+            for fileURL in files {
+                guard let context = self.chunkContext(from: fileURL),
+                      context.recordingID == recordingID else { continue }
+                self.queueChunkUpload(fileURL: fileURL, context: context)
+            }
+        }
+        Task { [weak self] in
+            do {
+                try await PhoneMemoAPIClient.shared.retryRecording(id: recordingID)
+                self?.setStatus("PC processing retry queued")
+            } catch PhoneMemoAPIError.httpStatus(409) {
+                self?.setStatus("Re-uploading saved chunks to PC")
+            } catch {
+                self?.setStatus("Retry request saved on iPhone: \(error.localizedDescription)")
+            }
+        }
+    }
+
     private func queueTranscript(text: String, filename: String, sourceURL: URL?) {
         do {
             let bodyURL = try makeTranscriptBody(text: text, filename: filename)

@@ -142,6 +142,14 @@ final class PhoneMemoAPIClient: NSObject, URLSessionDelegate {
         _ = try await request("/memos/\(id)/retry", method: "POST", responseType: EmptyResponse.self)
     }
 
+    func retryRecording(id: String) async throws {
+        _ = try await request(
+            "/recordings/\(id)/retry",
+            method: "POST",
+            responseType: EmptyResponse.self
+        )
+    }
+
     func deleteMemo(id: String) async throws {
         _ = try await request("/memos/\(id)", method: "DELETE", responseType: EmptyResponse.self)
     }

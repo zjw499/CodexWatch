@@ -8,6 +8,9 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     @Published private(set) var statusMessage = "Ready"
     @Published private(set) var queuedChunkCount = 0
     @Published private(set) var deliveredChunkCount = 0
+    @Published private(set) var lastRecordingID = UserDefaults.standard.string(
+        forKey: "CodexWatch.LastStreamRecordingID"
+    )
 
     private var activated = false
     private struct PendingFile {
@@ -19,6 +22,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     private var inFlightFiles: Set<String> = []
     private var finalChunkQueued = false
     private let sentFilesKey = "CodexWatch.SentWatchRecordings"
+    private let lastRecordingIDKey = "CodexWatch.LastStreamRecordingID"
 
     private override init() {
         super.init()
@@ -42,10 +46,44 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func beginRecording(recordingID: String) {
+        removeOlderStreamChunks(keeping: recordingID)
+        lastRecordingID = recordingID
+        UserDefaults.standard.set(recordingID, forKey: lastRecordingIDKey)
         queuedChunkCount = 0
         deliveredChunkCount = 0
         finalChunkQueued = false
         statusMessage = "Recording \(recordingID.prefix(6))"
+    }
+
+    func retryLastRecording() {
+        guard let recordingID = lastRecordingID else {
+            statusMessage = "No recording available to retry"
+            return
+        }
+        let matchingFiles = ((try? FileManager.default.contentsOfDirectory(
+            at: recordingsDirectory(),
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []).filter { $0.lastPathComponent.contains("_\(recordingID)_") }
+
+        var sentFiles = UserDefaults.standard.stringArray(forKey: sentFilesKey) ?? []
+        let matchingNames = Set(matchingFiles.map(\.lastPathComponent))
+        sentFiles.removeAll { matchingNames.contains($0) }
+        UserDefaults.standard.set(sentFiles, forKey: sentFilesKey)
+        deliveredChunkCount = 0
+        queuedChunkCount = matchingFiles.count
+        finalChunkQueued = matchingFiles.contains { $0.lastPathComponent.contains("_1.m4a") }
+        pendingFiles.append(contentsOf: matchingFiles.map {
+            PendingFile(url: $0, metadata: metadata(for: $0))
+        })
+        WCSession.default.transferUserInfo([
+            "command": "retry-recording",
+            "recording_id": recordingID,
+        ])
+        statusMessage = matchingFiles.isEmpty
+            ? "Asked iPhone and PC to retry"
+            : "Retrying \(matchingFiles.count) chunks"
+        flushPendingFiles()
     }
 
     func enqueueChunk(fileURL: URL, recordingID: String, chunkIndex: Int, isFinal: Bool) {
@@ -121,7 +159,6 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                 let isChunk = fileTransfer.file.metadata?["kind"] as? String == "audio-recording-chunk"
                 if isChunk {
                     self.deliveredChunkCount += 1
-                    try? FileManager.default.removeItem(at: fileTransfer.file.fileURL)
                     if self.finalChunkQueued && self.deliveredChunkCount >= self.queuedChunkCount {
                         self.statusMessage = "Recording delivered to iPhone"
                     } else {
@@ -155,5 +192,24 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     private func recordingsDirectory() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Recordings", isDirectory: true)
+    }
+
+    private func removeOlderStreamChunks(keeping recordingID: String) {
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: recordingsDirectory(),
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        var removedNames = Set<String>()
+        for fileURL in files where fileURL.lastPathComponent.hasPrefix("stream_") &&
+            !fileURL.lastPathComponent.contains("_\(recordingID)_") {
+            removedNames.insert(fileURL.lastPathComponent)
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+        if !removedNames.isEmpty {
+            var sentFiles = UserDefaults.standard.stringArray(forKey: sentFilesKey) ?? []
+            sentFiles.removeAll { removedNames.contains($0) }
+            UserDefaults.standard.set(sentFiles, forKey: sentFilesKey)
+        }
     }
 }

@@ -24,6 +24,18 @@ struct RecorderView: View {
                     recordControl
                     transferStatus
 
+                    if !recorder.isRecording, transfer.lastRecordingID != nil {
+                        Button {
+                            transfer.retryLastRecording()
+                        } label: {
+                            Label("Retry last send", systemImage: "arrow.clockwise")
+                                .font(.caption.weight(.bold))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(aqua)
+                    }
+
                     if let recordingURL = recorder.lastRecordingURL, !recorder.isRecording {
                         pendingRecording(url: recordingURL)
                     }
