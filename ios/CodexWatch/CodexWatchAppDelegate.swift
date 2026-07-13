@@ -6,9 +6,6 @@ final class CodexWatchAppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         PhoneUploadService.shared.start()
-        Task { @MainActor in
-            PhoneTranscriptionService.shared.retryPendingRecordings()
-        }
         return true
     }
 

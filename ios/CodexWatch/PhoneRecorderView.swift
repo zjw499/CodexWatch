@@ -3,7 +3,6 @@ import SwiftUI
 struct PhoneRecorderView: View {
     @EnvironmentObject private var recorder: PhoneRecorderService
     @EnvironmentObject private var uploader: PhoneUploadService
-    @EnvironmentObject private var transcriber: PhoneTranscriptionService
     private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
     private let background = Color(red: 0.035, green: 0.045, blue: 0.065)
@@ -11,7 +10,7 @@ struct PhoneRecorderView: View {
     private let aqua = Color(red: 0.25, green: 0.82, blue: 0.78)
 
     private var isWorking: Bool {
-        recorder.isRecording || transcriber.isTranscribing || uploader.statusMessage == "Uploading to PC"
+        recorder.isRecording || uploader.statusMessage == "Uploading to PC"
     }
 
     var body: some View {
@@ -163,8 +162,8 @@ struct PhoneRecorderView: View {
             PipelineRow(
                 number: "02",
                 title: "Transcribe",
-                detail: transcriber.isTranscribing ? "Local fallback is working" : "PC Whisper transcription",
-                tint: transcriber.isTranscribing ? coral : .white.opacity(0.62)
+                detail: "Groq Whisper transcription",
+                tint: .white.opacity(0.62)
             )
             PipelineRow(
                 number: "03",
@@ -180,7 +179,7 @@ struct PhoneRecorderView: View {
     private var footerActions: some View {
         VStack(spacing: 12) {
             Button {
-                transcriber.retryPendingRecordings()
+                uploader.retryPendingRecordings()
             } label: {
                 Label("Retry pending recordings", systemImage: "arrow.clockwise")
                     .font(.subheadline.weight(.semibold))
@@ -189,7 +188,7 @@ struct PhoneRecorderView: View {
             .buttonStyle(.bordered)
             .tint(.white.opacity(0.72))
 
-            Text("The watch can record independently. Your iPhone relays the audio, then the PC transcribes and sends the email.")
+            Text("The watch can record independently. Your iPhone relays the audio, then the PC sends it to Groq for transcription and emails the result.")
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.42))
                 .multilineTextAlignment(.center)

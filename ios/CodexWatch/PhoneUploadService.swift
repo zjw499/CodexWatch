@@ -103,13 +103,6 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         }
     }
 
-    func enqueueTranscript(text: String, filename: String, sourceURL: URL?) {
-        start()
-        stateQueue.async {
-            self.queueTranscript(text: text, filename: filename, sourceURL: sourceURL)
-        }
-    }
-
     func setBackgroundCompletionHandler(_ handler: @escaping () -> Void, for identifier: String) {
         stateQueue.async {
             self.completionHandlers[identifier] = handler
@@ -418,43 +411,6 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         }
     }
 
-    private func queueTranscript(text: String, filename: String, sourceURL: URL?) {
-        do {
-            let bodyURL = try makeTranscriptBody(text: text, filename: filename)
-            guard let uploadURL = CodexWatchPhoneConfiguration.transcriptURL,
-                  let username = CodexWatchPhoneConfiguration.audioUploadUsername,
-                  let password = CodexWatchPhoneConfiguration.audioUploadPassword,
-                  !username.isEmpty,
-                  !password.isEmpty else {
-                try? FileManager.default.removeItem(at: bodyURL)
-                setStatus("PC transcript upload is not configured")
-                return
-            }
-
-            var request = URLRequest(url: uploadURL)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("Basic \(basicAuth(username: username, password: password))", forHTTPHeaderField: "Authorization")
-            request.setValue("Codex Watch", forHTTPHeaderField: "User-Agent")
-
-            guard let uploadSession else {
-                try? FileManager.default.removeItem(at: bodyURL)
-                setStatus("Upload service unavailable")
-                return
-            }
-            let task = uploadSession.uploadTask(with: request, fromFile: bodyURL)
-            task.taskDescription = taskDescription(bodyURL: bodyURL, sourceURL: sourceURL, chunk: nil)
-            bodyURLs[task.taskIdentifier] = bodyURL
-            if let sourceURL {
-                sourceURLs[task.taskIdentifier] = sourceURL
-            }
-            task.resume()
-            setStatus("Transcript queued for email")
-        } catch {
-            setStatus("Transcript upload queued for retry: \(error.localizedDescription)")
-        }
-    }
-
     private func recordingsDirectory() throws -> URL {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Recordings", isDirectory: true)
@@ -501,21 +457,6 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             try output.write(contentsOf: chunk)
         }
         try output.write(contentsOf: Data(footer.utf8))
-        return bodyURL
-    }
-
-    private func makeTranscriptBody(text: String, filename: String) throws -> URL {
-        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Uploads", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let bodyURL = directory.appendingPathComponent("CodexWatch-Transcript-\(UUID().uuidString).json")
-        let payload: [String: String] = [
-            "filename": filename,
-            "source": "iphone-on-device",
-            "transcript": text,
-        ]
-        let data = try JSONSerialization.data(withJSONObject: payload)
-        try data.write(to: bodyURL, options: [.atomic])
         return bodyURL
     }
 
@@ -609,13 +550,6 @@ enum CodexWatchPhoneConfiguration {
             return nil
         }
         return URL(string: value)
-    }()
-
-    static let transcriptURL: URL? = {
-        guard let audioUploadURL else { return nil }
-        var components = URLComponents(url: audioUploadURL, resolvingAgainstBaseURL: false)
-        components?.path = "/transcript"
-        return components?.url
     }()
 
     static let chunkUploadURL: URL? = {

@@ -11,11 +11,6 @@ configs:
   Debug: debug
   Release: release
 
-packages:
-  argmax-oss-swift:
-    url: https://github.com/argmaxinc/argmax-oss-swift.git
-    from: 0.9.0
-
 targets:
   CodexWatch:
     type: application
@@ -62,8 +57,6 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
       - target: CodexWatch Watch App
-      - package: argmax-oss-swift
-        product: WhisperKit
     scheme:
       testTargets: []
       gatherCoverageData: false
