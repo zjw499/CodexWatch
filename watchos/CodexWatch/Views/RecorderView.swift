@@ -164,7 +164,7 @@ struct RecorderView: View {
             }
             Spacer()
             if transfer.queuedChunkCount > 0 {
-                Text("\(transfer.deliveredChunkCount)/\(transfer.queuedChunkCount)")
+                Text("\(min(transfer.deliveredChunkCount, transfer.queuedChunkCount))/\(transfer.queuedChunkCount)")
                     .font(.caption2.monospacedDigit().weight(.bold))
                     .foregroundStyle(aqua)
             } else {

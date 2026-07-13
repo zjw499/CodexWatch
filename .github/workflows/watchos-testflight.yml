@@ -193,6 +193,11 @@ jobs:
             /usr/libexec/PlistBuddy -c 'Print :WKAppBundleIdentifier' "$plist" 2>/dev/null || true
             /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$plist" 2>/dev/null || true
           done
+          background_mode="$(/usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes:0' macos/CodexWatch/Support/WatchExtension-Info.plist)"
+          if [[ "$background_mode" != "audio" ]]; then
+            echo "Watch extension must declare the audio background mode" >&2
+            exit 1
+          fi
 
       - name: Archive watchOS app
         shell: bash

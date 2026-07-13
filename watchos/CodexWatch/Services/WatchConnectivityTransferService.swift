@@ -20,6 +20,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
 
     private var pendingFiles: [PendingFile] = []
     private var inFlightFiles: Set<String> = []
+    private var counterRecordingID: String?
     private var finalChunkQueued = false
     private let sentFilesKey = "CodexWatch.SentWatchRecordings"
     private let lastRecordingIDKey = "CodexWatch.LastStreamRecordingID"
@@ -46,8 +47,10 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func beginRecording(recordingID: String) {
+        discardOlderStreamTransfers(keeping: recordingID)
         removeOlderStreamChunks(keeping: recordingID)
         lastRecordingID = recordingID
+        counterRecordingID = recordingID
         UserDefaults.standard.set(recordingID, forKey: lastRecordingIDKey)
         queuedChunkCount = 0
         deliveredChunkCount = 0
@@ -70,6 +73,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         let matchingNames = Set(matchingFiles.map(\.lastPathComponent))
         sentFiles.removeAll { matchingNames.contains($0) }
         UserDefaults.standard.set(sentFiles, forKey: sentFilesKey)
+        counterRecordingID = recordingID
         deliveredChunkCount = 0
         queuedChunkCount = matchingFiles.count
         finalChunkQueued = matchingFiles.contains { $0.lastPathComponent.contains("_1.m4a") }
@@ -145,9 +149,14 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
 
     func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
         DispatchQueue.main.async {
+            let metadata = fileTransfer.file.metadata
+            let transferRecordingID = metadata?["recording_id"] as? String
+            let belongsToCurrentRecording = transferRecordingID == self.counterRecordingID
             if let error {
                 self.inFlightFiles.remove(fileTransfer.file.fileURL.lastPathComponent)
-                self.statusMessage = "iPhone transfer failed: \(error.localizedDescription)"
+                if belongsToCurrentRecording || transferRecordingID == nil {
+                    self.statusMessage = "iPhone transfer failed: \(error.localizedDescription)"
+                }
             } else {
                 var sentFiles = UserDefaults.standard.stringArray(forKey: self.sentFilesKey) ?? []
                 let filename = fileTransfer.file.fileURL.lastPathComponent
@@ -156,13 +165,15 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                     UserDefaults.standard.set(sentFiles, forKey: self.sentFilesKey)
                 }
                 self.inFlightFiles.remove(filename)
-                let isChunk = fileTransfer.file.metadata?["kind"] as? String == "audio-recording-chunk"
+                let isChunk = metadata?["kind"] as? String == "audio-recording-chunk"
                 if isChunk {
-                    self.deliveredChunkCount += 1
-                    if self.finalChunkQueued && self.deliveredChunkCount >= self.queuedChunkCount {
-                        self.statusMessage = "Recording delivered to iPhone"
-                    } else {
-                        self.statusMessage = "Delivered \(self.deliveredChunkCount) of \(self.queuedChunkCount) chunks"
+                    if belongsToCurrentRecording {
+                        self.deliveredChunkCount += 1
+                        if self.finalChunkQueued && self.deliveredChunkCount >= self.queuedChunkCount {
+                            self.statusMessage = "Recording delivered to iPhone"
+                        } else {
+                            self.statusMessage = "Delivered \(self.deliveredChunkCount) of \(self.queuedChunkCount) chunks"
+                        }
                     }
                 } else {
                     self.statusMessage = "Delivered to iPhone"
@@ -210,6 +221,22 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             var sentFiles = UserDefaults.standard.stringArray(forKey: sentFilesKey) ?? []
             sentFiles.removeAll { removedNames.contains($0) }
             UserDefaults.standard.set(sentFiles, forKey: sentFilesKey)
+        }
+    }
+
+    private func discardOlderStreamTransfers(keeping recordingID: String) {
+        pendingFiles.removeAll { pending in
+            guard pending.metadata["kind"] as? String == "audio-recording-chunk" else {
+                return false
+            }
+            return pending.metadata["recording_id"] as? String != recordingID
+        }
+        for transfer in WCSession.default.outstandingFileTransfers {
+            let metadata = transfer.file.metadata
+            guard metadata?["kind"] as? String == "audio-recording-chunk",
+                  metadata?["recording_id"] as? String != recordingID else { continue }
+            inFlightFiles.remove(transfer.file.fileURL.lastPathComponent)
+            transfer.cancel()
         }
     }
 }

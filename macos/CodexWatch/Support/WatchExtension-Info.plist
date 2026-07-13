@@ -10,6 +10,10 @@
     <string>$(CODEX_WATCH_RELAY_TOKEN)</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Codex Watch uses the microphone to record audio for your private local transcription workflow.</string>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>audio</string>
+    </array>
     <key>NSExtension</key>
     <dict>
         <key>NSExtensionAttributes</key>
