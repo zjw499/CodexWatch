@@ -436,13 +436,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             }
             activeTaskIDsByKey[key] = task.taskIdentifier
             task.resume()
-            if let context = upload.chunk {
-                setStatus(
-                    context.isFinal
-                        ? "Uploading final chunk to PC"
-                        : "Uploading chunk \(context.chunkIndex + 1) to PC"
-                )
-            } else {
+            if upload.chunk == nil {
                 setStatus("Uploading to PC")
             }
         } catch {
