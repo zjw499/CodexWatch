@@ -34,18 +34,32 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         let bodyURL: URL
         let sourceURL: URL?
         let chunk: ChunkContext?
+        let attempt: Int
+    }
+
+    private struct PendingUpload {
+        let fileURL: URL
+        let chunk: ChunkContext?
+        let attempt: Int
     }
 
     private let stateQueue = DispatchQueue(label: "com.zachwyatt.codexwatch.upload-state")
+    private let maxConcurrentUploads = 2
+    private let retryDelays: [TimeInterval] = [5, 15, 45, 120, 300]
     private var uploadSession: URLSession?
     private var bodyURLs: [Int: URL] = [:]
     private var sourceURLs: [Int: URL] = [:]
     private var chunkContexts: [Int: ChunkContext] = [:]
+    private var activeTaskIDsByKey: [String: Int] = [:]
+    private var pendingUploadsByKey: [String: PendingUpload] = [:]
+    private var pendingUploadOrder: [String] = []
+    private var scheduledRetryAttempts: [String: Int] = [:]
     private var completionHandlers: [String: () -> Void] = [:]
     private var immediateChunkKeys: Set<String> = []
     private var receivedChunkKeys: Set<String> = []
     private var uploadedChunkKeys: Set<String> = []
     private var started = false
+    private var isRestoringBackgroundTasks = false
 
     override init() {
         statusMessage = UserDefaults.standard.string(forKey: Self.statusDefaultsKey) ?? "Ready"
@@ -68,11 +82,20 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             configuration.sessionSendsLaunchEvents = true
             configuration.isDiscretionary = false
             configuration.waitsForConnectivity = true
+            configuration.allowsCellularAccess = true
+            configuration.timeoutIntervalForRequest = 180
+            configuration.timeoutIntervalForResource = 900
             self.uploadSession = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+            self.isRestoringBackgroundTasks = true
             shouldStart = true
         }
 
         guard shouldStart else { return }
+        uploadSession?.getAllTasks { [weak self] tasks in
+            self?.stateQueue.async {
+                self?.restoreBackgroundTasks(tasks)
+            }
+        }
         guard WCSession.isSupported() else {
             setStatus("Watch transfer unavailable")
             return
@@ -93,25 +116,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     func retryPendingRecordings() {
         start()
         stateQueue.async {
-            guard let directory = try? self.recordingsDirectory() else { return }
-            let files = (try? FileManager.default.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            )) ?? []
-            for fileURL in files where ["m4a", "mp3", "wav", "caf"].contains(fileURL.pathExtension.lowercased()) {
-                self.queueUpload(fileURL: fileURL)
-            }
-            guard let chunkDirectory = try? self.streamChunksDirectory() else { return }
-            let chunks = (try? FileManager.default.contentsOfDirectory(
-                at: chunkDirectory,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            )) ?? []
-            for fileURL in chunks {
-                guard let context = self.chunkContext(from: fileURL) else { continue }
-                self.queueChunkUpload(fileURL: fileURL, context: context)
-            }
+            self.recoverSavedUploads(manual: true)
         }
     }
 
@@ -187,20 +192,44 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             let bodyURL = self.bodyURLs.removeValue(forKey: task.taskIdentifier) ?? persisted?.bodyURL
             let sourceURL = self.sourceURLs.removeValue(forKey: task.taskIdentifier) ?? persisted?.sourceURL
             let chunkContext = self.chunkContexts.removeValue(forKey: task.taskIdentifier) ?? persisted?.chunk
+            let attempt = persisted?.attempt ?? 0
             let statusCode = (task.response as? HTTPURLResponse)?.statusCode
+            let key = sourceURL.map { self.uploadKey(fileURL: $0, chunk: chunkContext) }
 
             if let bodyURL {
                 try? FileManager.default.removeItem(at: bodyURL)
             }
 
+            guard let key,
+                  self.activeTaskIDsByKey[key] == task.taskIdentifier else {
+                self.pumpUploads()
+                return
+            }
+            self.activeTaskIDsByKey.removeValue(forKey: key)
+
             if let error {
-                let nsError = error as NSError
-                self.setStatus("PC upload failed (\(nsError.code)): \(error.localizedDescription)")
+                if let sourceURL, self.isRetryable(error: error) {
+                    self.scheduleRetry(
+                        PendingUpload(fileURL: sourceURL, chunk: chunkContext, attempt: attempt + 1),
+                        key: key
+                    )
+                } else {
+                    self.setStatus("PC upload stopped; recording remains saved: \(error.localizedDescription)")
+                }
+                self.pumpUploads()
                 return
             }
 
             guard let statusCode, (200..<300).contains(statusCode) else {
-                self.setStatus("PC upload rejected the recording (HTTP \(statusCode ?? 0))")
+                if let sourceURL, self.isRetryable(statusCode: statusCode) {
+                    self.scheduleRetry(
+                        PendingUpload(fileURL: sourceURL, chunk: chunkContext, attempt: attempt + 1),
+                        key: key
+                    )
+                } else {
+                    self.setStatus("PC rejected the upload (HTTP \(statusCode ?? 0)); recording remains saved")
+                }
+                self.pumpUploads()
                 return
             }
 
@@ -224,6 +253,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             } else {
                 self.setStatus("Uploaded to PC")
             }
+            self.pumpUploads()
         }
     }
 
@@ -313,61 +343,76 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     }
 
     private func queueUpload(fileURL: URL) {
-        do {
-            let bodyURL = try makeMultipartBody(fileURL: fileURL)
-            guard let uploadURL = CodexWatchPhoneConfiguration.audioUploadURL,
-                  let username = CodexWatchPhoneConfiguration.audioUploadUsername,
-                  let password = CodexWatchPhoneConfiguration.audioUploadPassword,
-                  !username.isEmpty,
-                  !password.isEmpty else {
-                try? FileManager.default.removeItem(at: bodyURL)
-                setStatus("PC upload is not configured")
-                return
-            }
-
-            var request = URLRequest(url: uploadURL)
-            request.httpMethod = "POST"
-            let boundary = bodyURL.deletingPathExtension().lastPathComponent
-            request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-            request.setValue("Basic \(basicAuth(username: username, password: password))", forHTTPHeaderField: "Authorization")
-            request.setValue("Codex Watch", forHTTPHeaderField: "User-Agent")
-
-            guard let uploadSession else {
-                try? FileManager.default.removeItem(at: bodyURL)
-                setStatus("Upload service unavailable")
-                return
-            }
-            let task = uploadSession.uploadTask(with: request, fromFile: bodyURL)
-            task.taskDescription = taskDescription(bodyURL: bodyURL, sourceURL: fileURL, chunk: nil)
-            bodyURLs[task.taskIdentifier] = bodyURL
-            sourceURLs[task.taskIdentifier] = fileURL
-            task.resume()
-            setStatus("Uploading to PC")
-        } catch {
-            setStatus("Upload queued for retry: \(error.localizedDescription)")
-        }
+        enqueueUpload(fileURL: fileURL, chunk: nil)
     }
 
     private func queueChunkUpload(fileURL: URL, context: ChunkContext) {
+        enqueueUpload(fileURL: fileURL, chunk: context)
+    }
+
+    private func enqueueUpload(
+        fileURL: URL,
+        chunk: ChunkContext?,
+        attempt: Int = 0,
+        manual: Bool = false
+    ) {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        let key = uploadKey(fileURL: fileURL, chunk: chunk)
+        if manual {
+            scheduledRetryAttempts.removeValue(forKey: key)
+        } else if scheduledRetryAttempts[key] != nil {
+            return
+        }
+        guard activeTaskIDsByKey[key] == nil else { return }
+        if pendingUploadsByKey[key] != nil {
+            if manual {
+                pendingUploadsByKey[key] = PendingUpload(fileURL: fileURL, chunk: chunk, attempt: 0)
+            }
+            return
+        }
+        pendingUploadsByKey[key] = PendingUpload(fileURL: fileURL, chunk: chunk, attempt: attempt)
+        pendingUploadOrder.append(key)
+        pumpUploads()
+    }
+
+    private func pumpUploads() {
+        guard !isRestoringBackgroundTasks else { return }
+        while activeTaskIDsByKey.count < maxConcurrentUploads, !pendingUploadOrder.isEmpty {
+            let key = pendingUploadOrder.removeFirst()
+            guard let upload = pendingUploadsByKey.removeValue(forKey: key),
+                  FileManager.default.fileExists(atPath: upload.fileURL.path) else { continue }
+            startUpload(upload, key: key)
+        }
+    }
+
+    private func startUpload(_ upload: PendingUpload, key: String) {
         do {
-            let fields = [
-                "recording_id": context.recordingID,
-                "chunk_index": String(context.chunkIndex),
-                "is_final": context.isFinal ? "true" : "false",
-                "source": "apple-watch-stream",
-            ]
-            let bodyURL = try makeMultipartBody(fileURL: fileURL, fields: fields)
-            guard let uploadURL = CodexWatchPhoneConfiguration.chunkUploadURL,
+            let fields: [String: String]
+            let uploadURL: URL?
+            if let context = upload.chunk {
+                fields = [
+                    "recording_id": context.recordingID,
+                    "chunk_index": String(context.chunkIndex),
+                    "is_final": context.isFinal ? "true" : "false",
+                    "source": "apple-watch-stream",
+                ]
+                uploadURL = CodexWatchPhoneConfiguration.chunkUploadURL
+            } else {
+                fields = [:]
+                uploadURL = CodexWatchPhoneConfiguration.audioUploadURL
+            }
+            guard let uploadURL,
                   let username = CodexWatchPhoneConfiguration.audioUploadUsername,
                   let password = CodexWatchPhoneConfiguration.audioUploadPassword,
                   !username.isEmpty,
                   !password.isEmpty else {
-                try? FileManager.default.removeItem(at: bodyURL)
-                setStatus("PC chunk upload is not configured")
+                setStatus("PC upload is not configured; recording remains saved")
                 return
             }
+            let bodyURL = try makeMultipartBody(fileURL: upload.fileURL, fields: fields)
             var request = URLRequest(url: uploadURL)
             request.httpMethod = "POST"
+            request.timeoutInterval = 180
             let boundary = bodyURL.deletingPathExtension().lastPathComponent
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             request.setValue("Basic \(basicAuth(username: username, password: password))", forHTTPHeaderField: "Authorization")
@@ -378,19 +423,126 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 return
             }
             let task = uploadSession.uploadTask(with: request, fromFile: bodyURL)
-            task.taskDescription = taskDescription(bodyURL: bodyURL, sourceURL: fileURL, chunk: context)
-            bodyURLs[task.taskIdentifier] = bodyURL
-            sourceURLs[task.taskIdentifier] = fileURL
-            chunkContexts[task.taskIdentifier] = context
-            task.resume()
-            setStatus(
-                context.isFinal
-                    ? "Uploading final chunk to PC"
-                    : "Uploading chunk \(context.chunkIndex + 1) to PC"
+            task.taskDescription = taskDescription(
+                bodyURL: bodyURL,
+                sourceURL: upload.fileURL,
+                chunk: upload.chunk,
+                attempt: upload.attempt
             )
+            bodyURLs[task.taskIdentifier] = bodyURL
+            sourceURLs[task.taskIdentifier] = upload.fileURL
+            if let context = upload.chunk {
+                chunkContexts[task.taskIdentifier] = context
+            }
+            activeTaskIDsByKey[key] = task.taskIdentifier
+            task.resume()
+            if let context = upload.chunk {
+                setStatus(
+                    context.isFinal
+                        ? "Uploading final chunk to PC"
+                        : "Uploading chunk \(context.chunkIndex + 1) to PC"
+                )
+            } else {
+                setStatus("Uploading to PC")
+            }
         } catch {
-            setStatus("Chunk upload queued for retry: \(error.localizedDescription)")
+            setStatus("Could not prepare upload; recording remains saved: \(error.localizedDescription)")
         }
+    }
+
+    private func restoreBackgroundTasks(_ tasks: [URLSessionTask]) {
+        for task in tasks {
+            guard let persisted = persistedTaskContext(from: task.taskDescription),
+                  let sourceURL = persisted.sourceURL else {
+                task.cancel()
+                continue
+            }
+            let key = uploadKey(fileURL: sourceURL, chunk: persisted.chunk)
+            if activeTaskIDsByKey[key] != nil {
+                task.cancel()
+                continue
+            }
+            pendingUploadsByKey.removeValue(forKey: key)
+            scheduledRetryAttempts.removeValue(forKey: key)
+            activeTaskIDsByKey[key] = task.taskIdentifier
+            bodyURLs[task.taskIdentifier] = persisted.bodyURL
+            sourceURLs[task.taskIdentifier] = sourceURL
+            if let chunk = persisted.chunk {
+                chunkContexts[task.taskIdentifier] = chunk
+            }
+        }
+        isRestoringBackgroundTasks = false
+        recoverSavedUploads(manual: false)
+        pumpUploads()
+    }
+
+    private func recoverSavedUploads(manual: Bool) {
+        if let directory = try? recordingsDirectory() {
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            for fileURL in files where ["m4a", "mp3", "wav", "caf"].contains(fileURL.pathExtension.lowercased()) {
+                enqueueUpload(fileURL: fileURL, chunk: nil, manual: manual)
+            }
+        }
+        if let directory = try? streamChunksDirectory() {
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
+            for fileURL in files {
+                guard let context = chunkContext(from: fileURL) else { continue }
+                enqueueUpload(fileURL: fileURL, chunk: context, manual: manual)
+            }
+        }
+    }
+
+    private func scheduleRetry(_ upload: PendingUpload, key: String) {
+        guard upload.attempt <= retryDelays.count,
+              FileManager.default.fileExists(atPath: upload.fileURL.path) else {
+            setStatus("PC upload paused after repeated failures; tap retry when connected")
+            return
+        }
+        let delay = retryDelays[upload.attempt - 1]
+        scheduledRetryAttempts[key] = upload.attempt
+        setStatus("PC unavailable; retrying in \(Int(delay)) seconds")
+        stateQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self,
+                  self.scheduledRetryAttempts[key] == upload.attempt else { return }
+            self.scheduledRetryAttempts.removeValue(forKey: key)
+            self.enqueueUpload(
+                fileURL: upload.fileURL,
+                chunk: upload.chunk,
+                attempt: upload.attempt
+            )
+        }
+    }
+
+    private func isRetryable(statusCode: Int?) -> Bool {
+        guard let statusCode else { return true }
+        return statusCode == 408 || statusCode == 425 || statusCode == 429 || (500...599).contains(statusCode)
+    }
+
+    private func isRetryable(error: Error) -> Bool {
+        let error = error as NSError
+        guard error.domain == NSURLErrorDomain else { return false }
+        switch URLError.Code(rawValue: error.code) {
+        case .timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,
+             .dnsLookupFailed, .notConnectedToInternet, .resourceUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func uploadKey(fileURL: URL, chunk: ChunkContext?) -> String {
+        if let chunk {
+            return "chunk:\(chunkKey(chunk))"
+        }
+        return "file:\(fileURL.standardizedFileURL.path.lowercased())"
     }
 
     func session(
@@ -439,7 +591,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     }
 
     private func retryRecording(recordingID: String) {
-        setStatus("Retrying watch recording")
+        setStatus("Checking saved recording chunks")
         stateQueue.async {
             let directory = try? self.streamChunksDirectory()
             let files = directory.flatMap {
@@ -449,21 +601,60 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                     options: [.skipsHiddenFiles]
                 )
             } ?? []
-            for fileURL in files {
+            let matching = files.compactMap { fileURL -> (URL, ChunkContext)? in
                 guard let context = self.chunkContext(from: fileURL),
-                      context.recordingID == recordingID else { continue }
-                self.queueChunkUpload(fileURL: fileURL, context: context)
+                      context.recordingID == recordingID else { return nil }
+                return (fileURL, context)
             }
+            if !matching.isEmpty {
+                for (fileURL, context) in matching {
+                    self.enqueueUpload(fileURL: fileURL, chunk: context, manual: true)
+                }
+                self.setStatus("Retrying \(matching.count) saved chunks")
+                return
+            }
+            self.checkPCRecording(recordingID)
         }
+    }
+
+    private func checkPCRecording(_ recordingID: String) {
         Task { [weak self] in
             do {
-                try await PhoneMemoAPIClient.shared.retryRecording(id: recordingID)
-                self?.setStatus("PC processing retry queued")
-            } catch PhoneMemoAPIError.httpStatus(409) {
-                self?.setStatus("Re-uploading saved chunks to PC")
+                let progress = try await PhoneMemoAPIClient.shared.getRecordingProgress(id: recordingID)
+                if progress.status == "done" {
+                    self?.setStatus("Recording already completed on PC")
+                    return
+                }
+                let hasCompleteSequence = progress.finalChunkIndex.map {
+                    progress.receivedChunks >= $0 + 1
+                } ?? false
+                if progress.status == "failed" {
+                    try await PhoneMemoAPIClient.shared.retryRecording(id: recordingID)
+                    self?.setStatus("PC processing retry queued")
+                } else if hasCompleteSequence {
+                    self?.setStatus("PC has every chunk and is processing")
+                } else {
+                    self?.requestWatchResend(recordingID)
+                }
+            } catch PhoneMemoAPIError.httpStatus(404) {
+                self?.requestWatchResend(recordingID)
             } catch {
-                self?.setStatus("Retry request saved on iPhone: \(error.localizedDescription)")
+                self?.setStatus("Could not check PC; retry after the connection returns")
             }
+        }
+    }
+
+    private func requestWatchResend(_ recordingID: String) {
+        DispatchQueue.main.async {
+            guard WCSession.isSupported() else {
+                self.setStatus("Watch connection unavailable")
+                return
+            }
+            WCSession.default.transferUserInfo([
+                "command": "resend-recording",
+                "recording_id": recordingID,
+            ])
+            self.setStatus("Asked Watch to resend missing chunks")
         }
     }
 
@@ -564,14 +755,21 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         "\(context.recordingID):\(context.chunkIndex)"
     }
 
-    private func taskDescription(bodyURL: URL, sourceURL: URL?, chunk: ChunkContext?) -> String {
+    private func taskDescription(
+        bodyURL: URL,
+        sourceURL: URL?,
+        chunk: ChunkContext?,
+        attempt: Int
+    ) -> String {
         [
+            "v2",
             chunk == nil ? "file" : "chunk",
             bodyURL.path,
             sourceURL?.path ?? "",
             chunk?.recordingID ?? "",
             chunk.map { String($0.chunkIndex) } ?? "",
             chunk?.isFinal == true ? "1" : "0",
+            String(attempt),
         ].joined(separator: "\t")
     }
 
@@ -580,21 +778,32 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         let fields = description
             .split(separator: "\t", omittingEmptySubsequences: false)
             .map(String.init)
-        guard fields.count == 6 else { return nil }
+        let offset: Int
+        let attempt: Int
+        if fields.count == 8, fields[0] == "v2" {
+            offset = 1
+            attempt = Int(fields[7]) ?? 0
+        } else if fields.count == 6 {
+            offset = 0
+            attempt = 0
+        } else {
+            return nil
+        }
         let chunk: ChunkContext?
-        if fields[0] == "chunk", let index = Int(fields[4]) {
+        if fields[offset] == "chunk", let index = Int(fields[offset + 4]) {
             chunk = ChunkContext(
-                recordingID: fields[3],
+                recordingID: fields[offset + 3],
                 chunkIndex: index,
-                isFinal: fields[5] == "1"
+                isFinal: fields[offset + 5] == "1"
             )
         } else {
             chunk = nil
         }
         return PersistedTaskContext(
-            bodyURL: URL(fileURLWithPath: fields[1]),
-            sourceURL: fields[2].isEmpty ? nil : URL(fileURLWithPath: fields[2]),
-            chunk: chunk
+            bodyURL: URL(fileURLWithPath: fields[offset + 1]),
+            sourceURL: fields[offset + 2].isEmpty ? nil : URL(fileURLWithPath: fields[offset + 2]),
+            chunk: chunk,
+            attempt: attempt
         )
     }
 }

@@ -47,6 +47,22 @@ struct MemoListResponse: Decodable {
     let memos: [MemoSummary]
 }
 
+struct RecordingProgress: Decodable {
+    let recordingID: String
+    let status: String
+    let receivedChunks: Int
+    let transcribedChunks: Int
+    let finalChunkIndex: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case recordingID = "recording_id"
+        case status
+        case receivedChunks = "received_chunks"
+        case transcribedChunks = "transcribed_chunks"
+        case finalChunkIndex = "final_chunk_index"
+    }
+}
+
 struct PhonePreferences: Codable, Equatable {
     var language = "English"
     var speakerLabelsEnabled = true
@@ -148,6 +164,10 @@ final class PhoneMemoAPIClient: NSObject, URLSessionDelegate {
             method: "POST",
             responseType: EmptyResponse.self
         )
+    }
+
+    func getRecordingProgress(id: String) async throws -> RecordingProgress {
+        try await request("/recordings/\(id)", responseType: RecordingProgress.self)
     }
 
     func deleteMemo(id: String) async throws {

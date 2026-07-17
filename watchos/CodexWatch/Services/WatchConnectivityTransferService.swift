@@ -74,6 +74,15 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             statusMessage = "No recording available to retry"
             return
         }
+        flushPendingFiles()
+        WCSession.default.transferUserInfo([
+            "command": "retry-recording",
+            "recording_id": recordingID,
+        ])
+        statusMessage = "Checking iPhone and PC"
+    }
+
+    private func resendRecording(_ recordingID: String) {
         let matchingFiles = ((try? FileManager.default.contentsOfDirectory(
             at: recordingsDirectory(),
             includingPropertiesForKeys: nil,
@@ -92,13 +101,9 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         pendingFiles.append(contentsOf: matchingFiles.map {
             PendingFile(url: $0, metadata: metadata(for: $0))
         })
-        WCSession.default.transferUserInfo([
-            "command": "retry-recording",
-            "recording_id": recordingID,
-        ])
         statusMessage = matchingFiles.isEmpty
-            ? "Asked iPhone and PC to retry"
-            : "Retrying \(matchingFiles.count) chunks"
+            ? "No saved chunks remain on Watch"
+            : "Resending \(matchingFiles.count) chunks"
         flushPendingFiles()
     }
 
@@ -228,6 +233,14 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                 }
                 self.flushPendingFiles()
             }
+        }
+    }
+
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
+        guard userInfo["command"] as? String == "resend-recording",
+              let recordingID = userInfo["recording_id"] as? String else { return }
+        DispatchQueue.main.async {
+            self.resendRecording(recordingID)
         }
     }
 
