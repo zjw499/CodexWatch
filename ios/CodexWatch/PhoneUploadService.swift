@@ -16,6 +16,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     static let shared = PhoneUploadService()
     static let backgroundIdentifier = "com.zachwyatt.codexwatch.audio-upload"
     private static let statusDefaultsKey = "CodexWatch.PhoneUploadStatus"
+    private static let pendingCompletionDefaultsKey = "CodexWatch.PendingPCCompletions"
 
     @Published private(set) var statusMessage: String
     @Published private(set) var activeRecordingID: String?
@@ -58,6 +59,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     private var immediateChunkKeys: Set<String> = []
     private var receivedChunkKeys: Set<String> = []
     private var uploadedChunkKeys: Set<String> = []
+    private var completionPollingRecordingIDs: Set<String> = []
     private var started = false
     private var isRestoringBackgroundTasks = false
 
@@ -117,6 +119,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         start()
         stateQueue.async {
             self.recoverSavedUploads(manual: true)
+            self.resumeCompletionPolling()
         }
     }
 
@@ -245,6 +248,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                         self.finalUploadSequence += 1
                         self.statusMessage = "Final chunk uploaded; PC is finishing the transcript"
                         UserDefaults.standard.set(self.statusMessage, forKey: Self.statusDefaultsKey)
+                        self.beginCompletionPolling(recordingID: chunkContext.recordingID)
                     } else {
                         self.statusMessage = "Uploaded \(self.uploadedChunkCount) of \(self.receivedChunkCount) chunks"
                         UserDefaults.standard.set(self.statusMessage, forKey: Self.statusDefaultsKey)
@@ -467,6 +471,8 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         }
         isRestoringBackgroundTasks = false
         recoverSavedUploads(manual: false)
+        resumeCompletionPolling()
+        clearLegacyStaleCompletionStatus()
         pumpUploads()
     }
 
@@ -616,7 +622,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             do {
                 let progress = try await PhoneMemoAPIClient.shared.getRecordingProgress(id: recordingID)
                 if progress.status == "done" {
-                    self?.setStatus("Recording already completed on PC")
+                    self?.finishCompletionPolling(recordingID: recordingID)
                     return
                 }
                 let hasCompleteSequence = progress.finalChunkIndex.map {
@@ -636,6 +642,115 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 self?.setStatus("Could not check PC; retry after the connection returns")
             }
         }
+    }
+
+    private func beginCompletionPolling(recordingID: String) {
+        stateQueue.async {
+            self.rememberPendingCompletion(recordingID)
+            self.startCompletionPolling(recordingID: recordingID)
+        }
+    }
+
+    private func resumeCompletionPolling() {
+        for recordingID in pendingCompletionRecordingIDs() {
+            startCompletionPolling(recordingID: recordingID)
+        }
+    }
+
+    private func clearLegacyStaleCompletionStatus() {
+        guard pendingCompletionRecordingIDs().isEmpty,
+              let status = UserDefaults.standard.string(forKey: Self.statusDefaultsKey),
+              status.hasPrefix("Uploaded ") ||
+              status.hasPrefix("Final chunk uploaded") else { return }
+        setStatus("Ready for watch recordings")
+    }
+
+    private func startCompletionPolling(recordingID: String) {
+        guard completionPollingRecordingIDs.insert(recordingID).inserted else { return }
+        Task { [weak self] in
+            defer {
+                self?.stateQueue.async {
+                    self?.completionPollingRecordingIDs.remove(recordingID)
+                }
+            }
+
+            for _ in 0..<360 {
+                guard let self else { return }
+                do {
+                    let progress = try await PhoneMemoAPIClient.shared.getRecordingProgress(id: recordingID)
+                    if progress.status == "done" {
+                        self.finishCompletionPolling(recordingID: recordingID)
+                        return
+                    }
+                    if progress.status == "failed" {
+                        self.setStatus(
+                            "PC processing failed; recording remains saved for retry",
+                            forRecordingID: recordingID
+                        )
+                        return
+                    }
+                    self.setStatus(
+                        "PC transcribed \(progress.transcribedChunks) of \(progress.receivedChunks) chunks",
+                        forRecordingID: recordingID
+                    )
+                } catch PhoneMemoAPIError.httpStatus(404) {
+                    self.setStatus("Waiting for the final chunk to reach the PC", forRecordingID: recordingID)
+                } catch {
+                    self.setStatus("Waiting for the PC connection", forRecordingID: recordingID)
+                }
+                try? await Task.sleep(for: .seconds(5))
+            }
+
+            self?.setStatus(
+                "PC processing is taking longer than expected",
+                forRecordingID: recordingID
+            )
+        }
+    }
+
+    private func finishCompletionPolling(recordingID: String) {
+        stateQueue.async {
+            self.forgetPendingCompletion(recordingID)
+            self.completionPollingRecordingIDs.remove(recordingID)
+        }
+        DispatchQueue.main.async {
+            guard self.activeRecordingID == nil || self.activeRecordingID == recordingID else { return }
+            if self.activeRecordingID == recordingID {
+                self.activeRecordingID = nil
+                self.receivedChunkCount = 0
+                self.uploadedChunkCount = 0
+                self.finalChunkReceived = false
+                self.receivedChunkKeys.removeAll()
+                self.uploadedChunkKeys.removeAll()
+            }
+            self.finalUploadSequence += 1
+            self.statusMessage = "Transcript delivered"
+            UserDefaults.standard.set(self.statusMessage, forKey: Self.statusDefaultsKey)
+        }
+    }
+
+    private func setStatus(_ message: String, forRecordingID recordingID: String) {
+        DispatchQueue.main.async {
+            guard self.activeRecordingID == recordingID else { return }
+            self.statusMessage = message
+            UserDefaults.standard.set(message, forKey: Self.statusDefaultsKey)
+        }
+    }
+
+    private func pendingCompletionRecordingIDs() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: Self.pendingCompletionDefaultsKey) ?? [])
+    }
+
+    private func rememberPendingCompletion(_ recordingID: String) {
+        var recordingIDs = pendingCompletionRecordingIDs()
+        recordingIDs.insert(recordingID)
+        UserDefaults.standard.set(recordingIDs.sorted(), forKey: Self.pendingCompletionDefaultsKey)
+    }
+
+    private func forgetPendingCompletion(_ recordingID: String) {
+        var recordingIDs = pendingCompletionRecordingIDs()
+        recordingIDs.remove(recordingID)
+        UserDefaults.standard.set(recordingIDs.sorted(), forKey: Self.pendingCompletionDefaultsKey)
     }
 
     private func requestWatchResend(_ recordingID: String) {
@@ -738,6 +853,11 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             guard self.receivedChunkKeys.insert(self.chunkKey(context)).inserted else { return }
             self.receivedChunkCount += 1
             self.finalChunkReceived = self.finalChunkReceived || context.isFinal
+            if context.isFinal {
+                self.stateQueue.async {
+                    self.rememberPendingCompletion(context.recordingID)
+                }
+            }
             self.statusMessage = context.isFinal
                 ? "Final watch chunk received"
                 : "Received watch chunk \(context.chunkIndex + 1)"

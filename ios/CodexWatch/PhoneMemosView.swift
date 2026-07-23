@@ -35,6 +35,7 @@ struct PhoneMemosView: View {
                     if uploader.activeRecordingID != nil || ![
                         "Ready",
                         "Ready for watch recordings",
+                        "Transcript delivered",
                     ].contains(uploader.statusMessage) {
                         watchRelayCard
                     }
