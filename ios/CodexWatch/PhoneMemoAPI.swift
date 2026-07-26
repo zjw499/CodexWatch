@@ -98,7 +98,9 @@ struct PhonePreferences: Codable, Equatable {
         case summaryTemplate = "summary_template"
     }
 
-    init() {}
+    init() {
+        recipient = PhoneRecipientSettings.recipient
+    }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -108,7 +110,8 @@ struct PhonePreferences: Codable, Equatable {
         preferNumbers = try values.decodeIfPresent(Bool.self, forKey: .preferNumbers) ?? preferNumbers
         generateTitle = try values.decodeIfPresent(Bool.self, forKey: .generateTitle) ?? generateTitle
         sendEmail = try values.decodeIfPresent(Bool.self, forKey: .sendEmail) ?? sendEmail
-        recipient = try values.decodeIfPresent(String.self, forKey: .recipient) ?? recipient
+        recipient = try values.decodeIfPresent(String.self, forKey: .recipient)
+            ?? PhoneRecipientSettings.recipient
         addEmoji = try values.decodeIfPresent(Bool.self, forKey: .addEmoji) ?? addEmoji
         emailPrefix = try values.decodeIfPresent(String.self, forKey: .emailPrefix) ?? emailPrefix
         removeFooter = try values.decodeIfPresent(Bool.self, forKey: .removeFooter) ?? removeFooter
@@ -191,6 +194,7 @@ final class PhoneMemoAPIClient: NSObject, URLSessionDelegate {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Basic \(basicAuth(username: username, password: password))", forHTTPHeaderField: "Authorization")
+        request.setValue(PhoneRecipientSettings.clientID, forHTTPHeaderField: "X-Codex-Client-ID")
         request.setValue("Codex Watch", forHTTPHeaderField: "User-Agent")
         if body != nil {
             request.httpBody = body
@@ -299,17 +303,27 @@ final class PhoneMemoService: ObservableObject {
 
     func loadPreferences() async {
         do {
-            preferences = try await PhoneMemoAPIClient.shared.getPreferences()
+            var loaded = try await PhoneMemoAPIClient.shared.getPreferences()
+            loaded.recipient = PhoneRecipientSettings.recipient
+            preferences = loaded
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
     func savePreferences(_ newPreferences: PhonePreferences) async {
+        PhoneRecipientSettings.save(recipient: newPreferences.recipient)
+        var remotePreferences = newPreferences
+        // The email address belongs to this phone and is attached to each upload.
+        // Do not overwrite a server-wide legacy preference with this user's address.
+        remotePreferences.recipient = ""
         do {
-            preferences = try await PhoneMemoAPIClient.shared.updatePreferences(newPreferences)
+            var saved = try await PhoneMemoAPIClient.shared.updatePreferences(remotePreferences)
+            saved.recipient = PhoneRecipientSettings.recipient
+            preferences = saved
             errorMessage = nil
         } catch {
+            preferences = newPreferences
             errorMessage = error.localizedDescription
         }
     }

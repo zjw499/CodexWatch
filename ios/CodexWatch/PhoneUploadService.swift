@@ -36,12 +36,14 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         let sourceURL: URL?
         let chunk: ChunkContext?
         let attempt: Int
+        let recipient: String
     }
 
     private struct PendingUpload {
         let fileURL: URL
         let chunk: ChunkContext?
         let attempt: Int
+        let recipient: String
     }
 
     private let stateQueue = DispatchQueue(label: "com.zachwyatt.codexwatch.upload-state")
@@ -111,7 +113,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     func enqueue(fileURL: URL) {
         start()
         stateQueue.async {
-            self.queueUpload(fileURL: fileURL)
+            self.queueUpload(fileURL: fileURL, recipient: PhoneRecipientSettings.recipient)
         }
     }
 
@@ -196,6 +198,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             let sourceURL = self.sourceURLs.removeValue(forKey: task.taskIdentifier) ?? persisted?.sourceURL
             let chunkContext = self.chunkContexts.removeValue(forKey: task.taskIdentifier) ?? persisted?.chunk
             let attempt = persisted?.attempt ?? 0
+            let recipient = persisted?.recipient ?? PhoneRecipientSettings.recipient
             let statusCode = (task.response as? HTTPURLResponse)?.statusCode
             let key = sourceURL.map { self.uploadKey(fileURL: $0, chunk: chunkContext) }
 
@@ -213,7 +216,12 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             if let error {
                 if let sourceURL, self.isRetryable(error: error) {
                     self.scheduleRetry(
-                        PendingUpload(fileURL: sourceURL, chunk: chunkContext, attempt: attempt + 1),
+                        PendingUpload(
+                            fileURL: sourceURL,
+                            chunk: chunkContext,
+                            attempt: attempt + 1,
+                            recipient: recipient
+                        ),
                         key: key
                     )
                 } else {
@@ -226,7 +234,12 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             guard let statusCode, (200..<300).contains(statusCode) else {
                 if let sourceURL, self.isRetryable(statusCode: statusCode) {
                     self.scheduleRetry(
-                        PendingUpload(fileURL: sourceURL, chunk: chunkContext, attempt: attempt + 1),
+                        PendingUpload(
+                            fileURL: sourceURL,
+                            chunk: chunkContext,
+                            attempt: attempt + 1,
+                            recipient: recipient
+                        ),
                         key: key
                     )
                 } else {
@@ -346,17 +359,22 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         }
     }
 
-    private func queueUpload(fileURL: URL) {
-        enqueueUpload(fileURL: fileURL, chunk: nil)
+    private func queueUpload(fileURL: URL, recipient: String) {
+        enqueueUpload(fileURL: fileURL, chunk: nil, recipient: recipient)
     }
 
     private func queueChunkUpload(fileURL: URL, context: ChunkContext) {
-        enqueueUpload(fileURL: fileURL, chunk: context)
+        enqueueUpload(
+            fileURL: fileURL,
+            chunk: context,
+            recipient: PhoneRecipientSettings.recipient
+        )
     }
 
     private func enqueueUpload(
         fileURL: URL,
         chunk: ChunkContext?,
+        recipient: String,
         attempt: Int = 0,
         manual: Bool = false
     ) {
@@ -370,11 +388,21 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         guard activeTaskIDsByKey[key] == nil else { return }
         if pendingUploadsByKey[key] != nil {
             if manual {
-                pendingUploadsByKey[key] = PendingUpload(fileURL: fileURL, chunk: chunk, attempt: 0)
+                pendingUploadsByKey[key] = PendingUpload(
+                    fileURL: fileURL,
+                    chunk: chunk,
+                    attempt: 0,
+                    recipient: recipient
+                )
             }
             return
         }
-        pendingUploadsByKey[key] = PendingUpload(fileURL: fileURL, chunk: chunk, attempt: attempt)
+        pendingUploadsByKey[key] = PendingUpload(
+            fileURL: fileURL,
+            chunk: chunk,
+            attempt: attempt,
+            recipient: recipient
+        )
         pendingUploadOrder.append(key)
         pumpUploads()
     }
@@ -399,11 +427,21 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                     "chunk_index": String(context.chunkIndex),
                     "is_final": context.isFinal ? "true" : "false",
                     "source": "apple-watch-stream",
+                    "client_id": PhoneRecipientSettings.clientID,
+                    "recipient": upload.recipient,
                 ]
                 uploadURL = CodexWatchPhoneConfiguration.chunkUploadURL
             } else {
-                fields = [:]
+                fields = [
+                    "source": "iphone-app",
+                    "client_id": PhoneRecipientSettings.clientID,
+                    "recipient": upload.recipient,
+                ]
                 uploadURL = CodexWatchPhoneConfiguration.audioUploadURL
+            }
+            guard !upload.recipient.isEmpty else {
+                setStatus("Add your transcript email in Settings; recording remains saved")
+                return
             }
             guard let uploadURL,
                   let username = CodexWatchPhoneConfiguration.audioUploadUsername,
@@ -431,7 +469,8 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 bodyURL: bodyURL,
                 sourceURL: upload.fileURL,
                 chunk: upload.chunk,
-                attempt: upload.attempt
+                attempt: upload.attempt,
+                recipient: upload.recipient
             )
             bodyURLs[task.taskIdentifier] = bodyURL
             sourceURLs[task.taskIdentifier] = upload.fileURL
@@ -484,7 +523,12 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 options: [.skipsHiddenFiles]
             )) ?? []
             for fileURL in files where ["m4a", "mp3", "wav", "caf"].contains(fileURL.pathExtension.lowercased()) {
-                enqueueUpload(fileURL: fileURL, chunk: nil, manual: manual)
+                enqueueUpload(
+                    fileURL: fileURL,
+                    chunk: nil,
+                    recipient: PhoneRecipientSettings.recipient,
+                    manual: manual
+                )
             }
         }
         if let directory = try? streamChunksDirectory() {
@@ -495,7 +539,12 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             )) ?? []
             for fileURL in files {
                 guard let context = chunkContext(from: fileURL) else { continue }
-                enqueueUpload(fileURL: fileURL, chunk: context, manual: manual)
+                enqueueUpload(
+                    fileURL: fileURL,
+                    chunk: context,
+                    recipient: PhoneRecipientSettings.recipient,
+                    manual: manual
+                )
             }
         }
     }
@@ -516,6 +565,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             self.enqueueUpload(
                 fileURL: upload.fileURL,
                 chunk: upload.chunk,
+                recipient: upload.recipient,
                 attempt: upload.attempt
             )
         }
@@ -608,7 +658,12 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             }
             if !matching.isEmpty {
                 for (fileURL, context) in matching {
-                    self.enqueueUpload(fileURL: fileURL, chunk: context, manual: true)
+                    self.enqueueUpload(
+                        fileURL: fileURL,
+                        chunk: context,
+                        recipient: PhoneRecipientSettings.recipient,
+                        manual: true
+                    )
                 }
                 self.setStatus("Retrying \(matching.count) saved chunks")
                 return
@@ -873,10 +928,11 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         bodyURL: URL,
         sourceURL: URL?,
         chunk: ChunkContext?,
-        attempt: Int
+        attempt: Int,
+        recipient: String
     ) -> String {
         [
-            "v2",
+            "v3",
             chunk == nil ? "file" : "chunk",
             bodyURL.path,
             sourceURL?.path ?? "",
@@ -884,6 +940,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             chunk.map { String($0.chunkIndex) } ?? "",
             chunk?.isFinal == true ? "1" : "0",
             String(attempt),
+            recipient,
         ].joined(separator: "\t")
     }
 
@@ -894,12 +951,19 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             .map(String.init)
         let offset: Int
         let attempt: Int
-        if fields.count == 8, fields[0] == "v2" {
+        let recipient: String
+        if fields.count == 9, fields[0] == "v3" {
             offset = 1
             attempt = Int(fields[7]) ?? 0
+            recipient = fields[8]
+        } else if fields.count == 8, fields[0] == "v2" {
+            offset = 1
+            attempt = Int(fields[7]) ?? 0
+            recipient = PhoneRecipientSettings.recipient
         } else if fields.count == 6 {
             offset = 0
             attempt = 0
+            recipient = PhoneRecipientSettings.recipient
         } else {
             return nil
         }
@@ -917,7 +981,8 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             bodyURL: URL(fileURLWithPath: fields[offset + 1]),
             sourceURL: fields[offset + 2].isEmpty ? nil : URL(fileURLWithPath: fields[offset + 2]),
             chunk: chunk,
-            attempt: attempt
+            attempt: attempt,
+            recipient: recipient
         )
     }
 }
