@@ -2,7 +2,7 @@
 
 ## Relay Topology
 
-`Codex Watch` is desktop-first.
+`Scribe Pilot` is desktop-first.
 
 - Apple Watch runs the native SwiftUI client.
 - The watch talks to a desktop-accessible relay.

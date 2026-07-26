@@ -50,7 +50,7 @@ struct PhoneRecorderView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("CODEX WATCH")
+                Text("SCRIBE PILOT")
                     .font(.system(size: 12, weight: .bold, design: .rounded))
                     .tracking(2.5)
                     .foregroundStyle(.white.opacity(0.58))

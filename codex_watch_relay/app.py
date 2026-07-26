@@ -133,7 +133,7 @@ def create_app(
         finally:
             backend.shutdown()
 
-    app = FastAPI(title="Codex Watch Relay", version=__version__, lifespan=lifespan)
+    app = FastAPI(title="Scribe Pilot Relay", version=__version__, lifespan=lifespan)
     app.state.settings = settings
     app.state.backend = backend
     app.state.state_store = state_store

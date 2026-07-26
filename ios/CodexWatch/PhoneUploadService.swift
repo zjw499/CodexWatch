@@ -458,7 +458,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             let boundary = bodyURL.deletingPathExtension().lastPathComponent
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             request.setValue("Basic \(basicAuth(username: username, password: password))", forHTTPHeaderField: "Authorization")
-            request.setValue("Codex Watch", forHTTPHeaderField: "User-Agent")
+            request.setValue("Scribe Pilot", forHTTPHeaderField: "User-Agent")
             guard let uploadSession else {
                 try? FileManager.default.removeItem(at: bodyURL)
                 setStatus("Upload service unavailable")

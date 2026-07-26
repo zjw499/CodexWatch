@@ -195,7 +195,7 @@ final class PhoneMemoAPIClient: NSObject, URLSessionDelegate {
         request.httpMethod = method
         request.setValue("Basic \(basicAuth(username: username, password: password))", forHTTPHeaderField: "Authorization")
         request.setValue(PhoneRecipientSettings.clientID, forHTTPHeaderField: "X-Codex-Client-ID")
-        request.setValue("Codex Watch", forHTTPHeaderField: "User-Agent")
+        request.setValue("Scribe Pilot", forHTTPHeaderField: "User-Agent")
         if body != nil {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")

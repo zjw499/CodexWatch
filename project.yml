@@ -21,13 +21,13 @@ targets:
     info:
       path: macos/CodexWatch/Support/Info.plist
       properties:
-        CFBundleDisplayName: Codex Watch
+        CFBundleDisplayName: Scribe Pilot
         CFBundlePackageType: APPL
         CODEX_WATCH_AUDIO_UPLOAD_PASSWORD: $(CODEX_WATCH_AUDIO_UPLOAD_PASSWORD)
         CODEX_WATCH_AUDIO_UPLOAD_URL: $(CODEX_WATCH_AUDIO_UPLOAD_URL)
         CODEX_WATCH_AUDIO_UPLOAD_USERNAME: $(CODEX_WATCH_AUDIO_UPLOAD_USERNAME)
         ITSAppUsesNonExemptEncryption: false
-        NSMicrophoneUsageDescription: Codex Watch uses the microphone to record audio for your private local transcription workflow.
+        NSMicrophoneUsageDescription: Scribe Pilot uses the microphone to record audio for your private local transcription workflow.
         UIBackgroundModes:
           - audio
         UILaunchScreen: {}
@@ -52,7 +52,7 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         MARKETING_VERSION: $(MARKETING_VERSION)
         PRODUCT_BUNDLE_IDENTIFIER: $(PRODUCT_BUNDLE_IDENTIFIER)
-        PRODUCT_NAME: Codex Watch
+        PRODUCT_NAME: Scribe Pilot
         SKIP_INSTALL: NO
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
@@ -73,7 +73,7 @@ targets:
     info:
       path: macos/CodexWatch/Support/WatchApp-Info.plist
       properties:
-        CFBundleDisplayName: Codex Watch
+        CFBundleDisplayName: Scribe Pilot
         CFBundleIconFiles:
           - AppIcon
         WKCompanionAppBundleIdentifier: com.zachwyatt.codexwatch
@@ -88,7 +88,7 @@ targets:
         INFOPLIST_KEY_WKWatchKitApp: YES
         MARKETING_VERSION: $(MARKETING_VERSION)
         PRODUCT_BUNDLE_IDENTIFIER: com.zachwyatt.codexwatch.watchkitapp
-        PRODUCT_NAME: Codex Watch
+        PRODUCT_NAME: Scribe Pilot
         SKIP_INSTALL: YES
         TARGETED_DEVICE_FAMILY: 4
     dependencies:
@@ -106,7 +106,7 @@ targets:
     info:
       path: macos/CodexWatch/Support/WatchExtension-Info.plist
       properties:
-        CFBundleDisplayName: Codex Watch Extension
+        CFBundleDisplayName: Scribe Pilot Extension
         CODEX_WATCH_RELAY_BASE_URL: $(CODEX_WATCH_RELAY_BASE_URL)
         CODEX_WATCH_RELAY_TOKEN: $(CODEX_WATCH_RELAY_TOKEN)
         NSExtension:
@@ -115,7 +115,7 @@ targets:
           NSExtensionPointIdentifier: com.apple.watchkit
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-        NSMicrophoneUsageDescription: Codex Watch uses the microphone to record audio for your private local transcription workflow.
+        NSMicrophoneUsageDescription: Scribe Pilot uses the microphone to record audio for your private local transcription workflow.
         UIBackgroundModes:
           - audio
     settings:
@@ -126,7 +126,7 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         MARKETING_VERSION: $(MARKETING_VERSION)
         PRODUCT_BUNDLE_IDENTIFIER: com.zachwyatt.codexwatch.watchkitapp.watchkitextension
-        PRODUCT_NAME: Codex Watch Extension
+        PRODUCT_NAME: Scribe Pilot Extension
         SKIP_INSTALL: YES
         TARGETED_DEVICE_FAMILY: 4
         INFOPLIST_KEY_WKAppBundleIdentifier: com.zachwyatt.codexwatch.watchkitapp
