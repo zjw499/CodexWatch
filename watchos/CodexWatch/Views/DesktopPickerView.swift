@@ -38,6 +38,6 @@ struct DesktopPickerView: View {
         }
         .scrollContentBackground(.hidden)
         .background(Color.black)
-        .navigationTitle("Codex Watch")
+        .navigationTitle("Scribe Pilot")
     }
 }

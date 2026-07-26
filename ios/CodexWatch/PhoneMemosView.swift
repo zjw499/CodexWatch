@@ -95,7 +95,7 @@ struct PhoneMemosView: View {
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("CODEX WATCH")
+                Text("SCRIBE PILOT")
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .tracking(2.2)
                     .foregroundStyle(.white.opacity(0.45))

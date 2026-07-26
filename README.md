@@ -1,6 +1,6 @@
-# Codex Watch
+# Scribe Pilot
 
-`CodexWatch` is an MVP workspace for an official-style Apple Watch companion to Codex Desktop.
+`CodexWatch` is an MVP workspace for the Scribe Pilot Apple Watch companion.
 
 It has two parts:
 

@@ -183,7 +183,7 @@ class CodexAppServerBackend(AbstractCodexBackend):
                 {
                     "clientInfo": {
                         "name": "codex_watch_relay",
-                        "title": "Codex Watch Relay",
+                        "title": "Scribe Pilot Relay",
                         "version": __version__,
                     },
                     "capabilities": {"experimentalApi": True},
