@@ -247,7 +247,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP_PATH="$RUNNER_TEMP/CodexWatch.xcarchive/Products/Applications/Codex Watch.app"
+          APP_PATH="$(find "$RUNNER_TEMP/CodexWatch.xcarchive/Products/Applications" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -d "$APP_PATH"
           CA_PATH="$(find "$APP_PATH" -type f -name 'watch-audio-ca.crt' -print -quit)"
           test -n "$CA_PATH"
