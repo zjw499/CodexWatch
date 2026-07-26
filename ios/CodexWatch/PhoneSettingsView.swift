@@ -6,6 +6,11 @@ struct PhoneSettingsView: View {
     @State private var draft = PhonePreferences()
     @State private var isSaving = false
 
+    private var recipientIsValid: Bool {
+        let value = draft.recipient.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !draft.sendEmail || (value.contains("@") && value.contains("."))
+    }
+
     var body: some View {
         Form {
             Section("Transcription") {
@@ -19,9 +24,12 @@ struct PhoneSettingsView: View {
             Section("Email delivery") {
                 Toggle("Send transcript email", isOn: $draft.sendEmail)
                 Toggle("Include summary", isOn: $draft.autoEmailSummary)
-                TextField("Recipient email", text: $draft.recipient)
+                TextField("Your transcript email", text: $draft.recipient)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.emailAddress)
+                Text("This address is saved on this phone and attached to every recording. Each beta tester should enter their own address.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 TextField("Subject prefix", text: $draft.emailPrefix)
                     .textInputAutocapitalization(.never)
                 Toggle("Remove local footer", isOn: $draft.removeFooter)
@@ -55,7 +63,7 @@ struct PhoneSettingsView: View {
                         Text("Save").fontWeight(.bold)
                     }
                 }
-                .disabled(isSaving)
+                .disabled(isSaving || !recipientIsValid)
             }
         }
         .task {
