@@ -9,6 +9,7 @@ final class AudioRecorderService: NSObject, ObservableObject {
     @Published private(set) var lastRecordingURL: URL?
     @Published private(set) var statusMessage = "Ready to record"
     @Published private(set) var chunkCount = 0
+    @Published private(set) var isPausedForInterruption = false
     @Published var errorMessage: String?
 
     private var recorder: AVAudioRecorder?
@@ -16,10 +17,28 @@ final class AudioRecorderService: NSObject, ObservableObject {
     private var chunkIndex = 0
     private var completedDuration: TimeInterval = 0
     private var rotationTask: Task<Void, Never>?
+    private var recoveryTask: Task<Void, Never>?
+    private var audioInterrupted = false
+    private var awaitingInterruptionEnd = false
+    private var recoveryAttempts = 0
     private let chunkInterval: TimeInterval = 30
     static let shared = AudioRecorderService()
 
     private let transferService = WatchConnectivityTransferService.shared
+
+    override init() {
+        super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
 
     func prepare() async {
         guard !isRecording else { return }
@@ -29,6 +48,13 @@ final class AudioRecorderService: NSObject, ObservableObject {
 
     func startRecording() async {
         errorMessage = nil
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        audioInterrupted = false
+        awaitingInterruptionEnd = false
+        isPausedForInterruption = false
+        recoveryAttempts = 0
+
         guard await requestMicrophonePermission() else {
             statusMessage = "Allow microphone access in Watch Settings"
             return
@@ -61,8 +87,14 @@ final class AudioRecorderService: NSObject, ObservableObject {
     func updateElapsedTime() {
         guard isRecording, let recorder else { return }
         guard recorder.isRecording else {
-            stopRecording()
-            errorMessage = "Recording was interrupted. The audio captured so far was saved and queued."
+            elapsedTime = completedDuration + recorder.currentTime
+            guard !awaitingInterruptionEnd else { return }
+            if !audioInterrupted {
+                audioInterrupted = true
+                isPausedForInterruption = true
+                statusMessage = "Audio paused; recovering"
+            }
+            scheduleRecovery()
             return
         }
         elapsedTime = completedDuration + recorder.currentTime
@@ -72,6 +104,12 @@ final class AudioRecorderService: NSObject, ObservableObject {
         guard let recorder, let recordingID else { return }
         rotationTask?.cancel()
         rotationTask = nil
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        audioInterrupted = false
+        awaitingInterruptionEnd = false
+        isPausedForInterruption = false
+        recoveryAttempts = 0
         let finalDuration = recorder.currentTime
         recorder.stop()
         self.recorder = nil
@@ -101,6 +139,15 @@ final class AudioRecorderService: NSObject, ObservableObject {
         lastRecordingURL = nil
         statusMessage = "Final chunk queued"
         try? AVAudioSession.sharedInstance().setActive(false)
+    }
+
+    func resumeRecording() {
+        guard isRecording else { return }
+        awaitingInterruptionEnd = false
+        audioInterrupted = true
+        isPausedForInterruption = true
+        statusMessage = "Resuming audio"
+        scheduleRecovery()
     }
 
     func queueLastRecording() {
@@ -173,7 +220,7 @@ final class AudioRecorderService: NSObject, ObservableObject {
     }
 
     private func rotateChunk() {
-        guard isRecording, let recorder, let recordingID else { return }
+        guard isRecording, !audioInterrupted, let recorder, let recordingID else { return }
         let completedChunkDuration = recorder.currentTime
         recorder.stop()
         completedDuration += completedChunkDuration
@@ -229,6 +276,73 @@ final class AudioRecorderService: NSObject, ObservableObject {
             statusMessage = "Final chunk queued"
             try? AVAudioSession.sharedInstance().setActive(false)
         }
+    }
+
+    @objc private func handleAudioInterruption(_ notification: Notification) {
+        guard isRecording,
+              let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+
+        switch type {
+        case .began:
+            audioInterrupted = true
+            awaitingInterruptionEnd = true
+            isPausedForInterruption = true
+            statusMessage = "Audio interrupted; preserving recording"
+        case .ended:
+            awaitingInterruptionEnd = false
+            audioInterrupted = true
+            isPausedForInterruption = true
+            statusMessage = "Audio interruption ended; recovering"
+            scheduleRecovery()
+        @unknown default:
+            break
+        }
+    }
+
+    private func scheduleRecovery() {
+        guard isRecording, !awaitingInterruptionEnd, recoveryTask == nil else { return }
+
+        recoveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for attempt in 0..<10 {
+                guard !Task.isCancelled, self.isRecording else { return }
+                if attempt > 0 {
+                    try? await Task.sleep(for: .seconds(1))
+                }
+                guard !Task.isCancelled, self.isRecording else { return }
+                if self.tryToResumeRecording() {
+                    self.recoveryTask = nil
+                    return
+                }
+            }
+            self.recoveryTask = nil
+            guard self.isRecording else { return }
+            self.statusMessage = "Audio paused; tap Resume"
+        }
+    }
+
+    private func tryToResumeRecording() -> Bool {
+        guard isRecording, !awaitingInterruptionEnd, let recorder else { return false }
+
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.record, mode: .default, options: [])
+            try audioSession.setActive(true)
+
+            if recorder.isRecording || recorder.record() {
+                audioInterrupted = false
+                isPausedForInterruption = false
+                recoveryAttempts = 0
+                statusMessage = "Recording resumed"
+                return true
+            }
+        } catch {
+            // The next recovery attempt will retry after the system releases the audio session.
+        }
+
+        recoveryAttempts += 1
+        return false
     }
 
     private func completedChunkURL(recordingID: String, index: Int, isFinal: Bool) -> URL {

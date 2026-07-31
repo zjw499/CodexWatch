@@ -89,7 +89,9 @@ struct RecorderView: View {
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .tracking(2)
                     .foregroundStyle(.white.opacity(0.5))
-                Text(recorder.isRecording ? "Recording" : "Ready")
+                Text(recorder.isRecording
+                    ? (recorder.isPausedForInterruption ? "Paused" : "Recording")
+                    : "Ready")
                     .font(.headline.weight(.bold))
                     .foregroundStyle(.white)
             }
@@ -115,21 +117,42 @@ struct RecorderView: View {
                     .fill(recorder.isRecording ? coral : .white.opacity(0.12))
                     .frame(width: 92, height: 92)
                     .shadow(color: (recorder.isRecording ? coral : aqua).opacity(0.4), radius: 14)
-                Image(systemName: recorder.isRecording ? "stop.fill" : "mic.fill")
+                Image(systemName: recorder.isRecording
+                    ? (recorder.isPausedForInterruption ? "pause.fill" : "stop.fill")
+                    : "mic.fill")
                     .font(.system(size: 28, weight: .bold))
                     .foregroundStyle(recorder.isRecording ? .white : aqua)
             }
             .animation(.easeInOut(duration: 0.2), value: recorder.isRecording)
 
             if recorder.isRecording {
-                Text(formatDuration(recorder.elapsedTime))
-                    .font(.system(size: 25, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .contentTransition(.numericText())
+                VStack(spacing: 3) {
+                    Text(formatDuration(recorder.elapsedTime))
+                        .font(.system(size: 25, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .contentTransition(.numericText())
+                    if recorder.isPausedForInterruption {
+                        Text("Audio paused; recording preserved")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.yellow.opacity(0.9))
+                    }
+                }
             } else {
                 Text("Tap to capture")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.65))
+            }
+
+            if recorder.isRecording && recorder.isPausedForInterruption {
+                Button {
+                    recorder.resumeRecording()
+                } label: {
+                    Label("Resume audio", systemImage: "play.fill")
+                        .font(.caption.weight(.bold))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(aqua)
             }
 
             Button {
@@ -160,7 +183,7 @@ struct RecorderView: View {
                 Text(transfer.statusMessage)
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.5))
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
             Spacer()
             if transfer.queuedChunkCount > 0 {
