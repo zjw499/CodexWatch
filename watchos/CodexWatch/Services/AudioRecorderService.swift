@@ -374,11 +374,12 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
             }
 
             guard let recorder else { return false }
-            let resumed = if durationLimitedRecorder === recorder {
+            var resumed = recorder.isRecording
+            if !resumed, durationLimitedRecorder === recorder {
                 let remaining = max(0.25, chunkInterval - recorder.currentTime)
-                recorder.isRecording || recorder.record(forDuration: remaining)
-            } else {
-                recorder.isRecording || recorder.record()
+                resumed = recorder.record(forDuration: remaining)
+            } else if !resumed {
+                resumed = recorder.record()
             }
             if resumed {
                 audioInterrupted = false
