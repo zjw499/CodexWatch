@@ -3,7 +3,7 @@ import Combine
 import Foundation
 
 @MainActor
-final class AudioRecorderService: NSObject, ObservableObject {
+final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDelegate {
     @Published private(set) var isRecording = false
     @Published private(set) var elapsedTime: TimeInterval = 0
     @Published private(set) var lastRecordingURL: URL?
@@ -16,12 +16,12 @@ final class AudioRecorderService: NSObject, ObservableObject {
     private var recordingID: String?
     private var chunkIndex = 0
     private var completedDuration: TimeInterval = 0
-    private var rotationTask: Task<Void, Never>?
     private var recoveryTask: Task<Void, Never>?
     private var audioInterrupted = false
     private var awaitingInterruptionEnd = false
     private var recoveryAttempts = 0
     private var pendingChunkIndex: Int?
+    private var durationLimitedRecorder: AVAudioRecorder?
     private let chunkInterval: TimeInterval = 30
     static let shared = AudioRecorderService()
 
@@ -56,6 +56,7 @@ final class AudioRecorderService: NSObject, ObservableObject {
         isPausedForInterruption = false
         recoveryAttempts = 0
         pendingChunkIndex = nil
+        durationLimitedRecorder = nil
 
         guard await requestMicrophonePermission() else {
             statusMessage = "Allow microphone access in Watch Settings"
@@ -78,7 +79,6 @@ final class AudioRecorderService: NSObject, ObservableObject {
             elapsedTime = 0
             isRecording = true
             statusMessage = "Recording"
-            startChunkRotation()
         } catch {
             try? AVAudioSession.sharedInstance().setActive(false)
             errorMessage = error.localizedDescription
@@ -90,6 +90,10 @@ final class AudioRecorderService: NSObject, ObservableObject {
         guard isRecording, let recorder else { return }
         guard recorder.isRecording else {
             elapsedTime = completedDuration + recorder.currentTime
+            if durationLimitedRecorder === recorder {
+                // The system is about to deliver the duration-limit delegate callback.
+                return
+            }
             guard !awaitingInterruptionEnd else { return }
             if !audioInterrupted {
                 audioInterrupted = true
@@ -110,8 +114,6 @@ final class AudioRecorderService: NSObject, ObservableObject {
             statusMessage = "Audio paused; tap Resume"
             return
         }
-        rotationTask?.cancel()
-        rotationTask = nil
         recoveryTask?.cancel()
         recoveryTask = nil
         audioInterrupted = false
@@ -119,6 +121,7 @@ final class AudioRecorderService: NSObject, ObservableObject {
         isPausedForInterruption = false
         recoveryAttempts = 0
         pendingChunkIndex = nil
+        durationLimitedRecorder = nil
         let finalDuration = recorder.currentTime
         recorder.stop()
         self.recorder = nil
@@ -203,35 +206,23 @@ final class AudioRecorderService: NSObject, ObservableObject {
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
         ]
         let recorder = try AVAudioRecorder(url: fileURL, settings: settings)
+        recorder.delegate = self
         recorder.prepareToRecord()
-        guard recorder.record() else {
+        guard recorder.record(forDuration: chunkInterval) else {
             throw NSError(
                 domain: "CodexWatch",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "The watch could not start an audio segment."]
             )
         }
+        durationLimitedRecorder = recorder
         return recorder
-    }
-
-    private func startChunkRotation() {
-        rotationTask?.cancel()
-        rotationTask = Task { [weak self] in
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(self?.chunkInterval ?? 30))
-                } catch {
-                    return
-                }
-                guard !Task.isCancelled else { return }
-                self?.rotateChunk()
-            }
-        }
     }
 
     private func rotateChunk() {
         guard isRecording, !audioInterrupted, let recorder, let recordingID else { return }
         let completedChunkDuration = recorder.currentTime
+        durationLimitedRecorder = nil
         recorder.stop()
         completedDuration += completedChunkDuration
         let completedIndex = chunkIndex
@@ -277,6 +268,34 @@ final class AudioRecorderService: NSObject, ObservableObject {
         }
     }
 
+    nonisolated func audioRecorderDidFinishRecording(
+        _ recorder: AVAudioRecorder,
+        successfully flag: Bool
+    ) {
+        Task { @MainActor [weak self] in
+            self?.handleAutomaticChunkCompletion(recorder, successfully: flag)
+        }
+    }
+
+    private func handleAutomaticChunkCompletion(
+        _ finishedRecorder: AVAudioRecorder,
+        successfully: Bool
+    ) {
+        guard isRecording,
+              recorder === finishedRecorder,
+              durationLimitedRecorder === finishedRecorder else { return }
+
+        durationLimitedRecorder = nil
+        guard successfully else {
+            audioInterrupted = true
+            isPausedForInterruption = true
+            statusMessage = "Audio paused; recovering"
+            scheduleRecovery()
+            return
+        }
+        rotateChunk()
+    }
+
     @objc private func handleAudioInterruption(_ notification: Notification) {
         guard isRecording,
               let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -284,12 +303,24 @@ final class AudioRecorderService: NSObject, ObservableObject {
 
         switch type {
         case .began:
-            audioInterrupted = true
             awaitingInterruptionEnd = true
-            isPausedForInterruption = true
-            statusMessage = "Audio interrupted; preserving recording"
+            if recorder?.isRecording == true {
+                // A notification may suspend the UI without stopping the audio recorder.
+                // Do not block duration-based chunk delivery in that case.
+                statusMessage = "Recording"
+            } else {
+                audioInterrupted = true
+                isPausedForInterruption = true
+                statusMessage = "Audio interrupted; preserving recording"
+            }
         case .ended:
             awaitingInterruptionEnd = false
+            if recorder?.isRecording == true, pendingChunkIndex == nil {
+                audioInterrupted = false
+                isPausedForInterruption = false
+                statusMessage = "Recording"
+                return
+            }
             audioInterrupted = true
             isPausedForInterruption = true
             statusMessage = "Audio interruption ended; recovering"
@@ -339,17 +370,21 @@ final class AudioRecorderService: NSObject, ObservableObject {
                 isPausedForInterruption = false
                 recoveryAttempts = 0
                 statusMessage = "Recording resumed"
-                startChunkRotation()
                 return true
             }
 
             guard let recorder else { return false }
-            if recorder.isRecording || recorder.record() {
+            let resumed = if durationLimitedRecorder === recorder {
+                let remaining = max(0.25, chunkInterval - recorder.currentTime)
+                recorder.isRecording || recorder.record(forDuration: remaining)
+            } else {
+                recorder.isRecording || recorder.record()
+            }
+            if resumed {
                 audioInterrupted = false
                 isPausedForInterruption = false
                 recoveryAttempts = 0
                 statusMessage = "Recording resumed"
-                startChunkRotation()
                 return true
             }
         } catch {
