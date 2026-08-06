@@ -317,7 +317,7 @@ jobs:
 
   check-testflight-build:
     if: ${{ inputs.check_only == 'true' }}
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 20
     env:
       APP_ID: "6789821399"
