@@ -48,6 +48,10 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     func startRecording() async {
+        guard !isRecording else {
+            statusMessage = "Already recording"
+            return
+        }
         errorMessage = nil
         recoveryTask?.cancel()
         recoveryTask = nil

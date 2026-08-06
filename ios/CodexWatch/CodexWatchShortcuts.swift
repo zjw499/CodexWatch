@@ -1,8 +1,8 @@
 import AppIntents
 
 struct StartRecordingIntent: AppIntent {
-    static var title: LocalizedStringResource = "Start Recording"
-    static var openAppWhenRun = false
+    static let title: LocalizedStringResource = "Start Recording"
+    static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
         await PhoneRecorderService.shared.startRecording()
@@ -11,8 +11,8 @@ struct StartRecordingIntent: AppIntent {
 }
 
 struct StopRecordingIntent: AppIntent {
-    static var title: LocalizedStringResource = "Stop Recording"
-    static var openAppWhenRun = false
+    static let title: LocalizedStringResource = "Stop Recording"
+    static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
         await PhoneRecorderService.shared.stopRecording()
