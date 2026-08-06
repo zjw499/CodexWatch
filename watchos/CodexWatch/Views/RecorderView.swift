@@ -2,7 +2,6 @@ import SwiftUI
 
 struct RecorderView: View {
     @EnvironmentObject private var recorder: AudioRecorderService
-    @EnvironmentObject private var store: CodexWatchStore
     @ObservedObject private var transfer = WatchConnectivityTransferService.shared
     private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
@@ -18,51 +17,16 @@ struct RecorderView: View {
             )
             .ignoresSafeArea()
 
-            ScrollView {
-                VStack(spacing: 12) {
-                    header
-                    recordControl
-                    transferStatus
-
-                    if !recorder.isRecording, transfer.lastRecordingID != nil {
-                        Button {
-                            transfer.retryLastRecording()
-                        } label: {
-                            Label("Retry last send", systemImage: "arrow.clockwise")
-                                .font(.caption.weight(.bold))
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(aqua)
-                    }
-
-                    if let recordingURL = recorder.lastRecordingURL, !recorder.isRecording {
-                        pendingRecording(url: recordingURL)
-                    }
-
-                    HStack(spacing: 8) {
-                        Image(systemName: "desktopcomputer")
-                            .foregroundStyle(aqua)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("PC processing")
-                                .font(.caption.weight(.semibold))
-                            Text("iPhone relays the audio automatically")
-                                .font(.caption2)
-                                .foregroundStyle(.white.opacity(0.5))
-                        }
-                        Spacer()
-                        Image(systemName: "checkmark.shield.fill")
-                            .foregroundStyle(aqua.opacity(0.8))
-                    }
-                    .foregroundStyle(.white.opacity(0.76))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+            VStack(spacing: 7) {
+                header
+                recordControl
+                transferStatus
+                retryAction
+                Spacer(minLength: 0)
             }
-            .scrollIndicators(.hidden)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
@@ -83,161 +47,132 @@ struct RecorderView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("CODEX")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .tracking(2)
-                    .foregroundStyle(.white.opacity(0.5))
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("SCRIBE PILOT")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(1.5)
+                    .foregroundStyle(.white.opacity(0.55))
                 Text(recorder.isRecording
                     ? (recorder.isPausedForInterruption ? "Paused" : "Recording")
                     : "Ready")
                     .font(.headline.weight(.bold))
                     .foregroundStyle(.white)
             }
-            Spacer()
+            Spacer(minLength: 0)
             Circle()
                 .fill(recorder.isRecording ? coral : aqua)
-                .frame(width: 9, height: 9)
-                .shadow(color: (recorder.isRecording ? coral : aqua).opacity(0.7), radius: 5)
+                .frame(width: 8, height: 8)
+                .shadow(color: (recorder.isRecording ? coral : aqua).opacity(0.8), radius: 5)
         }
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 5)
     }
 
     private var recordControl: some View {
-        VStack(spacing: 9) {
-            ZStack {
-                Circle()
-                    .stroke((recorder.isRecording ? coral : aqua).opacity(0.22), lineWidth: 1)
-                    .frame(width: 142, height: 142)
-                Circle()
-                    .fill((recorder.isRecording ? coral : aqua).opacity(0.13))
-                    .frame(width: 118, height: 118)
-                Circle()
-                    .fill(recorder.isRecording ? coral : .white.opacity(0.12))
-                    .frame(width: 92, height: 92)
-                    .shadow(color: (recorder.isRecording ? coral : aqua).opacity(0.4), radius: 14)
-                Image(systemName: recorder.isRecording
-                    ? (recorder.isPausedForInterruption ? "pause.fill" : "stop.fill")
-                    : "mic.fill")
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(recorder.isRecording ? .white : aqua)
-            }
-            .animation(.easeInOut(duration: 0.2), value: recorder.isRecording)
-
-            if recorder.isRecording {
-                VStack(spacing: 3) {
-                    Text(formatDuration(recorder.elapsedTime))
-                        .font(.system(size: 25, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .contentTransition(.numericText())
-                    if recorder.isPausedForInterruption {
-                        Text("Audio paused; recording preserved")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.yellow.opacity(0.9))
-                    }
-                }
-            } else {
-                Text("Tap to capture")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.65))
-            }
-
-            if recorder.isRecording && recorder.isPausedForInterruption {
-                Button {
-                    recorder.resumeRecording()
-                } label: {
-                    Label("Resume audio", systemImage: "play.fill")
-                        .font(.caption.weight(.bold))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .tint(aqua)
-            }
-
+        VStack(spacing: 4) {
             Button {
                 if recorder.isRecording {
-                    recorder.stopRecording()
+                    if recorder.isPausedForInterruption {
+                        recorder.resumeRecording()
+                    } else {
+                        recorder.stopRecording()
+                    }
                 } else {
                     Task { await recorder.startRecording() }
                 }
             } label: {
-                Text(recorder.isRecording ? "Finish" : "Record")
-                    .font(.headline.weight(.bold))
-                    .frame(maxWidth: .infinity)
+                ZStack {
+                    Circle()
+                        .stroke((recorder.isRecording ? coral : aqua).opacity(0.24), lineWidth: 1)
+                        .frame(width: 116, height: 116)
+                    Circle()
+                        .fill((recorder.isRecording ? coral : aqua).opacity(0.13))
+                        .frame(width: 96, height: 96)
+                    Circle()
+                        .fill(recorder.isRecording ? coral : .white.opacity(0.12))
+                        .frame(width: 78, height: 78)
+                        .shadow(color: (recorder.isRecording ? coral : aqua).opacity(0.45), radius: 12)
+                    Image(systemName: recorder.isRecording
+                        ? (recorder.isPausedForInterruption ? "play.fill" : "stop.fill")
+                        : "mic.fill")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(recorder.isRecording ? .white : aqua)
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .tint(recorder.isRecording ? coral : aqua)
+            .buttonStyle(.plain)
+            .accessibilityLabel(recorder.isRecording
+                ? (recorder.isPausedForInterruption ? "Resume recording" : "Finish recording")
+                : "Start recording")
+
+            Text(recorder.isRecording ? formatDuration(recorder.elapsedTime) : "Tap to record")
+                .font(.system(size: 22, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.white)
+                .contentTransition(.numericText())
+                .minimumScaleFactor(0.75)
+
+            if recorder.isRecording && recorder.isPausedForInterruption {
+                HStack(spacing: 5) {
+                    Text("Audio paused; capture preserved")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.yellow.opacity(0.9))
+                    Button("Finish") {
+                        recorder.stopRecording()
+                    }
+                    .font(.caption2.weight(.bold))
+                    .buttonStyle(.bordered)
+                    .tint(coral)
+                }
+            } else {
+                Text(recorder.isRecording ? "Tap to finish" : "Watch microphone ready")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.55))
+            }
         }
-        .padding(.vertical, 9)
+        .animation(.easeInOut(duration: 0.2), value: recorder.isRecording)
     }
 
     private var transferStatus: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 7) {
             Image(systemName: "iphone.and.arrow.forward")
+                .font(.caption.weight(.bold))
                 .foregroundStyle(aqua)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("To iPhone")
-                    .font(.caption.weight(.semibold))
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Relay")
+                    .font(.caption.weight(.bold))
                     .foregroundStyle(.white)
                 Text(transfer.statusMessage)
                     .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.5))
-                    .lineLimit(2)
+                    .foregroundStyle(.white.opacity(0.55))
+                    .lineLimit(1)
             }
-            Spacer()
+            Spacer(minLength: 4)
             if transfer.queuedChunkCount > 0 {
                 Text("\(min(transfer.deliveredChunkCount, transfer.queuedChunkCount))/\(transfer.queuedChunkCount)")
                     .font(.caption2.monospacedDigit().weight(.bold))
                     .foregroundStyle(aqua)
             } else {
-                Image(systemName: transfer.statusMessage.contains("delivered") ? "checkmark.circle.fill" : "arrow.up.circle")
-                    .foregroundStyle(transfer.statusMessage.contains("delivered") ? aqua : .white.opacity(0.4))
+                Image(systemName: transfer.statusMessage.contains("delivered")
+                    ? "checkmark.circle.fill" : "arrow.up.circle")
+                    .foregroundStyle(transfer.statusMessage.contains("delivered") ? aqua : .white.opacity(0.45))
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    private func pendingRecording(url: URL) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Last capture", systemImage: "waveform")
-                    .font(.caption.weight(.semibold))
-                Spacer()
-                Text(formatDuration(recorder.elapsedTime))
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.45))
+    @ViewBuilder
+    private var retryAction: some View {
+        if !recorder.isRecording, transfer.lastRecordingID != nil {
+            Button {
+                transfer.retryLastRecording()
+            } label: {
+                Label("Retry last send", systemImage: "arrow.clockwise")
+                    .font(.caption.weight(.bold))
             }
-            Text(url.deletingPathExtension().lastPathComponent)
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.48))
-                .lineLimit(1)
-
-            HStack(spacing: 8) {
-                Button {
-                    recorder.queueLastRecording()
-                } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(aqua)
-
-                Button(role: .destructive) {
-                    recorder.deleteLastRecording()
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.bordered)
-            }
-        }
-        .padding(12)
-        .background(coral.opacity(0.1), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(coral.opacity(0.22), lineWidth: 1)
+            .buttonStyle(.bordered)
+            .tint(aqua)
+            .frame(height: 28)
         }
     }
 

@@ -1,8 +1,8 @@
 import AppIntents
 
 struct StartWatchRecordingIntent: AppIntent {
-    static var title: LocalizedStringResource = "Start Watch Recording"
-    static var openAppWhenRun = false
+    static let title: LocalizedStringResource = "Start Watch Recording"
+    static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
         await AudioRecorderService.shared.startRecording()
@@ -11,11 +11,31 @@ struct StartWatchRecordingIntent: AppIntent {
 }
 
 struct StopWatchRecordingIntent: AppIntent {
-    static var title: LocalizedStringResource = "Stop Watch Recording"
-    static var openAppWhenRun = false
+    static let title: LocalizedStringResource = "Stop Watch Recording"
+    static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
         await AudioRecorderService.shared.stopRecording()
+        return .result()
+    }
+}
+
+struct ResumeWatchRecordingIntent: AppIntent {
+    static let title: LocalizedStringResource = "Resume Watch Recording"
+    static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
+
+    func perform() async throws -> some IntentResult {
+        await AudioRecorderService.shared.resumeRecording()
+        return .result()
+    }
+}
+
+struct RetryWatchUploadIntent: AppIntent {
+    static let title: LocalizedStringResource = "Retry Watch Upload"
+    static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
+
+    func perform() async throws -> some IntentResult {
+        WatchConnectivityTransferService.shared.retryLastRecording()
         return .result()
     }
 }
@@ -24,15 +44,40 @@ struct CodexWatchWatchShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: StartWatchRecordingIntent(),
-            phrases: ["Start a watch recording with \(.applicationName)"],
-            shortTitle: "Start Watch Recording",
+            phrases: [
+                "Start a recording with \(.applicationName)",
+                "Start recording on my watch with \(.applicationName)",
+                "Begin a memo with \(.applicationName)"
+            ],
+            shortTitle: "Start Recording",
             systemImageName: "record.circle"
         )
         AppShortcut(
             intent: StopWatchRecordingIntent(),
-            phrases: ["Stop the watch recording with \(.applicationName)"],
-            shortTitle: "Stop Watch Recording",
+            phrases: [
+                "Stop the recording with \(.applicationName)",
+                "Finish the recording with \(.applicationName)"
+            ],
+            shortTitle: "Stop Recording",
             systemImageName: "stop.circle"
+        )
+        AppShortcut(
+            intent: ResumeWatchRecordingIntent(),
+            phrases: [
+                "Resume the recording with \(.applicationName)",
+                "Continue recording with \(.applicationName)"
+            ],
+            shortTitle: "Resume Recording",
+            systemImageName: "play.circle"
+        )
+        AppShortcut(
+            intent: RetryWatchUploadIntent(),
+            phrases: [
+                "Retry the upload with \(.applicationName)",
+                "Send the recording again with \(.applicationName)"
+            ],
+            shortTitle: "Retry Upload",
+            systemImageName: "arrow.clockwise.circle"
         )
     }
 }

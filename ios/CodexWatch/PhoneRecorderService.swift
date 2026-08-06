@@ -14,6 +14,10 @@ final class PhoneRecorderService: NSObject, ObservableObject {
     private var recorder: AVAudioRecorder?
 
     func startRecording() async {
+        guard !isRecording else {
+            statusMessage = "Already recording"
+            return
+        }
         errorMessage = nil
         guard await requestMicrophonePermission() else {
             statusMessage = "Allow microphone access in Settings"
