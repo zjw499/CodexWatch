@@ -2,6 +2,8 @@ import AppIntents
 
 struct StartWatchRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Start Watch Recording"
+    static let openAppWhenRun = false
+    @available(watchOS 26.0, *)
     static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
@@ -12,6 +14,8 @@ struct StartWatchRecordingIntent: AppIntent {
 
 struct StopWatchRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Stop Watch Recording"
+    static let openAppWhenRun = false
+    @available(watchOS 26.0, *)
     static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
@@ -22,6 +26,8 @@ struct StopWatchRecordingIntent: AppIntent {
 
 struct ResumeWatchRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Resume Watch Recording"
+    static let openAppWhenRun = false
+    @available(watchOS 26.0, *)
     static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
@@ -32,6 +38,8 @@ struct ResumeWatchRecordingIntent: AppIntent {
 
 struct RetryWatchUploadIntent: AppIntent {
     static let title: LocalizedStringResource = "Retry Watch Upload"
+    static let openAppWhenRun = false
+    @available(watchOS 26.0, *)
     static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
