@@ -32,6 +32,8 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     private var countedDeliveredFiles: Set<String> = []
     private var counterRecordingID: String?
     private var finalChunkQueued = false
+    private var retryAttemptsByFilename: [String: Int] = [:]
+    private let retryDelays: [TimeInterval] = [5, 15, 45, 120, 300]
     private let sentFilesKey = "CodexWatch.SentWatchRecordings"
     private let lastRecordingIDKey = "CodexWatch.LastStreamRecordingID"
 
@@ -57,8 +59,6 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func beginRecording(recordingID: String) {
-        discardOlderStreamTransfers(keeping: recordingID)
-        removeOlderStreamChunks(keeping: recordingID)
         lastRecordingID = recordingID
         counterRecordingID = recordingID
         UserDefaults.standard.set(recordingID, forKey: lastRecordingIDKey)
@@ -67,6 +67,18 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         countedDeliveredFiles.removeAll()
         finalChunkQueued = false
         statusMessage = "Recording \(recordingID.prefix(6))"
+    }
+
+    func restoreRecording(recordingID: String) {
+        lastRecordingID = recordingID
+        counterRecordingID = recordingID
+        UserDefaults.standard.set(recordingID, forKey: lastRecordingIDKey)
+        statusMessage = "Recovering recording \(recordingID.prefix(6))"
+        recoverSavedTransfers()
+    }
+
+    func recoverSavedTransfers() {
+        flushPendingFiles()
     }
 
     func retryLastRecording() {
@@ -178,6 +190,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         }
         let candidates = (pendingFiles + recovered)
             .filter {
+                FileManager.default.fileExists(atPath: $0.url.path) &&
                 !sentFiles.contains($0.url.lastPathComponent) &&
                 !inFlightFiles.contains($0.url.lastPathComponent)
             }
@@ -208,10 +221,16 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             let metadata = fileTransfer.file.metadata
             let transferRecordingID = metadata?["recording_id"] as? String
             if let error {
-                self.inFlightFiles.remove(fileTransfer.file.fileURL.lastPathComponent)
+                let filename = fileTransfer.file.fileURL.lastPathComponent
+                self.inFlightFiles.remove(filename)
                 if transferRecordingID == self.counterRecordingID || transferRecordingID == nil {
-                    self.statusMessage = "iPhone transfer failed: \(error.localizedDescription)"
+                    self.statusMessage = "iPhone transfer interrupted; retrying"
                 }
+                self.scheduleRetry(
+                    fileURL: fileTransfer.file.fileURL,
+                    metadata: metadata,
+                    error: error
+                )
             } else {
                 var sentFiles = UserDefaults.standard.stringArray(forKey: self.sentFilesKey) ?? []
                 let filename = fileTransfer.file.fileURL.lastPathComponent
@@ -220,6 +239,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                     UserDefaults.standard.set(sentFiles, forKey: self.sentFilesKey)
                 }
                 self.inFlightFiles.remove(filename)
+                self.retryAttemptsByFilename.removeValue(forKey: filename)
                 let isChunk = metadata?["kind"] as? String == "audio-recording-chunk"
                 if isChunk {
                     self.markChunkDelivered(
@@ -233,6 +253,31 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                 }
                 self.flushPendingFiles()
             }
+        }
+    }
+
+    private func scheduleRetry(
+        fileURL: URL,
+        metadata: [String: Any]?,
+        error: Error
+    ) {
+        let filename = fileURL.lastPathComponent
+        let attempt = retryAttemptsByFilename[filename, default: 0]
+        guard attempt < retryDelays.count else {
+            retryAttemptsByFilename[filename] = 0
+            statusMessage = "iPhone transfer waiting: \(error.localizedDescription)"
+            return
+        }
+        retryAttemptsByFilename[filename] = attempt + 1
+        let delay = retryDelays[attempt]
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self,
+                  FileManager.default.fileExists(atPath: fileURL.path) else { return }
+            self.pendingFiles.append(PendingFile(
+                url: fileURL,
+                metadata: metadata ?? self.metadata(for: fileURL)
+            ))
+            self.flushPendingFiles()
         }
     }
 
@@ -286,38 +331,4 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             .appendingPathComponent("Recordings", isDirectory: true)
     }
 
-    private func removeOlderStreamChunks(keeping recordingID: String) {
-        let files = (try? FileManager.default.contentsOfDirectory(
-            at: recordingsDirectory(),
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )) ?? []
-        var removedNames = Set<String>()
-        for fileURL in files where fileURL.lastPathComponent.hasPrefix("stream_") &&
-            !fileURL.lastPathComponent.contains("_\(recordingID)_") {
-            removedNames.insert(fileURL.lastPathComponent)
-            try? FileManager.default.removeItem(at: fileURL)
-        }
-        if !removedNames.isEmpty {
-            var sentFiles = UserDefaults.standard.stringArray(forKey: sentFilesKey) ?? []
-            sentFiles.removeAll { removedNames.contains($0) }
-            UserDefaults.standard.set(sentFiles, forKey: sentFilesKey)
-        }
-    }
-
-    private func discardOlderStreamTransfers(keeping recordingID: String) {
-        pendingFiles.removeAll { pending in
-            guard pending.metadata["kind"] as? String == "audio-recording-chunk" else {
-                return false
-            }
-            return pending.metadata["recording_id"] as? String != recordingID
-        }
-        for transfer in WCSession.default.outstandingFileTransfers {
-            let metadata = transfer.file.metadata
-            guard metadata?["kind"] as? String == "audio-recording-chunk",
-                  metadata?["recording_id"] as? String != recordingID else { continue }
-            inFlightFiles.remove(transfer.file.fileURL.lastPathComponent)
-            transfer.cancel()
-        }
-    }
 }

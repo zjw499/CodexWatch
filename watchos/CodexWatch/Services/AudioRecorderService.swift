@@ -2,6 +2,12 @@ import AVFoundation
 import Combine
 import Foundation
 
+private struct PersistedRecordingState: Codable {
+    let recordingID: String
+    let nextChunkIndex: Int
+    let completedDuration: TimeInterval
+}
+
 @MainActor
 final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDelegate {
     @Published private(set) var isRecording = false
@@ -23,17 +29,31 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
     private var pendingChunkIndex: Int?
     private var durationLimitedRecorder: AVAudioRecorder?
     private let chunkInterval: TimeInterval = 30
+    private let persistedRecordingKey = "CodexWatch.ActiveRecordingState"
     static let shared = AudioRecorderService()
 
     private let transferService = WatchConnectivityTransferService.shared
 
     override init() {
         super.init()
+        let audioSession = AVAudioSession.sharedInstance()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleAudioInterruption(_:)),
             name: AVAudioSession.interruptionNotification,
-            object: AVAudioSession.sharedInstance()
+            object: audioSession
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioRouteChange(_:)),
+            name: AVAudioSession.routeChangeNotification,
+            object: audioSession
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMediaServicesReset(_:)),
+            name: AVAudioSession.mediaServicesWereResetNotification,
+            object: audioSession
         )
     }
 
@@ -44,7 +64,14 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
     func prepare() async {
         guard !isRecording else { return }
         let granted = await requestMicrophonePermission()
-        statusMessage = granted ? "Ready to record" : "Microphone permission is required"
+        guard granted else {
+            statusMessage = "Microphone permission is required"
+            return
+        }
+        restoreInterruptedRecordingIfNeeded()
+        if !isRecording {
+            statusMessage = "Ready to record"
+        }
     }
 
     func startRecording() async {
@@ -79,6 +106,7 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
             completedDuration = 0
             self.recorder = try startChunk(recordingID: recordingID, index: chunkIndex)
             transferService.beginRecording(recordingID: recordingID)
+            persistRecordingState()
             lastRecordingURL = nil
             elapsedTime = 0
             isRecording = true
@@ -91,19 +119,25 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     func updateElapsedTime() {
-        guard isRecording, let recorder else { return }
+        guard isRecording else { return }
+        guard let recorder else {
+            if !awaitingInterruptionEnd {
+                scheduleRecovery()
+            }
+            return
+        }
         guard recorder.isRecording else {
             elapsedTime = completedDuration + recorder.currentTime
-            if durationLimitedRecorder === recorder {
-                // The system is about to deliver the duration-limit delegate callback.
+            if durationLimitedRecorder === recorder,
+               recorder.currentTime >= chunkInterval - 0.5 {
+                // The system is about to deliver the duration-limit callback.
                 return
             }
             guard !awaitingInterruptionEnd else { return }
-            if !audioInterrupted {
-                audioInterrupted = true
-                isPausedForInterruption = true
-                statusMessage = "Audio paused; recovering"
-            }
+            preserveCurrentChunkForRecovery()
+            audioInterrupted = true
+            isPausedForInterruption = true
+            statusMessage = "Audio paused; recording preserved"
             scheduleRecovery()
             return
         }
@@ -112,12 +146,6 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
 
     func stopRecording() {
         guard let recordingID else { return }
-        guard let recorder else {
-            // A segment restart may still be pending after a transient audio failure.
-            // Keep the session alive so the queued chunks are not incorrectly marked final.
-            statusMessage = "Audio paused; tap Resume"
-            return
-        }
         recoveryTask?.cancel()
         recoveryTask = nil
         audioInterrupted = false
@@ -126,32 +154,36 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
         recoveryAttempts = 0
         pendingChunkIndex = nil
         durationLimitedRecorder = nil
-        let finalDuration = recorder.currentTime
-        recorder.stop()
-        self.recorder = nil
-        isRecording = false
-        elapsedTime = completedDuration + finalDuration
-        chunkCount = chunkIndex + 1
-        let preferredFinalURL = completedChunkURL(
-            recordingID: recordingID,
-            index: chunkIndex,
-            isFinal: true
-        )
-        try? FileManager.default.removeItem(at: preferredFinalURL)
-        var transferURL = recorder.url
-        do {
-            try FileManager.default.moveItem(at: recorder.url, to: preferredFinalURL)
-            transferURL = preferredFinalURL
-        } catch {
-            errorMessage = "Could not finalize the last audio chunk: \(error.localizedDescription)"
+
+        if let recorder {
+            let finalDuration = recorder.currentTime
+            let currentIndex = chunkIndex
+            recorder.stop()
+            self.recorder = nil
+            completedDuration += finalDuration
+            elapsedTime = completedDuration
+            chunkCount = currentIndex + 1
+            let transferURL = finalizeChunk(
+                recorderURL: recorder.url,
+                recordingID: recordingID,
+                index: currentIndex,
+                isFinal: true
+            )
+            transferService.enqueueChunk(
+                fileURL: transferURL,
+                recordingID: recordingID,
+                chunkIndex: currentIndex,
+                isFinal: true
+            )
+        } else {
+            // If audio is unavailable, promote the last preserved partial chunk
+            // to final instead of losing the recording or waiting for Resume.
+            finalizePreservedChunks(recordingID: recordingID)
         }
-        transferService.enqueueChunk(
-            fileURL: transferURL,
-            recordingID: recordingID,
-            chunkIndex: chunkIndex,
-            isFinal: true
-        )
+
+        isRecording = false
         self.recordingID = nil
+        clearPersistedRecordingState()
         lastRecordingURL = nil
         statusMessage = "Final chunk queued"
         try? AVAudioSession.sharedInstance().setActive(false)
@@ -164,6 +196,23 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
         isPausedForInterruption = true
         statusMessage = "Resuming audio"
         scheduleRecovery()
+    }
+
+    func appDidEnterBackground() {
+        guard isRecording else { return }
+        // The audio background mode keeps AVAudioRecorder alive; this manifest
+        // protects the session if watchOS suspends or terminates the UI process.
+        persistRecordingState()
+        transferService.recoverSavedTransfers()
+    }
+
+    func appDidBecomeActive() {
+        guard isRecording else { return }
+        persistRecordingState()
+        if recorder == nil, !awaitingInterruptionEnd {
+            scheduleRecovery()
+        }
+        transferService.recoverSavedTransfers()
     }
 
     func queueLastRecording() {
@@ -226,48 +275,42 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
     private func rotateChunk() {
         guard isRecording, !audioInterrupted, let recorder, let recordingID else { return }
         let completedChunkDuration = recorder.currentTime
+        let completedIndex = chunkIndex
         durationLimitedRecorder = nil
         recorder.stop()
+        self.recorder = nil
         completedDuration += completedChunkDuration
-        let completedIndex = chunkIndex
-        let preferredCompletedURL = completedChunkURL(
+
+        let completedURL = finalizeChunk(
+            recorderURL: recorder.url,
             recordingID: recordingID,
             index: completedIndex,
             isFinal: false
         )
-        try? FileManager.default.removeItem(at: preferredCompletedURL)
-        var completedURL = recorder.url
-        do {
-            try FileManager.default.moveItem(at: recorder.url, to: preferredCompletedURL)
-            completedURL = preferredCompletedURL
-        } catch {
-            errorMessage = "Audio chunk \(completedIndex + 1) will transfer without renaming: \(error.localizedDescription)"
-        }
+        transferService.enqueueChunk(
+            fileURL: completedURL,
+            recordingID: recordingID,
+            chunkIndex: completedIndex,
+            isFinal: false
+        )
+
         let nextIndex = completedIndex + 1
+        chunkIndex = nextIndex
+        chunkCount = nextIndex
+        pendingChunkIndex = nextIndex
+        persistRecordingState()
+
         do {
-            let nextRecorder = try startChunk(recordingID: recordingID, index: nextIndex)
-            self.recorder = nextRecorder
-            chunkIndex = nextIndex
-            chunkCount = nextIndex
-            transferService.enqueueChunk(
-                fileURL: completedURL,
-                recordingID: recordingID,
-                chunkIndex: completedIndex,
-                isFinal: false
-            )
+            self.recorder = try startChunk(recordingID: recordingID, index: nextIndex)
+            pendingChunkIndex = nil
+            audioInterrupted = false
+            isPausedForInterruption = false
             statusMessage = "Recording and sending chunk \(completedIndex + 1)"
+            persistRecordingState()
         } catch {
-            self.recorder = nil
-            transferService.enqueueChunk(
-                fileURL: completedURL,
-                recordingID: recordingID,
-                chunkIndex: completedIndex,
-                isFinal: false
-            )
-            pendingChunkIndex = nextIndex
             audioInterrupted = true
             isPausedForInterruption = true
-            statusMessage = "Audio paused; restarting segment"
+            statusMessage = "Audio paused; recording preserved"
             scheduleRecovery()
         }
     }
@@ -291,9 +334,10 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
 
         durationLimitedRecorder = nil
         guard successfully else {
+            preserveCurrentChunkForRecovery()
             audioInterrupted = true
             isPausedForInterruption = true
-            statusMessage = "Audio paused; recovering"
+            statusMessage = "Audio paused; recording preserved"
             scheduleRecovery()
             return
         }
@@ -308,51 +352,63 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
         switch type {
         case .began:
             awaitingInterruptionEnd = true
-            if recorder?.isRecording == true {
-                // A notification may suspend the UI without stopping the audio recorder.
-                // Do not block duration-based chunk delivery in that case.
-                statusMessage = "Recording"
-            } else {
-                audioInterrupted = true
-                isPausedForInterruption = true
-                statusMessage = "Audio interrupted; preserving recording"
-            }
+            preserveCurrentChunkForRecovery()
+            audioInterrupted = true
+            isPausedForInterruption = true
+            statusMessage = "Audio interrupted; recording preserved"
+            scheduleRecovery()
         case .ended:
             awaitingInterruptionEnd = false
-            if recorder?.isRecording == true, pendingChunkIndex == nil {
-                audioInterrupted = false
-                isPausedForInterruption = false
-                statusMessage = "Recording"
-                return
-            }
             audioInterrupted = true
             isPausedForInterruption = true
             statusMessage = "Audio interruption ended; recovering"
             scheduleRecovery()
         @unknown default:
-            break
+            preserveCurrentChunkForRecovery()
+            audioInterrupted = true
+            isPausedForInterruption = true
+            statusMessage = "Audio interruption; recording preserved"
         }
     }
 
+    @objc private func handleAudioRouteChange(_ notification: Notification) {
+        guard isRecording,
+              let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason),
+              reason != .categoryChange else { return }
+        preserveCurrentChunkForRecovery()
+        audioInterrupted = true
+        isPausedForInterruption = true
+        statusMessage = "Audio route changed; recording preserved"
+        scheduleRecovery()
+    }
+
+    @objc private func handleMediaServicesReset(_ notification: Notification) {
+        guard isRecording else { return }
+        awaitingInterruptionEnd = false
+        preserveCurrentChunkForRecovery()
+        audioInterrupted = true
+        isPausedForInterruption = true
+        statusMessage = "Audio service reset; recording preserved"
+        scheduleRecovery()
+    }
+
     private func scheduleRecovery() {
-        guard isRecording, !awaitingInterruptionEnd, recoveryTask == nil else { return }
+        guard isRecording, recoveryTask == nil else { return }
 
         recoveryTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            for attempt in 0..<10 {
-                guard !Task.isCancelled, self.isRecording else { return }
-                if attempt > 0 {
-                    try? await Task.sleep(for: .seconds(1))
-                }
-                guard !Task.isCancelled, self.isRecording else { return }
-                if self.tryToResumeRecording() {
+            while !Task.isCancelled, self.isRecording {
+                if !self.awaitingInterruptionEnd, self.tryToResumeRecording() {
                     self.recoveryTask = nil
                     return
                 }
+                self.statusMessage = self.awaitingInterruptionEnd
+                    ? "Interruption active; recording saved"
+                    : "Audio unavailable; recording saved"
+                try? await Task.sleep(for: .seconds(2))
             }
             self.recoveryTask = nil
-            guard self.isRecording else { return }
-            self.statusMessage = "Audio paused; tap Resume"
         }
     }
 
@@ -364,40 +420,215 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
             try audioSession.setCategory(.record, mode: .default, options: [])
             try audioSession.setActive(true)
 
-            if let pendingChunkIndex {
-                let nextRecorder = try startChunk(recordingID: recordingID, index: pendingChunkIndex)
-                self.recorder = nextRecorder
-                self.chunkIndex = pendingChunkIndex
-                self.chunkCount = pendingChunkIndex
-                self.pendingChunkIndex = nil
-                audioInterrupted = false
-                isPausedForInterruption = false
-                recoveryAttempts = 0
-                statusMessage = "Recording resumed"
-                return true
-            }
-
-            guard let recorder else { return false }
-            var resumed = recorder.isRecording
-            if !resumed, durationLimitedRecorder === recorder {
-                let remaining = max(0.25, chunkInterval - recorder.currentTime)
-                resumed = recorder.record(forDuration: remaining)
-            } else if !resumed {
-                resumed = recorder.record()
-            }
-            if resumed {
-                audioInterrupted = false
-                isPausedForInterruption = false
-                recoveryAttempts = 0
-                statusMessage = "Recording resumed"
-                return true
-            }
+            let nextIndex = pendingChunkIndex ?? chunkIndex
+            let nextRecorder = try startChunk(recordingID: recordingID, index: nextIndex)
+            self.recorder = nextRecorder
+            self.chunkIndex = nextIndex
+            self.chunkCount = nextIndex
+            self.pendingChunkIndex = nil
+            audioInterrupted = false
+            isPausedForInterruption = false
+            recoveryAttempts = 0
+            statusMessage = "Recording resumed"
+            persistRecordingState()
+            return true
         } catch {
-            // The next recovery attempt will retry after the system releases the audio session.
+            recoveryAttempts += 1
+            return false
+        }
+    }
+
+    private func preserveCurrentChunkForRecovery() {
+        guard let recorder, let recordingID else {
+            persistRecordingState()
+            return
         }
 
-        recoveryAttempts += 1
-        return false
+        let partialDuration = recorder.currentTime
+        let interruptedIndex = chunkIndex
+        durationLimitedRecorder = nil
+        recorder.stop()
+        self.recorder = nil
+        completedDuration += partialDuration
+
+        let transferURL = finalizeChunk(
+            recorderURL: recorder.url,
+            recordingID: recordingID,
+            index: interruptedIndex,
+            isFinal: false
+        )
+        transferService.enqueueChunk(
+            fileURL: transferURL,
+            recordingID: recordingID,
+            chunkIndex: interruptedIndex,
+            isFinal: false
+        )
+        let nextIndex = interruptedIndex + 1
+        chunkIndex = nextIndex
+        chunkCount = nextIndex
+        pendingChunkIndex = nextIndex
+        persistRecordingState()
+    }
+
+    private func finalizeChunk(
+        recorderURL: URL,
+        recordingID: String,
+        index: Int,
+        isFinal: Bool
+    ) -> URL {
+        let preferredURL = completedChunkURL(
+            recordingID: recordingID,
+            index: index,
+            isFinal: isFinal
+        )
+        try? FileManager.default.removeItem(at: preferredURL)
+        guard recorderURL != preferredURL else { return recorderURL }
+        do {
+            try FileManager.default.moveItem(at: recorderURL, to: preferredURL)
+            return preferredURL
+        } catch {
+            do {
+                try FileManager.default.copyItem(at: recorderURL, to: preferredURL)
+                return preferredURL
+            } catch {
+                errorMessage = "Could not finalize audio chunk \(index + 1): \(error.localizedDescription)"
+                return recorderURL
+            }
+        }
+    }
+
+    private func finalizePreservedChunks(recordingID: String) {
+        let directory = (try? recordingsDirectory()) ?? FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        )[0].appendingPathComponent("Recordings", isDirectory: true)
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        let prefix = "stream_\(recordingID)_"
+        let candidates = files.filter {
+            $0.lastPathComponent.hasPrefix(prefix) &&
+            $0.lastPathComponent.hasSuffix("_0.m4a")
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard let lastPartial = candidates.last else {
+            return
+        }
+        let parts = lastPartial.deletingPathExtension().lastPathComponent.split(separator: "_")
+        guard parts.count == 4, let index = Int(parts[2]) else {
+            return
+        }
+        let finalURL = completedChunkURL(recordingID: recordingID, index: index, isFinal: true)
+        try? FileManager.default.removeItem(at: finalURL)
+        do {
+            try FileManager.default.copyItem(at: lastPartial, to: finalURL)
+            transferService.enqueueChunk(
+                fileURL: finalURL,
+                recordingID: recordingID,
+                chunkIndex: index,
+                isFinal: true
+            )
+        } catch {
+            errorMessage = "Could not finalize the preserved audio: \(error.localizedDescription)"
+        }
+    }
+
+    private func persistRecordingState() {
+        guard let recordingID else { return }
+        let state = PersistedRecordingState(
+            recordingID: recordingID,
+            nextChunkIndex: chunkIndex,
+            completedDuration: completedDuration
+        )
+        guard let data = try? JSONEncoder().encode(state) else { return }
+        UserDefaults.standard.set(data, forKey: persistedRecordingKey)
+    }
+
+    private func clearPersistedRecordingState() {
+        UserDefaults.standard.removeObject(forKey: persistedRecordingKey)
+    }
+
+    private func restoreInterruptedRecordingIfNeeded() {
+        guard !isRecording else { return }
+        let state: PersistedRecordingState
+        if let data = UserDefaults.standard.data(forKey: persistedRecordingKey),
+           let persisted = try? JSONDecoder().decode(PersistedRecordingState.self, from: data) {
+            state = persisted
+        } else if let orphanID = orphanRecordingID() {
+            // The manifest is written before recording starts, but recover an
+            // orphaned active file too if termination happened during startup.
+            state = PersistedRecordingState(
+                recordingID: orphanID,
+                nextChunkIndex: 0,
+                completedDuration: 0
+            )
+        } else {
+            return
+        }
+
+        recordingID = state.recordingID
+        chunkIndex = state.nextChunkIndex
+        chunkCount = state.nextChunkIndex
+        completedDuration = state.completedDuration
+        pendingChunkIndex = state.nextChunkIndex
+        audioInterrupted = true
+        isPausedForInterruption = true
+        isRecording = true
+        transferService.restoreRecording(recordingID: state.recordingID)
+        recoverActiveChunks(recordingID: state.recordingID)
+        elapsedTime = completedDuration
+        statusMessage = "Recovered recording; restoring audio"
+        scheduleRecovery()
+    }
+
+    private func orphanRecordingID() -> String? {
+        guard let directory = try? recordingsDirectory() else { return nil }
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        for fileURL in files where fileURL.lastPathComponent.hasPrefix("active_") {
+            let parts = fileURL.deletingPathExtension().lastPathComponent.split(separator: "_")
+            if parts.count == 3 {
+                return String(parts[1])
+            }
+        }
+        return nil
+    }
+
+    private func recoverActiveChunks(recordingID: String) {
+        guard let directory = try? recordingsDirectory() else { return }
+        let prefix = "active_\(recordingID)_"
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        var highestIndex = chunkIndex - 1
+        for fileURL in files.filter({ $0.lastPathComponent.hasPrefix(prefix) }) {
+            let parts = fileURL.deletingPathExtension().lastPathComponent.split(separator: "_")
+            guard let index = Int(parts.last ?? "") else { continue }
+            let streamURL = completedChunkURL(recordingID: recordingID, index: index, isFinal: false)
+            try? FileManager.default.removeItem(at: streamURL)
+            do {
+                try FileManager.default.moveItem(at: fileURL, to: streamURL)
+                transferService.enqueueChunk(
+                    fileURL: streamURL,
+                    recordingID: recordingID,
+                    chunkIndex: index,
+                    isFinal: false
+                )
+                highestIndex = max(highestIndex, index)
+            } catch {
+                errorMessage = "Could not recover audio chunk \(index + 1): \(error.localizedDescription)"
+            }
+        }
+        chunkIndex = max(chunkIndex, highestIndex + 1)
+        chunkCount = chunkIndex
+        pendingChunkIndex = chunkIndex
+        persistRecordingState()
     }
 
     private func completedChunkURL(recordingID: String, index: Int, isFinal: Bool) -> URL {

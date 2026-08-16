@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RecorderView: View {
     @EnvironmentObject private var recorder: AudioRecorderService
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var transfer = WatchConnectivityTransferService.shared
     private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
@@ -34,6 +35,13 @@ struct RecorderView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onReceive(timer) { _ in
             recorder.updateElapsedTime()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                recorder.appDidBecomeActive()
+            } else {
+                recorder.appDidEnterBackground()
+            }
         }
         .task {
             await recorder.prepare()
@@ -168,7 +176,7 @@ struct RecorderView: View {
 
     private var transferLabel: String {
         if recorder.isRecording && recorder.isPausedForInterruption {
-            return "Audio saved; tap play"
+            return "Audio saved; restoring"
         }
         if transfer.statusMessage.isEmpty {
             return "Relay ready"
