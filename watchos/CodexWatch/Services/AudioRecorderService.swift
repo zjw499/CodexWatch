@@ -8,8 +8,159 @@ private struct PersistedRecordingState: Codable {
     let completedDuration: TimeInterval
 }
 
+private struct CompletedAudioChunk: Sendable {
+    let recordingID: String
+    let index: Int
+    let url: URL
+    let duration: TimeInterval
+}
+
+private enum AudioChunkWriterEvent: Sendable {
+    case chunksReady
+    case failed(String)
+}
+
+private final class ContinuousAudioChunkWriter: @unchecked Sendable {
+    typealias EventHandler = @Sendable (ContinuousAudioChunkWriter, AudioChunkWriterEvent) -> Void
+
+    private let lock = NSLock()
+    private let recordingID: String
+    private let directory: URL
+    private let inputFormat: AVAudioFormat
+    private let outputSettings: [String: Any]
+    private let targetFrameCount: AVAudioFramePosition
+    private let eventHandler: EventHandler
+
+    private var currentFile: AVAudioFile?
+    private var currentURL: URL?
+    private var currentIndex: Int
+    private var currentFrameCount: AVAudioFramePosition = 0
+    private var pendingChunks: [CompletedAudioChunk] = []
+    private var stopped = false
+
+    init(
+        recordingID: String,
+        startingIndex: Int,
+        directory: URL,
+        inputFormat: AVAudioFormat,
+        chunkInterval: TimeInterval,
+        eventHandler: @escaping EventHandler
+    ) throws {
+        self.recordingID = recordingID
+        self.currentIndex = startingIndex
+        self.directory = directory
+        self.inputFormat = inputFormat
+        self.targetFrameCount = max(
+            1,
+            AVAudioFramePosition(inputFormat.sampleRate * chunkInterval)
+        )
+        self.eventHandler = eventHandler
+        self.outputSettings = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: inputFormat.sampleRate,
+            AVNumberOfChannelsKey: Int(inputFormat.channelCount),
+            AVEncoderBitRateKey: 48_000,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+        ]
+        try openChunkFile(index: startingIndex)
+    }
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        var event: AudioChunkWriterEvent?
+
+        lock.lock()
+        if !stopped, let currentFile {
+            do {
+                try currentFile.write(from: buffer)
+                currentFrameCount += AVAudioFramePosition(buffer.frameLength)
+                if currentFrameCount >= targetFrameCount {
+                    closeCurrentChunkLocked()
+                    currentIndex += 1
+                    do {
+                        try openChunkFile(index: currentIndex)
+                        event = .chunksReady
+                    } catch {
+                        stopped = true
+                        event = .failed("Could not open the next audio chunk: \(error.localizedDescription)")
+                    }
+                }
+            } catch {
+                closeCurrentChunkLocked()
+                stopped = true
+                event = .failed("Could not write the audio chunk: \(error.localizedDescription)")
+            }
+        }
+        lock.unlock()
+
+        if let event {
+            eventHandler(self, event)
+        }
+    }
+
+    func drainCompletedChunks() -> [CompletedAudioChunk] {
+        lock.lock()
+        let chunks = pendingChunks
+        pendingChunks.removeAll(keepingCapacity: true)
+        lock.unlock()
+        return chunks
+    }
+
+    func finishAndDrain() -> [CompletedAudioChunk] {
+        lock.lock()
+        stopped = true
+        closeCurrentChunkLocked()
+        let chunks = pendingChunks
+        pendingChunks.removeAll()
+        lock.unlock()
+        return chunks
+    }
+
+    func bufferedDuration() -> TimeInterval {
+        lock.lock()
+        let pendingDuration = pendingChunks.reduce(0) { $0 + $1.duration }
+        let currentDuration = Double(currentFrameCount) / inputFormat.sampleRate
+        lock.unlock()
+        return pendingDuration + currentDuration
+    }
+
+    private func openChunkFile(index: Int) throws {
+        let fileURL = directory.appendingPathComponent(
+            String(format: "active_%@_%06d.m4a", recordingID, index)
+        )
+        try? FileManager.default.removeItem(at: fileURL)
+        let file = try AVAudioFile(
+            forWriting: fileURL,
+            settings: outputSettings,
+            commonFormat: inputFormat.commonFormat,
+            interleaved: inputFormat.isInterleaved
+        )
+        currentURL = fileURL
+        currentFile = file
+        currentFrameCount = 0
+    }
+
+    private func closeCurrentChunkLocked() {
+        guard let currentURL else { return }
+        let frameCount = currentFrameCount
+        currentFile = nil
+        self.currentURL = nil
+        currentFrameCount = 0
+
+        guard frameCount > 0 else {
+            try? FileManager.default.removeItem(at: currentURL)
+            return
+        }
+        pendingChunks.append(CompletedAudioChunk(
+            recordingID: recordingID,
+            index: currentIndex,
+            url: currentURL,
+            duration: Double(frameCount) / inputFormat.sampleRate
+        ))
+    }
+}
+
 @MainActor
-final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDelegate {
+final class AudioRecorderService: NSObject, ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var elapsedTime: TimeInterval = 0
     @Published private(set) var lastRecordingURL: URL?
@@ -18,16 +169,15 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
     @Published private(set) var isPausedForInterruption = false
     @Published var errorMessage: String?
 
-    private var recorder: AVAudioRecorder?
+    private var audioEngine: AVAudioEngine?
+    private var chunkWriter: ContinuousAudioChunkWriter?
     private var recordingID: String?
     private var chunkIndex = 0
     private var completedDuration: TimeInterval = 0
     private var recoveryTask: Task<Void, Never>?
-    private var audioInterrupted = false
     private var awaitingInterruptionEnd = false
     private var recoveryAttempts = 0
     private var pendingChunkIndex: Int?
-    private var durationLimitedRecorder: AVAudioRecorder?
     private let chunkInterval: TimeInterval = 30
     private let persistedRecordingKey = "CodexWatch.ActiveRecordingState"
     static let shared = AudioRecorderService()
@@ -82,36 +232,38 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
         errorMessage = nil
         recoveryTask?.cancel()
         recoveryTask = nil
-        audioInterrupted = false
         awaitingInterruptionEnd = false
         isPausedForInterruption = false
         recoveryAttempts = 0
         pendingChunkIndex = nil
-        durationLimitedRecorder = nil
 
         guard await requestMicrophonePermission() else {
             statusMessage = "Allow microphone access in Watch Settings"
             return
         }
 
-        do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.record, mode: .default, options: [])
-            try audioSession.setActive(true)
+        let newRecordingID = UUID().uuidString
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        recordingID = newRecordingID
+        chunkIndex = 0
+        chunkCount = 0
+        completedDuration = 0
+        elapsedTime = 0
+        isRecording = true
+        transferService.beginRecording(recordingID: newRecordingID)
+        persistRecordingState()
 
-            let recordingID = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-            self.recordingID = recordingID
-            chunkIndex = 0
-            chunkCount = 0
-            completedDuration = 0
-            self.recorder = try startChunk(recordingID: recordingID, index: chunkIndex)
-            transferService.beginRecording(recordingID: recordingID)
-            persistRecordingState()
+        do {
+            try activateAudioSession()
+            try startContinuousCapture(recordingID: newRecordingID, startingIndex: 0)
             lastRecordingURL = nil
-            elapsedTime = 0
-            isRecording = true
             statusMessage = "Recording"
         } catch {
+            _ = stopCaptureAndCollectChunks()
+            isRecording = false
+            recordingID = nil
+            clearPersistedRecordingState()
             try? AVAudioSession.sharedInstance().setActive(false)
             errorMessage = error.localizedDescription
             statusMessage = "Ready to record"
@@ -120,69 +272,35 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
 
     func updateElapsedTime() {
         guard isRecording else { return }
-        guard let recorder else {
-            if !awaitingInterruptionEnd {
-                scheduleRecovery()
-            }
-            return
+        if let chunkWriter {
+            elapsedTime = completedDuration + chunkWriter.bufferedDuration()
         }
-        guard recorder.isRecording else {
-            elapsedTime = completedDuration + recorder.currentTime
-            if durationLimitedRecorder === recorder,
-               recorder.currentTime >= chunkInterval - 0.5 {
-                // The system is about to deliver the duration-limit callback.
-                return
-            }
-            guard !awaitingInterruptionEnd else { return }
-            preserveCurrentChunkForRecovery()
-            audioInterrupted = true
+        if let audioEngine, !audioEngine.isRunning, !awaitingInterruptionEnd {
             isPausedForInterruption = true
-            statusMessage = "Audio paused; recording preserved"
+            statusMessage = "Audio paused; restoring"
             scheduleRecovery()
-            return
         }
-        elapsedTime = completedDuration + recorder.currentTime
     }
 
     func stopRecording() {
         guard let recordingID else { return }
         recoveryTask?.cancel()
         recoveryTask = nil
-        audioInterrupted = false
         awaitingInterruptionEnd = false
         isPausedForInterruption = false
         recoveryAttempts = 0
-        pendingChunkIndex = nil
-        durationLimitedRecorder = nil
 
-        if let recorder {
-            let finalDuration = recorder.currentTime
-            let currentIndex = chunkIndex
-            recorder.stop()
-            self.recorder = nil
-            completedDuration += finalDuration
-            elapsedTime = completedDuration
-            chunkCount = currentIndex + 1
-            let transferURL = finalizeChunk(
-                recorderURL: recorder.url,
-                recordingID: recordingID,
-                index: currentIndex,
-                isFinal: true
-            )
-            transferService.enqueueChunk(
-                fileURL: transferURL,
-                recordingID: recordingID,
-                chunkIndex: currentIndex,
-                isFinal: true
-            )
-        } else {
-            // If audio is unavailable, promote the last preserved partial chunk
-            // to final instead of losing the recording or waiting for Resume.
+        let remainingChunks = stopCaptureAndCollectChunks()
+        if remainingChunks.isEmpty {
             finalizePreservedChunks(recordingID: recordingID)
+        } else {
+            processCompletedChunks(remainingChunks, finalChunkIndex: remainingChunks.count - 1)
         }
 
+        elapsedTime = completedDuration
         isRecording = false
         self.recordingID = nil
+        pendingChunkIndex = nil
         clearPersistedRecordingState()
         lastRecordingURL = nil
         statusMessage = "Final chunk queued"
@@ -192,7 +310,6 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
     func resumeRecording() {
         guard isRecording else { return }
         awaitingInterruptionEnd = false
-        audioInterrupted = true
         isPausedForInterruption = true
         statusMessage = "Resuming audio"
         scheduleRecovery()
@@ -200,8 +317,6 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
 
     func appDidEnterBackground() {
         guard isRecording else { return }
-        // The audio background mode keeps AVAudioRecorder alive; this manifest
-        // protects the session if watchOS suspends or terminates the UI process.
         persistRecordingState()
         transferService.recoverSavedTransfers()
     }
@@ -209,7 +324,13 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
     func appDidBecomeActive() {
         guard isRecording else { return }
         persistRecordingState()
-        if recorder == nil, !awaitingInterruptionEnd {
+        awaitingInterruptionEnd = false
+        if audioEngine?.isRunning == true {
+            isPausedForInterruption = false
+            statusMessage = "Recording"
+        } else {
+            isPausedForInterruption = true
+            statusMessage = "Restoring recording"
             scheduleRecovery()
         }
         transferService.recoverSavedTransfers()
@@ -238,110 +359,127 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
         }
     }
 
-    private func recordingsDirectory() throws -> URL {
-        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Recordings", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
+    private func activateAudioSession() throws {
+        let audioSession = AVAudioSession.sharedInstance()
+        try audioSession.setCategory(.record, mode: .default, options: [])
+        try? audioSession.setPreferredSampleRate(16_000)
+        try? audioSession.setPreferredIOBufferDuration(0.02)
+        try audioSession.setActive(true)
     }
 
-    private func startChunk(recordingID: String, index: Int) throws -> AVAudioRecorder {
-        let directory = try recordingsDirectory()
-        let fileURL = directory.appendingPathComponent(
-            String(format: "active_%@_%06d.m4a", recordingID, index)
-        )
-        try? FileManager.default.removeItem(at: fileURL)
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 16_000,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 48_000,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-        ]
-        let recorder = try AVAudioRecorder(url: fileURL, settings: settings)
-        recorder.delegate = self
-        recorder.prepareToRecord()
-        guard recorder.record(forDuration: chunkInterval) else {
+    private func startContinuousCapture(recordingID: String, startingIndex: Int) throws {
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
             throw NSError(
                 domain: "CodexWatch",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "The watch could not start an audio segment."]
+                userInfo: [NSLocalizedDescriptionKey: "The watch microphone is unavailable."]
             )
         }
-        durationLimitedRecorder = recorder
-        return recorder
-    }
 
-    private func rotateChunk() {
-        guard isRecording, !audioInterrupted, let recorder, let recordingID else { return }
-        let completedChunkDuration = recorder.currentTime
-        let completedIndex = chunkIndex
-        durationLimitedRecorder = nil
-        recorder.stop()
-        self.recorder = nil
-        completedDuration += completedChunkDuration
-
-        let completedURL = finalizeChunk(
-            recorderURL: recorder.url,
+        let writer = try ContinuousAudioChunkWriter(
             recordingID: recordingID,
-            index: completedIndex,
-            isFinal: false
-        )
-        transferService.enqueueChunk(
-            fileURL: completedURL,
-            recordingID: recordingID,
-            chunkIndex: completedIndex,
-            isFinal: false
-        )
+            startingIndex: startingIndex,
+            directory: try recordingsDirectory(),
+            inputFormat: inputFormat,
+            chunkInterval: chunkInterval
+        ) { [weak self] writer, event in
+            Task { @MainActor [weak self] in
+                self?.handleWriterEvent(writer, event: event)
+            }
+        }
 
-        let nextIndex = completedIndex + 1
-        chunkIndex = nextIndex
-        chunkCount = nextIndex
-        pendingChunkIndex = nextIndex
-        persistRecordingState()
+        inputNode.installTap(
+            onBus: 0,
+            bufferSize: 2_048,
+            format: inputFormat
+        ) { [weak writer] buffer, _ in
+            writer?.append(buffer)
+        }
 
         do {
-            self.recorder = try startChunk(recordingID: recordingID, index: nextIndex)
-            pendingChunkIndex = nil
-            audioInterrupted = false
-            isPausedForInterruption = false
-            statusMessage = "Recording and sending chunk \(completedIndex + 1)"
-            persistRecordingState()
+            engine.prepare()
+            try engine.start()
         } catch {
-            audioInterrupted = true
-            isPausedForInterruption = true
-            statusMessage = "Audio paused; recording preserved"
-            scheduleRecovery()
+            inputNode.removeTap(onBus: 0)
+            _ = writer.finishAndDrain()
+            throw error
         }
+
+        audioEngine = engine
+        chunkWriter = writer
+        chunkIndex = startingIndex
+        pendingChunkIndex = nil
+        persistRecordingState()
     }
 
-    nonisolated func audioRecorderDidFinishRecording(
-        _ recorder: AVAudioRecorder,
-        successfully flag: Bool
+    private func handleWriterEvent(
+        _ writer: ContinuousAudioChunkWriter,
+        event: AudioChunkWriterEvent
     ) {
-        Task { @MainActor [weak self] in
-            self?.handleAutomaticChunkCompletion(recorder, successfully: flag)
-        }
-    }
+        let completed = writer.drainCompletedChunks()
+        processCompletedChunks(completed, finalChunkIndex: nil)
 
-    private func handleAutomaticChunkCompletion(
-        _ finishedRecorder: AVAudioRecorder,
-        successfully: Bool
-    ) {
-        guard isRecording,
-              recorder === finishedRecorder,
-              durationLimitedRecorder === finishedRecorder else { return }
-
-        durationLimitedRecorder = nil
-        guard successfully else {
+        guard writer === chunkWriter else { return }
+        switch event {
+        case .chunksReady:
+            statusMessage = "Recording and sending chunk \(chunkCount)"
+        case .failed(let message):
+            errorMessage = message
             preserveCurrentChunkForRecovery()
-            audioInterrupted = true
             isPausedForInterruption = true
-            statusMessage = "Audio paused; recording preserved"
+            statusMessage = "Audio saved; restoring"
             scheduleRecovery()
-            return
         }
-        rotateChunk()
+    }
+
+    private func processCompletedChunks(
+        _ chunks: [CompletedAudioChunk],
+        finalChunkIndex: Int?
+    ) {
+        guard !chunks.isEmpty else { return }
+        for (offset, chunk) in chunks.enumerated() {
+            let isFinal = finalChunkIndex == offset
+            let transferURL = finalizeChunk(
+                recorderURL: chunk.url,
+                recordingID: chunk.recordingID,
+                index: chunk.index,
+                isFinal: isFinal
+            )
+            transferService.enqueueChunk(
+                fileURL: transferURL,
+                recordingID: chunk.recordingID,
+                chunkIndex: chunk.index,
+                isFinal: isFinal
+            )
+            if chunk.recordingID == recordingID {
+                completedDuration += chunk.duration
+                chunkIndex = max(chunkIndex, chunk.index + 1)
+                chunkCount = max(chunkCount, chunk.index + 1)
+                pendingChunkIndex = chunkIndex
+            }
+        }
+        persistRecordingState()
+    }
+
+    private func stopCaptureAndCollectChunks() -> [CompletedAudioChunk] {
+        if let audioEngine {
+            audioEngine.stop()
+            audioEngine.inputNode.removeTap(onBus: 0)
+        }
+        self.audioEngine = nil
+        let writer = chunkWriter
+        chunkWriter = nil
+        return writer?.finishAndDrain() ?? []
+    }
+
+    private func preserveCurrentChunkForRecovery() {
+        let completed = stopCaptureAndCollectChunks()
+        processCompletedChunks(completed, finalChunkIndex: nil)
+        pendingChunkIndex = chunkIndex
+        persistRecordingState()
     }
 
     @objc private func handleAudioInterruption(_ notification: Notification) {
@@ -352,44 +490,42 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
         switch type {
         case .began:
             awaitingInterruptionEnd = true
-            preserveCurrentChunkForRecovery()
-            audioInterrupted = true
             isPausedForInterruption = true
-            statusMessage = "Audio interrupted; recording preserved"
-            scheduleRecovery()
+            statusMessage = "Audio interruption; recording held"
+            persistRecordingState()
         case .ended:
             awaitingInterruptionEnd = false
-            audioInterrupted = true
             isPausedForInterruption = true
-            statusMessage = "Audio interruption ended; recovering"
+            statusMessage = "Audio interruption ended; restoring"
             scheduleRecovery()
         @unknown default:
-            preserveCurrentChunkForRecovery()
-            audioInterrupted = true
+            awaitingInterruptionEnd = false
             isPausedForInterruption = true
-            statusMessage = "Audio interruption; recording preserved"
+            scheduleRecovery()
         }
     }
 
     @objc private func handleAudioRouteChange(_ notification: Notification) {
         guard isRecording,
               let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason),
-              reason != .categoryChange else { return }
-        preserveCurrentChunkForRecovery()
-        audioInterrupted = true
-        isPausedForInterruption = true
-        statusMessage = "Audio route changed; recording preserved"
-        scheduleRecovery()
+              let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason) else { return }
+        switch reason {
+        case .oldDeviceUnavailable, .noSuitableRoute, .wakeFromSleep:
+            awaitingInterruptionEnd = false
+            isPausedForInterruption = true
+            statusMessage = "Audio route changed; restoring"
+            scheduleRecovery()
+        default:
+            return
+        }
     }
 
     @objc private func handleMediaServicesReset(_ notification: Notification) {
         guard isRecording else { return }
         awaitingInterruptionEnd = false
         preserveCurrentChunkForRecovery()
-        audioInterrupted = true
         isPausedForInterruption = true
-        statusMessage = "Audio service reset; recording preserved"
+        statusMessage = "Audio service reset; restoring"
         scheduleRecovery()
     }
 
@@ -404,7 +540,7 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
                     return
                 }
                 self.statusMessage = self.awaitingInterruptionEnd
-                    ? "Interruption active; recording saved"
+                    ? "Interruption active; recording held"
                     : "Audio unavailable; recording saved"
                 try? await Task.sleep(for: .seconds(2))
             }
@@ -416,17 +552,15 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
         guard isRecording, !awaitingInterruptionEnd, let recordingID else { return false }
 
         do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.record, mode: .default, options: [])
-            try audioSession.setActive(true)
-
-            let nextIndex = pendingChunkIndex ?? chunkIndex
-            let nextRecorder = try startChunk(recordingID: recordingID, index: nextIndex)
-            self.recorder = nextRecorder
-            self.chunkIndex = nextIndex
-            self.chunkCount = nextIndex
-            self.pendingChunkIndex = nil
-            audioInterrupted = false
+            try activateAudioSession()
+            if let audioEngine, chunkWriter != nil {
+                if !audioEngine.isRunning {
+                    try audioEngine.start()
+                }
+            } else {
+                let nextIndex = pendingChunkIndex ?? chunkIndex
+                try startContinuousCapture(recordingID: recordingID, startingIndex: nextIndex)
+            }
             isPausedForInterruption = false
             recoveryAttempts = 0
             statusMessage = "Recording resumed"
@@ -434,40 +568,18 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
             return true
         } catch {
             recoveryAttempts += 1
+            if recoveryAttempts == 3, chunkWriter != nil {
+                preserveCurrentChunkForRecovery()
+            }
             return false
         }
     }
 
-    private func preserveCurrentChunkForRecovery() {
-        guard let recorder, let recordingID else {
-            persistRecordingState()
-            return
-        }
-
-        let partialDuration = recorder.currentTime
-        let interruptedIndex = chunkIndex
-        durationLimitedRecorder = nil
-        recorder.stop()
-        self.recorder = nil
-        completedDuration += partialDuration
-
-        let transferURL = finalizeChunk(
-            recorderURL: recorder.url,
-            recordingID: recordingID,
-            index: interruptedIndex,
-            isFinal: false
-        )
-        transferService.enqueueChunk(
-            fileURL: transferURL,
-            recordingID: recordingID,
-            chunkIndex: interruptedIndex,
-            isFinal: false
-        )
-        let nextIndex = interruptedIndex + 1
-        chunkIndex = nextIndex
-        chunkCount = nextIndex
-        pendingChunkIndex = nextIndex
-        persistRecordingState()
+    private func recordingsDirectory() throws -> URL {
+        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Recordings", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
     }
 
     private func finalizeChunk(
@@ -512,13 +624,10 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
             $0.lastPathComponent.hasPrefix(prefix) &&
             $0.lastPathComponent.hasSuffix("_0.m4a")
         }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-        guard let lastPartial = candidates.last else {
-            return
-        }
+        guard let lastPartial = candidates.last else { return }
         let parts = lastPartial.deletingPathExtension().lastPathComponent.split(separator: "_")
-        guard parts.count == 4, let index = Int(parts[2]) else {
-            return
-        }
+        guard parts.count == 4, let index = Int(parts[2]) else { return }
+
         let finalURL = completedChunkURL(recordingID: recordingID, index: index, isFinal: true)
         try? FileManager.default.removeItem(at: finalURL)
         do {
@@ -556,8 +665,6 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
            let persisted = try? JSONDecoder().decode(PersistedRecordingState.self, from: data) {
             state = persisted
         } else if let orphanID = orphanRecordingID() {
-            // The manifest is written before recording starts, but recover an
-            // orphaned active file too if termination happened during startup.
             state = PersistedRecordingState(
                 recordingID: orphanID,
                 nextChunkIndex: 0,
@@ -572,7 +679,7 @@ final class AudioRecorderService: NSObject, ObservableObject, AVAudioRecorderDel
         chunkCount = state.nextChunkIndex
         completedDuration = state.completedDuration
         pendingChunkIndex = state.nextChunkIndex
-        audioInterrupted = true
+        awaitingInterruptionEnd = false
         isPausedForInterruption = true
         isRecording = true
         transferService.restoreRecording(recordingID: state.recordingID)
