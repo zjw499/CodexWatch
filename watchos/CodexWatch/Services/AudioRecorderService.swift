@@ -362,8 +362,6 @@ final class AudioRecorderService: NSObject, ObservableObject {
     private func activateAudioSession() throws {
         let audioSession = AVAudioSession.sharedInstance()
         try audioSession.setCategory(.record, mode: .default, options: [])
-        try? audioSession.setPreferredSampleRate(16_000)
-        try? audioSession.setPreferredIOBufferDuration(0.02)
         try audioSession.setActive(true)
     }
 
@@ -510,7 +508,7 @@ final class AudioRecorderService: NSObject, ObservableObject {
               let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason) else { return }
         switch reason {
-        case .oldDeviceUnavailable, .noSuitableRoute, .wakeFromSleep:
+        case .oldDeviceUnavailable, .wakeFromSleep:
             awaitingInterruptionEnd = false
             isPausedForInterruption = true
             statusMessage = "Audio route changed; restoring"
