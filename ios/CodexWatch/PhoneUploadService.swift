@@ -681,7 +681,8 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                     return
                 }
                 let hasCompleteSequence = progress.finalChunkIndex.map {
-                    progress.receivedChunks >= $0 + 1
+                    progress.receivedChunks >= $0 + 1 &&
+                    (progress.missingChunkIndexes ?? []).isEmpty
                 } ?? false
                 if progress.status == "failed" {
                     try await PhoneMemoAPIClient.shared.retryRecording(id: recordingID)
@@ -689,7 +690,11 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 } else if hasCompleteSequence {
                     self?.setStatus("PC has every chunk and is processing")
                 } else {
-                    self?.requestWatchResend(recordingID)
+                    let missing = progress.missingChunkIndexes ?? []
+                    self?.requestWatchResend(
+                        recordingID,
+                        chunkIndexes: missing.isEmpty ? nil : missing
+                    )
                 }
             } catch PhoneMemoAPIError.httpStatus(404) {
                 self?.requestWatchResend(recordingID)
@@ -723,6 +728,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     private func startCompletionPolling(recordingID: String) {
         guard completionPollingRecordingIDs.insert(recordingID).inserted else { return }
         Task { [weak self] in
+            var requestedMissingIndexes: Set<Int>?
             defer {
                 self?.stateQueue.async {
                     self?.completionPollingRecordingIDs.remove(recordingID)
@@ -743,6 +749,35 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                             forRecordingID: recordingID
                         )
                         return
+                    }
+                    let missingIndexes = Set(progress.missingChunkIndexes ?? [])
+                    if !missingIndexes.isEmpty {
+                        if requestedMissingIndexes != missingIndexes {
+                            self.requestWatchResend(
+                                recordingID,
+                                chunkIndexes: missingIndexes.sorted()
+                            )
+                            requestedMissingIndexes = missingIndexes
+                        }
+                        self.setStatus(
+                            "Recovering \(missingIndexes.count) missing watch chunk\(missingIndexes.count == 1 ? "" : "s")",
+                            forRecordingID: recordingID
+                        )
+                        try? await Task.sleep(for: .seconds(5))
+                        continue
+                    }
+                    if let finalIndex = progress.finalChunkIndex,
+                       progress.receivedChunks < finalIndex + 1 {
+                        if requestedMissingIndexes != Set<Int>() {
+                            self.requestWatchResend(recordingID)
+                            requestedMissingIndexes = Set<Int>()
+                        }
+                        self.setStatus(
+                            "Recovering missing watch chunks",
+                            forRecordingID: recordingID
+                        )
+                        try? await Task.sleep(for: .seconds(5))
+                        continue
                     }
                     self.setStatus(
                         "PC transcribed \(progress.transcribedChunks) of \(progress.receivedChunks) chunks",
@@ -808,17 +843,28 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         UserDefaults.standard.set(recordingIDs.sorted(), forKey: Self.pendingCompletionDefaultsKey)
     }
 
-    private func requestWatchResend(_ recordingID: String) {
+    private func requestWatchResend(
+        _ recordingID: String,
+        chunkIndexes: [Int]? = nil
+    ) {
         DispatchQueue.main.async {
             guard WCSession.isSupported() else {
                 self.setStatus("Watch connection unavailable")
                 return
             }
-            WCSession.default.transferUserInfo([
+            var request: [String: Any] = [
                 "command": "resend-recording",
                 "recording_id": recordingID,
-            ])
-            self.setStatus("Asked Watch to resend missing chunks")
+            ]
+            if let chunkIndexes, !chunkIndexes.isEmpty {
+                request["chunk_indexes"] = chunkIndexes
+            }
+            WCSession.default.transferUserInfo(request)
+            self.setStatus(
+                chunkIndexes?.count == 1
+                    ? "Asked Watch for the missing chunk"
+                    : "Asked Watch to resend missing chunks"
+            )
         }
     }
 

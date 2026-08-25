@@ -53,6 +53,7 @@ struct RecordingProgress: Decodable {
     let receivedChunks: Int
     let transcribedChunks: Int
     let finalChunkIndex: Int?
+    let missingChunkIndexes: [Int]?
 
     enum CodingKeys: String, CodingKey {
         case recordingID = "recording_id"
@@ -60,6 +61,7 @@ struct RecordingProgress: Decodable {
         case receivedChunks = "received_chunks"
         case transcribedChunks = "transcribed_chunks"
         case finalChunkIndex = "final_chunk_index"
+        case missingChunkIndexes = "missing_chunk_indexes"
     }
 }
 

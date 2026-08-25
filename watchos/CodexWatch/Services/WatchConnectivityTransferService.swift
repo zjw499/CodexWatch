@@ -29,7 +29,8 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
 
     private var pendingFiles: [PendingFile] = []
     private var inFlightFiles: Set<String> = []
-    private var countedDeliveredFiles: Set<String> = []
+    private var queuedChunkIndexes: Set<Int> = []
+    private var deliveredChunkIndexes: Set<Int> = []
     private var counterRecordingID: String?
     private var finalChunkQueued = false
     private var retryAttemptsByFilename: [String: Int] = [:]
@@ -64,7 +65,8 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         UserDefaults.standard.set(recordingID, forKey: lastRecordingIDKey)
         queuedChunkCount = 0
         deliveredChunkCount = 0
-        countedDeliveredFiles.removeAll()
+        queuedChunkIndexes.removeAll()
+        deliveredChunkIndexes.removeAll()
         finalChunkQueued = false
         statusMessage = "Recording \(recordingID.prefix(6))"
     }
@@ -94,21 +96,29 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         statusMessage = "Checking iPhone and PC"
     }
 
-    private func resendRecording(_ recordingID: String) {
-        let matchingFiles = ((try? FileManager.default.contentsOfDirectory(
+    private func resendRecording(_ recordingID: String, chunkIndexes: Set<Int>? = nil) {
+        let allMatchingFiles = ((try? FileManager.default.contentsOfDirectory(
             at: recordingsDirectory(),
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         )) ?? []).filter { $0.lastPathComponent.contains("_\(recordingID)_") }
+        let matchingFiles = allMatchingFiles.filter { fileURL in
+            guard let chunkIndexes else { return true }
+            guard let index = metadata(for: fileURL)["chunk_index"] as? Int else { return false }
+            return chunkIndexes.contains(index)
+        }
 
         var sentFiles = UserDefaults.standard.stringArray(forKey: sentFilesKey) ?? []
         let matchingNames = Set(matchingFiles.map(\.lastPathComponent))
         sentFiles.removeAll { matchingNames.contains($0) }
         UserDefaults.standard.set(sentFiles, forKey: sentFilesKey)
         counterRecordingID = recordingID
+        queuedChunkIndexes = Set(matchingFiles.compactMap {
+            metadata(for: $0)["chunk_index"] as? Int
+        })
+        deliveredChunkIndexes.removeAll()
+        queuedChunkCount = queuedChunkIndexes.count
         deliveredChunkCount = 0
-        countedDeliveredFiles.subtract(matchingNames)
-        queuedChunkCount = matchingFiles.count
         finalChunkQueued = matchingFiles.contains { $0.lastPathComponent.contains("_1.m4a") }
         pendingFiles.append(contentsOf: matchingFiles.map {
             PendingFile(url: $0, metadata: metadata(for: $0))
@@ -131,7 +141,8 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             url: fileURL,
             metadata: metadata
         ))
-        queuedChunkCount += 1
+        queuedChunkIndexes.insert(chunkIndex)
+        queuedChunkCount = queuedChunkIndexes.count
         finalChunkQueued = finalChunkQueued || isFinal
         statusMessage = isFinal
             ? "Final chunk queued"
@@ -163,8 +174,8 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                 guard String(data: response, encoding: .utf8) == "accepted" else { return }
                 DispatchQueue.main.async {
                     self?.markChunkDelivered(
-                        filename: fileURL.lastPathComponent,
                         recordingID: recordingID,
+                        chunkIndex: chunkIndex,
                         isFinal: isFinal,
                         immediate: true
                     )
@@ -243,8 +254,8 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                 let isChunk = metadata?["kind"] as? String == "audio-recording-chunk"
                 if isChunk {
                     self.markChunkDelivered(
-                        filename: filename,
                         recordingID: transferRecordingID,
+                        chunkIndex: metadata?["chunk_index"] as? Int,
                         isFinal: metadata?["is_final"] as? Bool ?? false,
                         immediate: false
                     )
@@ -284,20 +295,29 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
         guard userInfo["command"] as? String == "resend-recording",
               let recordingID = userInfo["recording_id"] as? String else { return }
+        let requestedIndexes: Set<Int>?
+        if let indexes = userInfo["chunk_indexes"] as? [Int] {
+            requestedIndexes = Set(indexes)
+        } else if let indexes = userInfo["chunk_indexes"] as? [NSNumber] {
+            requestedIndexes = Set(indexes.map(\.intValue))
+        } else {
+            requestedIndexes = nil
+        }
         DispatchQueue.main.async {
-            self.resendRecording(recordingID)
+            self.resendRecording(recordingID, chunkIndexes: requestedIndexes)
         }
     }
 
     private func markChunkDelivered(
-        filename: String,
         recordingID: String?,
+        chunkIndex: Int?,
         isFinal: Bool,
         immediate: Bool
     ) {
         guard recordingID == counterRecordingID,
-              countedDeliveredFiles.insert(filename).inserted else { return }
-        deliveredChunkCount += 1
+              let chunkIndex,
+              deliveredChunkIndexes.insert(chunkIndex).inserted else { return }
+        deliveredChunkCount = deliveredChunkIndexes.count
         if finalChunkQueued && deliveredChunkCount >= queuedChunkCount {
             statusMessage = "Recording delivered to iPhone"
         } else if immediate {
