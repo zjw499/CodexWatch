@@ -293,6 +293,14 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
+        handleResendRequest(userInfo)
+    }
+
+    func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        handleResendRequest(message)
+    }
+
+    private func handleResendRequest(_ userInfo: [String: Any]) {
         guard userInfo["command"] as? String == "resend-recording",
               let recordingID = userInfo["recording_id"] as? String else { return }
         let requestedIndexes: Set<Int>?

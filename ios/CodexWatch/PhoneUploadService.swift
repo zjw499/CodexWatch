@@ -666,7 +666,6 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                     )
                 }
                 self.setStatus("Retrying \(matching.count) saved chunks")
-                return
             }
             self.checkPCRecording(recordingID)
         }
@@ -859,7 +858,14 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             if let chunkIndexes, !chunkIndexes.isEmpty {
                 request["chunk_indexes"] = chunkIndexes
             }
-            WCSession.default.transferUserInfo(request)
+            let session = WCSession.default
+            if session.isReachable {
+                session.sendMessage(request, replyHandler: nil) { _ in
+                    session.transferUserInfo(request)
+                }
+            } else {
+                session.transferUserInfo(request)
+            }
             self.setStatus(
                 chunkIndexes?.count == 1
                     ? "Asked Watch for the missing chunk"
