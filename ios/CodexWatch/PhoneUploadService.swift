@@ -310,25 +310,30 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             return
         }
 
-        guard let trust = challenge.protectionSpace.serverTrust,
-              let rootCertificate = bundledRootCertificate() else {
+        guard let trust = challenge.protectionSpace.serverTrust else {
             completionHandler(.cancelAuthenticationChallenge, nil)
             return
         }
 
         let host = challenge.protectionSpace.host as CFString
-        guard SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, host)) == errSecSuccess,
-              SecTrustSetAnchorCertificates(trust, [rootCertificate] as CFArray) == errSecSuccess,
-              SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess else {
+        guard SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, host)) == errSecSuccess else {
             completionHandler(.cancelAuthenticationChallenge, nil)
             return
         }
 
         if SecTrustEvaluateWithError(trust, nil) {
             completionHandler(.useCredential, URLCredential(trust: trust))
-        } else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
         }
+
+        guard let rootCertificate = bundledRootCertificate(),
+              SecTrustSetAnchorCertificates(trust, [rootCertificate] as CFArray) == errSecSuccess,
+              SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
+              SecTrustEvaluateWithError(trust, nil) else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        completionHandler(.useCredential, URLCredential(trust: trust))
     }
 
     private func bundledRootCertificate() -> SecCertificate? {
