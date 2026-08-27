@@ -34,7 +34,9 @@ jobs:
       PROFILE_NAME: CodexWatch App Store
       WATCH_APP_PROFILE_NAME: CodexWatch Watch App Store
       WATCH_EXTENSION_PROFILE_NAME: CodexWatch Watch Extension Store
-      WATCH_AUDIO_UPLOAD_URL: ${{ secrets.WATCH_AUDIO_UPLOAD_URL }}
+      # Shared Tailscale machines require the full MagicDNS name. A short host
+      # works only for devices that are direct members of this tailnet.
+      WATCH_AUDIO_UPLOAD_URL: https://zwyattpc.tail488e93.ts.net:8787/upload
       WATCH_AUDIO_BASIC_AUTH_USERNAME: ${{ secrets.WATCH_AUDIO_BASIC_AUTH_USERNAME }}
       WATCH_AUDIO_BASIC_AUTH_PASSWORD: ${{ secrets.WATCH_AUDIO_BASIC_AUTH_PASSWORD }}
 
