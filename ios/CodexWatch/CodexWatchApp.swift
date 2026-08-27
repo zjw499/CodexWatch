@@ -1,3 +1,4 @@
+import AppIntents
 import SwiftUI
 import UIKit
 
@@ -7,6 +8,10 @@ struct CodexWatchApp: App {
     @StateObject private var recorder = PhoneRecorderService.shared
     @StateObject private var uploader = PhoneUploadService.shared
     @StateObject private var memoService = PhoneMemoService.shared
+
+    init() {
+        CodexWatchShortcuts.updateAppShortcutParameters()
+    }
 
     var body: some Scene {
         WindowGroup {

@@ -10,7 +10,7 @@ struct StartWatchRecordingIntent: AppIntent {
     static let supportedModes: IntentModes = [.foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
-        await AudioRecorderService.shared.startRecording()
+        await WatchShortcutCommandRouter.enqueue(.startRecording)
         return .result()
     }
 }
@@ -22,7 +22,7 @@ struct StopWatchRecordingIntent: AppIntent {
     static let supportedModes: IntentModes = [.foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
-        await AudioRecorderService.shared.stopRecording()
+        await WatchShortcutCommandRouter.enqueue(.stopRecording)
         return .result()
     }
 }
@@ -34,7 +34,7 @@ struct ResumeWatchRecordingIntent: AppIntent {
     static let supportedModes: IntentModes = [.foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
-        await AudioRecorderService.shared.resumeRecording()
+        await WatchShortcutCommandRouter.enqueue(.resumeRecording)
         return .result()
     }
 }
@@ -46,7 +46,7 @@ struct RetryWatchUploadIntent: AppIntent {
     static let supportedModes: IntentModes = [.foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
-        WatchConnectivityTransferService.shared.retryLastRecording()
+        await WatchShortcutCommandRouter.enqueue(.retryUpload)
         return .result()
     }
 }
@@ -64,6 +64,8 @@ struct OpenScribePilotIntent: AppIntent {
 }
 
 struct CodexWatchWatchShortcuts: AppShortcutsProvider {
+    static let shortcutTileColor: ShortcutTileColor = .teal
+
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: StartWatchRecordingIntent(),

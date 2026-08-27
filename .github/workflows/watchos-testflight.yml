@@ -199,6 +199,11 @@ jobs:
             echo "Watch extension must declare the audio background mode" >&2
             exit 1
           fi
+          complication_class="$(/usr/libexec/PlistBuddy -c 'Print :CLKComplicationPrincipalClass' macos/CodexWatch/Support/WatchExtension-Info.plist)"
+          if [[ "$complication_class" != '$(PRODUCT_MODULE_NAME).ScribePilotComplicationDataSource' ]]; then
+            echo "Watch extension must declare the Scribe Pilot complication data source" >&2
+            exit 1
+          fi
 
       - name: Archive watchOS app
         shell: bash
@@ -268,6 +273,28 @@ jobs:
             exit 1
           fi
           echo "iPhone upload certificate and configuration keys are present"
+
+      - name: Verify watch shortcuts and complications
+        shell: bash
+        run: |
+          set -euo pipefail
+          WATCH_EXTENSION_PATH="$(find "$RUNNER_TEMP/CodexWatch.xcarchive" -type d -name '*.appex' -print -quit)"
+          test -d "$WATCH_EXTENSION_PATH"
+          test -d "$WATCH_EXTENSION_PATH/Metadata.appintents"
+
+          WATCH_INFO="$WATCH_EXTENSION_PATH/Info.plist"
+          complication_class="$(/usr/libexec/PlistBuddy -c 'Print :CLKComplicationPrincipalClass' "$WATCH_INFO")"
+          if [[ "$complication_class" != *ScribePilotComplicationDataSource ]]; then
+            echo "Archived watch extension is missing the complication data source" >&2
+            exit 1
+          fi
+
+          family_count="$(/usr/libexec/PlistBuddy -c 'Print :CLKComplicationSupportedFamilies' "$WATCH_INFO" | grep -c CLKComplicationFamily)"
+          if [[ "$family_count" -lt 4 ]]; then
+            echo "Archived watch extension is missing supported complication families" >&2
+            exit 1
+          fi
+          echo "Watch App Intents metadata and complication configuration are present"
 
       - name: Upload archive to TestFlight
         shell: bash

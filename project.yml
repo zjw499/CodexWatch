@@ -107,6 +107,12 @@ targets:
       path: macos/CodexWatch/Support/WatchExtension-Info.plist
       properties:
         CFBundleDisplayName: Scribe Pilot Extension
+        CLKComplicationPrincipalClass: $(PRODUCT_MODULE_NAME).ScribePilotComplicationDataSource
+        CLKComplicationSupportedFamilies:
+          - CLKComplicationFamilyGraphicCircular
+          - CLKComplicationFamilyGraphicRectangular
+          - CLKComplicationFamilyGraphicCorner
+          - CLKComplicationFamilyGraphicExtraLarge
         CODEX_WATCH_RELAY_BASE_URL: $(CODEX_WATCH_RELAY_BASE_URL)
         CODEX_WATCH_RELAY_TOKEN: $(CODEX_WATCH_RELAY_TOKEN)
         NSExtension:

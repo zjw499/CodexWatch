@@ -4,6 +4,15 @@
 <dict>
     <key>CFBundleDisplayName</key>
     <string>Scribe Pilot Extension</string>
+    <key>CLKComplicationPrincipalClass</key>
+    <string>$(PRODUCT_MODULE_NAME).ScribePilotComplicationDataSource</string>
+    <key>CLKComplicationSupportedFamilies</key>
+    <array>
+        <string>CLKComplicationFamilyGraphicCircular</string>
+        <string>CLKComplicationFamilyGraphicRectangular</string>
+        <string>CLKComplicationFamilyGraphicCorner</string>
+        <string>CLKComplicationFamilyGraphicExtraLarge</string>
+    </array>
     <key>CODEX_WATCH_RELAY_BASE_URL</key>
     <string>$(CODEX_WATCH_RELAY_BASE_URL)</string>
     <key>CODEX_WATCH_RELAY_TOKEN</key>
