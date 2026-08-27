@@ -2,9 +2,12 @@ import AppIntents
 
 struct StartWatchRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Start Watch Recording"
-    static let openAppWhenRun = false
+    static let description = IntentDescription(
+        "Opens Scribe Pilot on Apple Watch and starts a recording."
+    )
+    static let openAppWhenRun = true
     @available(watchOS 26.0, *)
-    static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
+    static let supportedModes: IntentModes = [.foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
         await AudioRecorderService.shared.startRecording()
@@ -14,9 +17,9 @@ struct StartWatchRecordingIntent: AppIntent {
 
 struct StopWatchRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Stop Watch Recording"
-    static let openAppWhenRun = false
+    static let openAppWhenRun = true
     @available(watchOS 26.0, *)
-    static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
+    static let supportedModes: IntentModes = [.foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
         await AudioRecorderService.shared.stopRecording()
@@ -26,9 +29,9 @@ struct StopWatchRecordingIntent: AppIntent {
 
 struct ResumeWatchRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Resume Watch Recording"
-    static let openAppWhenRun = false
+    static let openAppWhenRun = true
     @available(watchOS 26.0, *)
-    static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
+    static let supportedModes: IntentModes = [.foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
         await AudioRecorderService.shared.resumeRecording()
@@ -38,12 +41,24 @@ struct ResumeWatchRecordingIntent: AppIntent {
 
 struct RetryWatchUploadIntent: AppIntent {
     static let title: LocalizedStringResource = "Retry Watch Upload"
-    static let openAppWhenRun = false
+    static let openAppWhenRun = true
     @available(watchOS 26.0, *)
-    static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
+    static let supportedModes: IntentModes = [.foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
         WatchConnectivityTransferService.shared.retryLastRecording()
+        return .result()
+    }
+}
+
+struct OpenScribePilotIntent: AppIntent {
+    static let title: LocalizedStringResource = "Open Scribe Pilot"
+    static let description = IntentDescription("Opens Scribe Pilot on Apple Watch.")
+    static let openAppWhenRun = true
+    @available(watchOS 26.0, *)
+    static let supportedModes: IntentModes = [.foreground(.immediate)]
+
+    func perform() async throws -> some IntentResult {
         return .result()
     }
 }
@@ -57,8 +72,17 @@ struct CodexWatchWatchShortcuts: AppShortcutsProvider {
                 "Start recording on my watch with \(.applicationName)",
                 "Begin a memo with \(.applicationName)"
             ],
-            shortTitle: "Start Recording",
+            shortTitle: "Record on Watch",
             systemImageName: "record.circle"
+        )
+        AppShortcut(
+            intent: OpenScribePilotIntent(),
+            phrases: [
+                "Open \(.applicationName)",
+                "Show \(.applicationName) on my watch"
+            ],
+            shortTitle: "Open Scribe Pilot",
+            systemImageName: "mic.circle"
         )
         AppShortcut(
             intent: StopWatchRecordingIntent(),
