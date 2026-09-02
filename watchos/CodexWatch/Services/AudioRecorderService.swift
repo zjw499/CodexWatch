@@ -489,6 +489,9 @@ final class AudioRecorderService: NSObject, ObservableObject {
         case .began:
             awaitingInterruptionEnd = true
             isPausedForInterruption = true
+            // Closing the current M4A writes its container metadata before
+            // watchOS suspends or reclaims the audio route.
+            preserveCurrentChunkForRecovery()
             statusMessage = "Audio interruption; recording held"
             persistRecordingState()
         case .ended:

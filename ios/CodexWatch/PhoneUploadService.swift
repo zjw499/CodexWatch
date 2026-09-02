@@ -254,6 +254,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             }
             if let chunkContext {
                 DispatchQueue.main.async {
+                    guard self.activeRecordingID == chunkContext.recordingID else { return }
                     let key = self.chunkKey(chunkContext)
                     guard self.uploadedChunkKeys.insert(key).inserted else { return }
                     self.uploadedChunkCount += 1
@@ -680,25 +681,29 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         Task { [weak self] in
             do {
                 let progress = try await PhoneMemoAPIClient.shared.getRecordingProgress(id: recordingID)
+                self?.syncDisplayedProgress(progress, recordingID: recordingID)
                 if progress.status == "done" {
                     self?.finishCompletionPolling(recordingID: recordingID)
                     return
                 }
+                let retryIndexes = Set(progress.missingChunkIndexes ?? [])
+                    .union(progress.retryChunkIndexes ?? [])
                 let hasCompleteSequence = progress.finalChunkIndex.map {
                     progress.receivedChunks >= $0 + 1 &&
-                    (progress.missingChunkIndexes ?? []).isEmpty
+                    retryIndexes.isEmpty
                 } ?? false
-                if progress.status == "failed" {
+                if !retryIndexes.isEmpty {
+                    self?.requestWatchResend(
+                        recordingID,
+                        chunkIndexes: retryIndexes.sorted()
+                    )
+                } else if progress.status == "failed" {
                     try await PhoneMemoAPIClient.shared.retryRecording(id: recordingID)
                     self?.setStatus("PC processing retry queued")
                 } else if hasCompleteSequence {
                     self?.setStatus("PC has every chunk and is processing")
                 } else {
-                    let missing = progress.missingChunkIndexes ?? []
-                    self?.requestWatchResend(
-                        recordingID,
-                        chunkIndexes: missing.isEmpty ? nil : missing
-                    )
+                    self?.requestWatchResend(recordingID)
                 }
             } catch PhoneMemoAPIError.httpStatus(404) {
                 self?.requestWatchResend(recordingID)
@@ -733,6 +738,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         guard completionPollingRecordingIDs.insert(recordingID).inserted else { return }
         Task { [weak self] in
             var requestedMissingIndexes: Set<Int>?
+            var resendAttemptsByIndex: [Int: Int] = [:]
             defer {
                 self?.stateQueue.async {
                     self?.completionPollingRecordingIDs.remove(recordingID)
@@ -743,32 +749,48 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 guard let self else { return }
                 do {
                     let progress = try await PhoneMemoAPIClient.shared.getRecordingProgress(id: recordingID)
+                    self.syncDisplayedProgress(progress, recordingID: recordingID)
                     if progress.status == "done" {
                         self.finishCompletionPolling(recordingID: recordingID)
                         return
                     }
+                    let missingIndexes = Set(progress.missingChunkIndexes ?? [])
+                        .union(progress.retryChunkIndexes ?? [])
+                    if !missingIndexes.isEmpty {
+                        if requestedMissingIndexes != missingIndexes {
+                            let retryableIndexes = missingIndexes.filter {
+                                resendAttemptsByIndex[$0, default: 0] < 3
+                            }
+                            if retryableIndexes.isEmpty {
+                                self.setStatus(
+                                    "A damaged audio chunk could not be recovered; recording remains saved",
+                                    forRecordingID: recordingID
+                                )
+                                return
+                            }
+                            self.requestWatchResend(
+                                recordingID,
+                                chunkIndexes: retryableIndexes.sorted()
+                            )
+                            for index in retryableIndexes {
+                                resendAttemptsByIndex[index, default: 0] += 1
+                            }
+                            requestedMissingIndexes = missingIndexes
+                        }
+                        self.setStatus(
+                            "Recovering \(missingIndexes.count) watch chunk\(missingIndexes.count == 1 ? "" : "s")",
+                            forRecordingID: recordingID
+                        )
+                        try? await Task.sleep(for: .seconds(5))
+                        continue
+                    }
+                    requestedMissingIndexes = nil
                     if progress.status == "failed" {
                         self.setStatus(
                             "PC processing failed; recording remains saved for retry",
                             forRecordingID: recordingID
                         )
                         return
-                    }
-                    let missingIndexes = Set(progress.missingChunkIndexes ?? [])
-                    if !missingIndexes.isEmpty {
-                        if requestedMissingIndexes != missingIndexes {
-                            self.requestWatchResend(
-                                recordingID,
-                                chunkIndexes: missingIndexes.sorted()
-                            )
-                            requestedMissingIndexes = missingIndexes
-                        }
-                        self.setStatus(
-                            "Recovering \(missingIndexes.count) missing watch chunk\(missingIndexes.count == 1 ? "" : "s")",
-                            forRecordingID: recordingID
-                        )
-                        try? await Task.sleep(for: .seconds(5))
-                        continue
                     }
                     if let finalIndex = progress.finalChunkIndex,
                        progress.receivedChunks < finalIndex + 1 {
@@ -820,6 +842,20 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             self.finalUploadSequence += 1
             self.statusMessage = "Transcript delivered"
             UserDefaults.standard.set(self.statusMessage, forKey: Self.statusDefaultsKey)
+        }
+    }
+
+    private func syncDisplayedProgress(
+        _ progress: RecordingProgress,
+        recordingID: String
+    ) {
+        DispatchQueue.main.async {
+            guard self.activeRecordingID == recordingID,
+                  let finalIndex = progress.finalChunkIndex else { return }
+            let expectedCount = finalIndex + 1
+            self.receivedChunkCount = expectedCount
+            self.uploadedChunkCount = min(progress.receivedChunks, expectedCount)
+            self.finalChunkReceived = true
         }
     }
 

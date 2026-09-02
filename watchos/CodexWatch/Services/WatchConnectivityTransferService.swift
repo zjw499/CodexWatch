@@ -34,6 +34,11 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     private var counterRecordingID: String?
     private var finalChunkQueued = false
     private var retryAttemptsByFilename: [String: Int] = [:]
+    private let fileQueue = DispatchQueue(
+        label: "com.zachwyatt.codexwatch.watch-transfer-files",
+        qos: .utility
+    )
+    private let maxConcurrentFileTransfers = 2
     private let retryDelays: [TimeInterval] = [5, 15, 45, 120, 300]
     private let sentFilesKey = "CodexWatch.SentWatchRecordings"
     private let lastRecordingIDKey = "CodexWatch.LastStreamRecordingID"
@@ -80,7 +85,25 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func recoverSavedTransfers() {
-        flushPendingFiles()
+        let directory = recordingsDirectory()
+        fileQueue.async { [weak self] in
+            guard let self else { return }
+            let sentFiles = Set(UserDefaults.standard.stringArray(forKey: self.sentFilesKey) ?? [])
+            let recovered = ((try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []).filter {
+                !$0.lastPathComponent.hasPrefix("active_") &&
+                !sentFiles.contains($0.lastPathComponent)
+            }.map { fileURL in
+                PendingFile(url: fileURL, metadata: self.metadata(for: fileURL))
+            }
+            DispatchQueue.main.async {
+                self.pendingFiles.append(contentsOf: recovered)
+                self.flushPendingFiles()
+            }
+        }
     }
 
     func retryLastRecording() {
@@ -97,36 +120,45 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     private func resendRecording(_ recordingID: String, chunkIndexes: Set<Int>? = nil) {
-        let allMatchingFiles = ((try? FileManager.default.contentsOfDirectory(
-            at: recordingsDirectory(),
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )) ?? []).filter { $0.lastPathComponent.contains("_\(recordingID)_") }
-        let matchingFiles = allMatchingFiles.filter { fileURL in
-            guard let chunkIndexes else { return true }
-            guard let index = metadata(for: fileURL)["chunk_index"] as? Int else { return false }
-            return chunkIndexes.contains(index)
+        let directory = recordingsDirectory()
+        fileQueue.async { [weak self] in
+            guard let self else { return }
+            let allMatchingFiles = ((try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []).filter { $0.lastPathComponent.contains("_\(recordingID)_") }
+            let matchingFiles = allMatchingFiles.filter { fileURL in
+                guard let chunkIndexes else { return true }
+                guard let index = self.metadata(for: fileURL)["chunk_index"] as? Int else {
+                    return false
+                }
+                return chunkIndexes.contains(index)
+            }
+            let matchingNames = Set(matchingFiles.map(\.lastPathComponent))
+            DispatchQueue.main.async {
+                var sentFiles = UserDefaults.standard.stringArray(forKey: self.sentFilesKey) ?? []
+                sentFiles.removeAll { matchingNames.contains($0) }
+                UserDefaults.standard.set(sentFiles, forKey: self.sentFilesKey)
+                self.counterRecordingID = recordingID
+                self.queuedChunkIndexes = Set(matchingFiles.compactMap {
+                    self.metadata(for: $0)["chunk_index"] as? Int
+                })
+                self.deliveredChunkIndexes.removeAll()
+                self.queuedChunkCount = self.queuedChunkIndexes.count
+                self.deliveredChunkCount = 0
+                self.finalChunkQueued = matchingFiles.contains {
+                    $0.lastPathComponent.contains("_1.m4a")
+                }
+                self.pendingFiles.append(contentsOf: matchingFiles.map {
+                    PendingFile(url: $0, metadata: self.metadata(for: $0))
+                })
+                self.statusMessage = matchingFiles.isEmpty
+                    ? "No saved chunks remain on Watch"
+                    : "Resending \(matchingFiles.count) chunks"
+                self.flushPendingFiles()
+            }
         }
-
-        var sentFiles = UserDefaults.standard.stringArray(forKey: sentFilesKey) ?? []
-        let matchingNames = Set(matchingFiles.map(\.lastPathComponent))
-        sentFiles.removeAll { matchingNames.contains($0) }
-        UserDefaults.standard.set(sentFiles, forKey: sentFilesKey)
-        counterRecordingID = recordingID
-        queuedChunkIndexes = Set(matchingFiles.compactMap {
-            metadata(for: $0)["chunk_index"] as? Int
-        })
-        deliveredChunkIndexes.removeAll()
-        queuedChunkCount = queuedChunkIndexes.count
-        deliveredChunkCount = 0
-        finalChunkQueued = matchingFiles.contains { $0.lastPathComponent.contains("_1.m4a") }
-        pendingFiles.append(contentsOf: matchingFiles.map {
-            PendingFile(url: $0, metadata: metadata(for: $0))
-        })
-        statusMessage = matchingFiles.isEmpty
-            ? "No saved chunks remain on Watch"
-            : "Resending \(matchingFiles.count) chunks"
-        flushPendingFiles()
     }
 
     func enqueueChunk(fileURL: URL, recordingID: String, chunkIndex: Int, isFinal: Bool) {
@@ -158,62 +190,58 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
               let chunkIndex = metadata["chunk_index"] as? Int,
               let isFinal = metadata["is_final"] as? Bool else { return }
 
-        do {
-            let envelope = ImmediateWatchChunkEnvelope(
-                version: 1,
-                filename: fileURL.lastPathComponent,
-                recordingID: recordingID,
-                chunkIndex: chunkIndex,
-                isFinal: isFinal,
-                audioData: try Data(contentsOf: fileURL, options: .mappedIfSafe)
-            )
-            let encoder = PropertyListEncoder()
-            encoder.outputFormat = .binary
-            let payload = try encoder.encode(envelope)
-            session.sendMessageData(payload) { [weak self] response in
-                guard String(data: response, encoding: .utf8) == "accepted" else { return }
-                DispatchQueue.main.async {
-                    self?.markChunkDelivered(
-                        recordingID: recordingID,
-                        chunkIndex: chunkIndex,
-                        isFinal: isFinal,
-                        immediate: true
-                    )
+        fileQueue.async { [weak self] in
+            do {
+                let envelope = ImmediateWatchChunkEnvelope(
+                    version: 1,
+                    filename: fileURL.lastPathComponent,
+                    recordingID: recordingID,
+                    chunkIndex: chunkIndex,
+                    isFinal: isFinal,
+                    audioData: try Data(contentsOf: fileURL, options: .mappedIfSafe)
+                )
+                let encoder = PropertyListEncoder()
+                encoder.outputFormat = .binary
+                let payload = try encoder.encode(envelope)
+                session.sendMessageData(payload) { response in
+                    guard String(data: response, encoding: .utf8) == "accepted" else { return }
+                    DispatchQueue.main.async {
+                        self?.markChunkDelivered(
+                            recordingID: recordingID,
+                            chunkIndex: chunkIndex,
+                            isFinal: isFinal,
+                            immediate: true
+                        )
+                    }
+                } errorHandler: { _ in
+                    // The queued file transfer remains the durable fallback.
                 }
-            } errorHandler: { _ in
+            } catch {
                 // The queued file transfer remains the durable fallback.
             }
-        } catch {
-            // The queued file transfer remains the durable fallback.
         }
     }
 
     private func flushPendingFiles() {
         guard activated else { return }
-        let recordedFiles = (try? FileManager.default.contentsOfDirectory(
-            at: recordingsDirectory(),
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ))?.filter { !$0.lastPathComponent.hasPrefix("active_") } ?? []
-        let sentFiles = UserDefaults.standard.stringArray(forKey: sentFilesKey) ?? []
-        let recovered = recordedFiles.map { fileURL in
-            PendingFile(url: fileURL, metadata: metadata(for: fileURL))
-        }
-        let candidates = (pendingFiles + recovered)
+        let availableSlots = max(0, maxConcurrentFileTransfers - inFlightFiles.count)
+        guard availableSlots > 0 else { return }
+        let sentFiles = Set(UserDefaults.standard.stringArray(forKey: sentFilesKey) ?? [])
+        var uniqueNames: Set<String> = []
+        let candidates = pendingFiles
             .filter {
                 FileManager.default.fileExists(atPath: $0.url.path) &&
                 !sentFiles.contains($0.url.lastPathComponent) &&
-                !inFlightFiles.contains($0.url.lastPathComponent)
+                !inFlightFiles.contains($0.url.lastPathComponent) &&
+                uniqueNames.insert($0.url.lastPathComponent).inserted
             }
-            .reduce(into: [String: PendingFile]()) { result, pending in
-                result[pending.url.lastPathComponent] = pending
-            }
-
-        for pending in candidates.values {
+        let selected = Array(candidates.prefix(availableSlots))
+        let selectedNames = Set(selected.map { $0.url.lastPathComponent })
+        pendingFiles.removeAll { selectedNames.contains($0.url.lastPathComponent) }
+        for pending in selected {
             inFlightFiles.insert(pending.url.lastPathComponent)
             WCSession.default.transferFile(pending.url, metadata: pending.metadata)
         }
-        pendingFiles.removeAll()
     }
 
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
@@ -222,7 +250,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             if let error {
                 self.statusMessage = "iPhone transfer unavailable: \(error.localizedDescription)"
             } else {
-                self.flushPendingFiles()
+                self.recoverSavedTransfers()
             }
         }
     }
