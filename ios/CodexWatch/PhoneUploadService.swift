@@ -17,6 +17,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     static let backgroundIdentifier = "com.zachwyatt.codexwatch.audio-upload"
     private static let statusDefaultsKey = "CodexWatch.PhoneUploadStatus"
     private static let pendingCompletionDefaultsKey = "CodexWatch.PendingPCCompletions"
+    private static let audioRecoveryDefaultsKey = "ScribePilot.AudioRecoveryRecordings"
 
     @Published private(set) var statusMessage: String
     @Published private(set) var activeRecordingID: String?
@@ -123,6 +124,29 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             self.recoverSavedUploads(manual: true)
             self.resumeCompletionPolling()
         }
+    }
+
+    @MainActor
+    func recoverOriginalAudio(recordingID: String) async throws -> AudioRecoveryProgress {
+        start()
+        // Older PC servers return an error here. Never request a resend until
+        // the separate archive route is available and has accepted the request.
+        let progress = try await PhoneMemoAPIClient.shared.startAudioRecovery(id: recordingID)
+        stateQueue.sync {
+            var recordings = Set(UserDefaults.standard.stringArray(forKey: Self.audioRecoveryDefaultsKey) ?? [])
+            recordings.insert(recordingID)
+            UserDefaults.standard.set(recordings.sorted(), forKey: Self.audioRecoveryDefaultsKey)
+            self.immediateChunkKeys = self.immediateChunkKeys.filter { !$0.hasPrefix("\(recordingID):") }
+            self.forgetPendingCompletion(recordingID)
+        }
+        if !progress.missingChunkIndexes.isEmpty {
+            requestWatchResend(recordingID, chunkIndexes: progress.missingChunkIndexes)
+        }
+        return progress
+    }
+
+    private func isAudioRecovery(_ recordingID: String) -> Bool {
+        (UserDefaults.standard.stringArray(forKey: Self.audioRecoveryDefaultsKey) ?? []).contains(recordingID)
     }
 
     func setBackgroundCompletionHandler(_ handler: @escaping () -> Void, for identifier: String) {
@@ -252,7 +276,9 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             if let sourceURL {
                 try? FileManager.default.removeItem(at: sourceURL)
             }
-            if let chunkContext {
+            if let chunkContext, self.isAudioRecovery(chunkContext.recordingID) {
+                self.setStatus("Saved original audio chunk \(chunkContext.chunkIndex + 1) to PC")
+            } else if let chunkContext {
                 DispatchQueue.main.async {
                     guard self.activeRecordingID == chunkContext.recordingID else { return }
                     let key = self.chunkKey(chunkContext)
@@ -445,7 +471,8 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 ]
                 uploadURL = CodexWatchPhoneConfiguration.audioUploadURL
             }
-            guard !upload.recipient.isEmpty else {
+            let recovering = upload.chunk.map { isAudioRecovery($0.recordingID) } ?? false
+            guard recovering || !upload.recipient.isEmpty else {
                 setStatus("Add your transcript email in Settings; recording remains saved")
                 return
             }
@@ -465,6 +492,9 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             request.setValue("Basic \(basicAuth(username: username, password: password))", forHTTPHeaderField: "Authorization")
             request.setValue("Scribe Pilot", forHTTPHeaderField: "User-Agent")
+            if recovering {
+                request.setValue("1", forHTTPHeaderField: "X-Scribe-Audio-Recovery")
+            }
             guard let uploadSession else {
                 try? FileManager.default.removeItem(at: bodyURL)
                 setStatus("Upload service unavailable")
@@ -735,6 +765,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     }
 
     private func startCompletionPolling(recordingID: String) {
+        guard !isAudioRecovery(recordingID) else { return }
         guard completionPollingRecordingIDs.insert(recordingID).inserted else { return }
         Task { [weak self] in
             var requestedMissingIndexes: Set<Int>?

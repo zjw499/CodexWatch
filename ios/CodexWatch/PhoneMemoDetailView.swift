@@ -7,6 +7,8 @@ struct PhoneMemoDetailView: View {
     @State private var detail: MemoDetail?
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var recoveryProgress: AudioRecoveryProgress?
+    @State private var requestingRecovery = false
 
     var body: some View {
         ScrollView {
@@ -54,6 +56,41 @@ struct PhoneMemoDetailView: View {
                         }
                         .buttonStyle(.bordered)
                     }
+
+                    if detail.status == "done", let recordingID = originalRecordingID {
+                        section(title: "Original audio", icon: "waveform") {
+                            Text("Recover saved audio from your Watch to your PC. Keep Scribe Pilot open on your Watch and keep your iPhone nearby.")
+                                .font(.footnote)
+                            Text("This does not resend the transcript or email.")
+                                .font(.footnote)
+                            if let recoveryProgress {
+                                Text(recoveryProgress.status == "complete"
+                                    ? "Original audio saved on your PC."
+                                    : "\(recoveryProgress.receivedChunks) of \(recoveryProgress.expectedChunks) audio parts saved.")
+                                    .font(.footnote)
+                                if recoveryProgress.receivedChunks == 0 {
+                                    Text("If the Watch says no saved chunks remain, its original copy is no longer available.")
+                                        .font(.footnote)
+                                }
+                            }
+                            Button {
+                                requestingRecovery = true
+                                Task {
+                                    defer { requestingRecovery = false }
+                                    do {
+                                        recoveryProgress = try await PhoneUploadService.shared.recoverOriginalAudio(recordingID: recordingID)
+                                    } catch {
+                                        errorMessage = "Could not start audio recovery: \(error.localizedDescription)"
+                                    }
+                                }
+                            } label: {
+                                Label(requestingRecovery ? "Requesting audio…" : "Recover original audio", systemImage: "arrow.down.circle")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(requestingRecovery || recoveryProgress?.status == "complete")
+                        }
+                    }
                 } else if isLoading {
                     ProgressView("Loading memo")
                         .frame(maxWidth: .infinity, minHeight: 240)
@@ -90,7 +127,22 @@ struct PhoneMemoDetailView: View {
             }
             isLoading = false
         }
-        .alert("Memo unavailable", isPresented: Binding(
+        .task(id: recoveryProgress?.recordingID) {
+            guard let recordingID = recoveryProgress?.recordingID else { return }
+            while !Task.isCancelled && recoveryProgress?.status != "complete" {
+                do {
+                    try await Task.sleep(for: .seconds(4))
+                    recoveryProgress = try await PhoneMemoAPIClient.shared.getAudioRecovery(id: recordingID)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    // Background uploads retain their own retry state.
+                    // Leaving and reopening this view does not discard audio.
+                    return
+                }
+            }
+        }
+        .alert("Scribe Pilot", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
         )) {
@@ -98,6 +150,13 @@ struct PhoneMemoDetailView: View {
         } message: {
             Text(errorMessage ?? "Unknown error")
         }
+    }
+
+    private var originalRecordingID: String? {
+        let parts = memo.originalFilename.split(separator: "_")
+        guard parts.count == 4, parts[0] == "stream",
+              parts[1].count == 32, parts[1].allSatisfy(\.isHexDigit) else { return nil }
+        return String(parts[1])
     }
 
     private func section<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
