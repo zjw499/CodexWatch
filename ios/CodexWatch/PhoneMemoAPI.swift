@@ -65,6 +65,19 @@ struct RecordingProgress: Decodable {
     let deliveryStatus: String?
     let deliveryMode: String?
     let notionURL: String?
+    let transcriptionProvider: String?
+    let processingStage: String?
+
+    var nativeNotionStatus: String {
+        switch processingStage {
+        case "uploading": return "Sending audio to Notion"
+        case "transcribing", "transcription_in_progress", "transcription_not_started", "transcription_paused":
+            return "Notion transcribing"
+        case "summary_in_progress": return "Notion creating meeting notes"
+        case "notes_ready": return "Saving Notion transcript"
+        default: return "Preparing meeting audio"
+        }
+    }
 
     enum CodingKeys: String, CodingKey {
         case recordingID = "recording_id"
@@ -75,6 +88,7 @@ struct RecordingProgress: Decodable {
         case missingChunkIndexes = "missing_chunk_indexes"
         case retryChunkIndexes = "retry_chunk_indexes"
         case deliveryStatus = "delivery_status", deliveryMode = "delivery_mode", notionURL = "notion_url"
+        case transcriptionProvider = "transcription_provider", processingStage = "processing_stage"
     }
 }
 
@@ -82,7 +96,14 @@ struct MeetingDestination: Codable {
     let mode: String
     let name: String
     let url: String?
+    let transcriptionProvider: String?
     var isNotion: Bool { mode == "notion" }
+    var usesNativeNotion: Bool { isNotion && transcriptionProvider == "notion" }
+
+    enum CodingKeys: String, CodingKey {
+        case mode, name, url
+        case transcriptionProvider = "transcription_provider"
+    }
 }
 
 enum MeetingDate {

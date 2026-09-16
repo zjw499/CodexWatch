@@ -787,10 +787,12 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                     }
                     if let deliveryStatus = progress.deliveryStatus,
                        ["transcribed", "summarizing", "publishing", "notion_failed"].contains(deliveryStatus),
+                       (progress.missingChunkIndexes ?? []).isEmpty,
+                       (progress.retryChunkIndexes ?? []).isEmpty,
                        progress.deliveryMode == "notion" {
                         let message = deliveryStatus == "notion_failed"
                             ? "Notion delivery delayed; retrying automatically"
-                            : (deliveryStatus == "publishing" ? "Saving meeting in Notion" : "Creating meeting notes")
+                            : (progress.transcriptionProvider == "notion" ? progress.nativeNotionStatus : (deliveryStatus == "publishing" ? "Saving meeting in Notion" : "Creating meeting notes"))
                         self.setStatus(message, forRecordingID: recordingID)
                         self.sendWatchMeetingStatus(recordingID: recordingID, message: message)
                         try? await Task.sleep(for: .seconds(5))

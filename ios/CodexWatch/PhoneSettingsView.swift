@@ -47,8 +47,12 @@ struct PhoneSettingsView: View {
             }
 
             Section("Processing") {
-                LabeledContent("Transcription", value: "Groq Whisper")
-                if isNotion {
+                LabeledContent("Transcription", value: memoService.destination?.usesNativeNotion == true ? "Notion AI" : "Groq Whisper")
+                if memoService.destination?.usesNativeNotion == true {
+                    LabeledContent("Meeting notes", value: "Notion AI")
+                    Text("Your watch sends audio while you record. When you finish, the PC combines the audio and uploads it to Notion. Notion generates the full transcript and meeting notes. Audio is stored on the PC and in your Notion workspace.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } else if isNotion {
                     LabeledContent("Meeting notes", value: "Local AI on your PC")
                     Text("Audio is transcribed using Groq. Meeting notes are generated on the PC, then the notes and transcript are sent to your Notion workspace.")
                         .font(.footnote).foregroundStyle(.secondary)
