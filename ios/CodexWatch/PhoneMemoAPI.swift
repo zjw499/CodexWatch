@@ -14,11 +14,13 @@ struct MemoSummary: Identifiable, Decodable {
     let status: String
     let createdAt: String
     let emailSentAt: String?
+    let notionURL: String?
 
     enum CodingKeys: String, CodingKey {
         case id, title, summary, originalFilename = "original_filename", source
         case durationSeconds = "duration_seconds", language, speakerCount = "speaker_count"
         case status, createdAt = "created_at", emailSentAt = "email_sent_at"
+        case notionURL = "notion_url"
     }
 }
 
@@ -35,11 +37,16 @@ struct MemoDetail: Identifiable, Decodable {
     let status: String
     let createdAt: String
     let errorMessage: String?
+    let notionURL: String?
+    let actionItems: [String]?
+    let decisions: [String]?
+    let topics: [String]?
 
     enum CodingKeys: String, CodingKey {
         case id, title, summary, transcript, originalFilename = "original_filename", source
         case durationSeconds = "duration_seconds", language, speakerCount = "speaker_count"
         case status, createdAt = "created_at", errorMessage = "error_message"
+        case notionURL = "notion_url", actionItems = "action_items", decisions, topics
     }
 }
 
@@ -55,6 +62,9 @@ struct RecordingProgress: Decodable {
     let finalChunkIndex: Int?
     let missingChunkIndexes: [Int]?
     let retryChunkIndexes: [Int]?
+    let deliveryStatus: String?
+    let deliveryMode: String?
+    let notionURL: String?
 
     enum CodingKeys: String, CodingKey {
         case recordingID = "recording_id"
@@ -64,6 +74,24 @@ struct RecordingProgress: Decodable {
         case finalChunkIndex = "final_chunk_index"
         case missingChunkIndexes = "missing_chunk_indexes"
         case retryChunkIndexes = "retry_chunk_indexes"
+        case deliveryStatus = "delivery_status", deliveryMode = "delivery_mode", notionURL = "notion_url"
+    }
+}
+
+struct MeetingDestination: Codable {
+    let mode: String
+    let name: String
+    let url: String?
+    var isNotion: Bool { mode == "notion" }
+}
+
+enum MeetingDate {
+    static func parse(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
     }
 }
 
@@ -166,6 +194,10 @@ final class PhoneMemoAPIClient: NSObject, URLSessionDelegate {
         try await request("/preferences", responseType: PhonePreferences.self)
     }
 
+    func getDestination() async throws -> MeetingDestination {
+        try await request("/destination", responseType: MeetingDestination.self)
+    }
+
     func updatePreferences(_ preferences: PhonePreferences) async throws -> PhonePreferences {
         try await request(
             "/preferences",
@@ -222,6 +254,7 @@ final class PhoneMemoAPIClient: NSObject, URLSessionDelegate {
 
         var request = URLRequest(url: url)
         request.httpMethod = method
+        request.timeoutInterval = 25
         request.setValue("Basic \(basicAuth(username: username, password: password))", forHTTPHeaderField: "Authorization")
         request.setValue(PhoneRecipientSettings.clientID, forHTTPHeaderField: "X-Codex-Client-ID")
         request.setValue("Scribe Pilot", forHTTPHeaderField: "User-Agent")
@@ -326,15 +359,33 @@ final class PhoneMemoService: ObservableObject {
 
     @Published private(set) var memos: [MemoSummary] = []
     @Published private(set) var preferences = PhonePreferences()
+    @Published private(set) var destination: MeetingDestination? = {
+        guard let data = UserDefaults.standard.data(forKey: "ScribePilot.Destination") else { return nil }
+        return try? JSONDecoder().decode(MeetingDestination.self, from: data)
+    }()
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
 
     func refresh() async {
+        guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
         do {
             memos = try await PhoneMemoAPIClient.shared.listMemos()
             errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func loadDestination() async {
+        do {
+            let loaded = try await PhoneMemoAPIClient.shared.getDestination()
+            let changed = destination?.mode != loaded.mode
+            destination = loaded
+            UserDefaults.standard.set(try JSONEncoder().encode(loaded), forKey: "ScribePilot.Destination")
+            UserDefaults.standard.set(loaded.mode, forKey: "ScribePilot.DeliveryMode")
+            if changed { PhoneUploadService.shared.retryPendingRecordings() }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -350,7 +401,7 @@ final class PhoneMemoService: ObservableObject {
         }
     }
 
-    func savePreferences(_ newPreferences: PhonePreferences) async {
+    func savePreferences(_ newPreferences: PhonePreferences) async -> Bool {
         PhoneRecipientSettings.save(recipient: newPreferences.recipient)
         var remotePreferences = newPreferences
         // The email address belongs to this phone and is attached to each upload.
@@ -361,9 +412,11 @@ final class PhoneMemoService: ObservableObject {
             saved.recipient = PhoneRecipientSettings.recipient
             preferences = saved
             errorMessage = nil
+            return true
         } catch {
             preferences = newPreferences
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -371,6 +424,7 @@ final class PhoneMemoService: ObservableObject {
         do {
             try await PhoneMemoAPIClient.shared.deleteMemo(id: memo.id)
             memos.removeAll { $0.id == memo.id }
+            errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }

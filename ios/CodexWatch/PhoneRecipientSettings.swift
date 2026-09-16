@@ -4,6 +4,10 @@ enum PhoneRecipientSettings {
     private static let recipientKey = "CodexWatch.TranscriptRecipient"
     private static let clientIDKey = "CodexWatch.ClientID"
 
+    static var usesNotion: Bool {
+        UserDefaults.standard.string(forKey: "ScribePilot.DeliveryMode") == "notion"
+    }
+
     static var clientID: String {
         if let existing = UserDefaults.standard.string(forKey: clientIDKey), !existing.isEmpty {
             return existing

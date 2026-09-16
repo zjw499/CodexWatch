@@ -1,9 +1,9 @@
 import AppIntents
 
 struct StartWatchRecordingIntent: AppIntent {
-    static let title: LocalizedStringResource = "Start Watch Recording"
+    static let title: LocalizedStringResource = "Record Meeting on Watch"
     static let description = IntentDescription(
-        "Opens Scribe Pilot on Apple Watch and starts a recording."
+        "Opens Scribe Pilot on Apple Watch and records a meeting for your configured destination."
     )
     static let openAppWhenRun = true
     @available(watchOS 26.0, *)
@@ -72,9 +72,10 @@ struct CodexWatchWatchShortcuts: AppShortcutsProvider {
             phrases: [
                 "Start a recording with \(.applicationName)",
                 "Start recording on my watch with \(.applicationName)",
+                "Record a meeting with \(.applicationName)",
                 "Begin a memo with \(.applicationName)"
             ],
-            shortTitle: "Record on Watch",
+            shortTitle: "Record Meeting",
             systemImageName: "record.circle"
         )
         AppShortcut(

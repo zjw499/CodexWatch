@@ -9,6 +9,7 @@ struct PhoneMemoDetailView: View {
     @State private var errorMessage: String?
     @State private var recoveryProgress: AudioRecoveryProgress?
     @State private var requestingRecovery = false
+    @State private var showingDeleteConfirmation = false
 
     var body: some View {
         ScrollView {
@@ -19,7 +20,7 @@ struct PhoneMemoDetailView: View {
                     HStack(spacing: 8) {
                         Text(detail.source.lowercased().contains("watch") ? "Apple Watch" : "iPhone")
                         Text("•")
-                        Text(detail.status.replacingOccurrences(of: "_", with: " ").capitalized)
+                        Text(detail.notionURL != nil ? "Saved in Notion" : detail.status.replacingOccurrences(of: "_", with: " ").capitalized)
                         if let count = detail.speakerCount, count > 1 {
                             Text("•")
                             Text("\(count) speakers")
@@ -28,9 +29,34 @@ struct PhoneMemoDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.5))
 
+                    if let raw = detail.notionURL, let url = URL(string: raw) {
+                        Link(destination: url) {
+                            Label("Open in Notion", systemImage: "arrow.up.right.square")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.mint)
+                        .foregroundStyle(.black)
+                    }
+
                     if let summary = detail.summary, !summary.isEmpty {
                         section(title: "Summary", icon: "sparkles") {
                             Text(summary)
+                        }
+                    }
+
+                    if let items = detail.actionItems, !items.isEmpty {
+                        section(title: "Action items", icon: "checklist") {
+                            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                                Label(item, systemImage: "square")
+                            }
+                        }
+                    }
+                    if let decisions = detail.decisions, !decisions.isEmpty {
+                        section(title: "Decisions", icon: "checkmark.seal") {
+                            ForEach(Array(decisions.enumerated()), id: \.offset) { _, item in Text(item) }
                         }
                     }
 
@@ -39,9 +65,16 @@ struct PhoneMemoDetailView: View {
                             .textSelection(.enabled)
                     }
 
-                    if detail.status == "failed" || detail.status == "email_failed" {
+                    if ["failed", "email_failed", "notion_failed"].contains(detail.status) {
+                        if detail.status == "notion_failed" {
+                            Text("Your transcript is saved. Notion delivery is retrying automatically.")
+                                .font(.footnote).foregroundStyle(.orange)
+                        }
                         Button {
-                            Task { await memoService.retry(memo) }
+                            Task {
+                                await memoService.retry(memo)
+                                self.detail = try? await PhoneMemoAPIClient.shared.getMemo(id: memo.id)
+                            }
                         } label: {
                             Label("Retry processing", systemImage: "arrow.clockwise")
                                 .frame(maxWidth: .infinity)
@@ -61,7 +94,7 @@ struct PhoneMemoDetailView: View {
                         section(title: "Original audio", icon: "waveform") {
                             Text("Recover saved audio from your Watch to your PC. Keep Scribe Pilot open on your Watch and keep your iPhone nearby.")
                                 .font(.footnote)
-                            Text("This does not resend the transcript or email.")
+                            Text("Your existing meeting notes stay in place.")
                                 .font(.footnote)
                             if let recoveryProgress {
                                 Text(recoveryProgress.status == "complete"
@@ -92,7 +125,7 @@ struct PhoneMemoDetailView: View {
                         }
                     }
                 } else if isLoading {
-                    ProgressView("Loading memo")
+                    ProgressView("Loading meeting")
                         .frame(maxWidth: .infinity, minHeight: 240)
                 }
             }
@@ -100,32 +133,49 @@ struct PhoneMemoDetailView: View {
         }
         .background(Color.black.ignoresSafeArea())
         .foregroundStyle(.white)
-        .navigationTitle("Memo")
+        .navigationTitle("Meeting")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button(role: .destructive) {
-                        Task {
-                            await memoService.delete(memo)
-                            dismiss()
-                        }
+                        showingDeleteConfirmation = true
                     } label: {
-                        Label("Delete memo", systemImage: "trash")
+                        Label("Remove local copy", systemImage: "trash")
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
             }
         }
-        .task {
-            do {
-                detail = try await PhoneMemoAPIClient.shared.getMemo(id: memo.id)
-                errorMessage = nil
-            } catch {
-                errorMessage = error.localizedDescription
+        .confirmationDialog("Remove this local meeting copy?", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
+            Button("Remove local copy", role: .destructive) {
+                Task {
+                    await memoService.delete(memo)
+                    if memoService.errorMessage == nil { dismiss() }
+                    else { errorMessage = memoService.errorMessage }
+                }
             }
-            isLoading = false
+        } message: {
+            Text("The meeting page already saved in Notion will be kept.")
+        }
+        .task {
+            while !Task.isCancelled {
+                do {
+                    detail = try await PhoneMemoAPIClient.shared.getMemo(id: memo.id)
+                    errorMessage = nil
+                } catch is CancellationError {
+                    return
+                } catch {
+                    errorMessage = error.localizedDescription
+                    isLoading = false
+                    return
+                }
+                isLoading = false
+                if detail?.status == "done" || detail?.status == "failed" { return }
+                do { try await Task.sleep(for: .seconds(10)) }
+                catch { return }
+            }
         }
         .task(id: recoveryProgress?.recordingID) {
             guard let recordingID = recoveryProgress?.recordingID else { return }

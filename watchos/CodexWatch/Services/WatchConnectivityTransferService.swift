@@ -17,6 +17,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     @Published private(set) var statusMessage = "Ready"
     @Published private(set) var queuedChunkCount = 0
     @Published private(set) var deliveredChunkCount = 0
+    @Published private(set) var meetingStatus: String?
     @Published private(set) var lastRecordingID = UserDefaults.standard.string(
         forKey: "CodexWatch.LastStreamRecordingID"
     )
@@ -73,6 +74,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         queuedChunkIndexes.removeAll()
         deliveredChunkIndexes.removeAll()
         finalChunkQueued = false
+        meetingStatus = nil
         statusMessage = "Recording \(recordingID.prefix(6))"
     }
 
@@ -326,6 +328,16 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
         handleResendRequest(message)
+    }
+
+    func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        guard applicationContext["command"] as? String == "meeting-status",
+              let recordingID = applicationContext["recording_id"] as? String,
+              let message = applicationContext["status"] as? String else { return }
+        DispatchQueue.main.async {
+            guard recordingID == self.lastRecordingID else { return }
+            self.meetingStatus = message
+        }
     }
 
     private func handleResendRequest(_ userInfo: [String: Any]) {

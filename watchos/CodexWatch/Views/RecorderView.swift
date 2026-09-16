@@ -115,9 +115,9 @@ struct RecorderView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(recorder.isRecording
                 ? (recorder.isPausedForInterruption ? "Resume recording" : "Finish recording")
-                : "Start recording")
+                : "Start meeting recording")
 
-            Text(recorder.isRecording ? formatDuration(recorder.elapsedTime) : "Tap to record")
+            Text(recorder.isRecording ? formatDuration(recorder.elapsedTime) : "Record meeting")
                 .font(.system(size: 18, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.white)
                 .contentTransition(.numericText())
@@ -154,8 +154,9 @@ struct RecorderView: View {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .bold))
                 }
-                .buttonStyle(.bordered)
-                .tint(coral)
+                .frame(width: 25, height: 25)
+                .buttonStyle(.plain)
+                .foregroundStyle(coral)
                 .accessibilityLabel("Finish paused recording")
             } else if !recorder.isRecording && transfer.lastRecordingID != nil {
                 Button {
@@ -164,8 +165,9 @@ struct RecorderView: View {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 10, weight: .bold))
                 }
-                .buttonStyle(.bordered)
-                .tint(aqua)
+                .frame(width: 25, height: 25)
+                .buttonStyle(.plain)
+                .foregroundStyle(aqua)
                 .accessibilityLabel("Retry last upload")
             }
         }
@@ -178,8 +180,11 @@ struct RecorderView: View {
         if recorder.isRecording && recorder.isPausedForInterruption {
             return "Audio saved; restoring"
         }
+        if !recorder.isRecording, let meetingStatus = transfer.meetingStatus {
+            return meetingStatus
+        }
         if transfer.statusMessage.isEmpty {
-            return "Relay ready"
+            return "Meeting recorder ready"
         }
         return transfer.statusMessage
     }

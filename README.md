@@ -1,5 +1,13 @@
 # Scribe Pilot
 
+## Meeting Recorder
+
+The iPhone and Watch apps support a meeting workflow backed by `D:\watch-audio-pipeline`. Record on either device; the iPhone relays saved Watch chunks, and the backend creates meeting notes in the configured Notion workspace. The phone displays summaries, action items, decisions, transcripts, delivery status, and an **Open in Notion** link. The Watch keeps a compact recording screen and receives completion status through WatchConnectivity.
+
+Destination selection is scoped to the phone's existing client ID by the backend. No Notion token is included in the app. Other beta testers keep their configured email delivery. Existing recording and launch complications remain available; recording shortcuts are labeled **Record Meeting**.
+
+The remaining sections describe the original Codex desktop relay, which remains in this repository for compatibility.
+
 `CodexWatch` is an MVP workspace for the Scribe Pilot Apple Watch companion.
 
 It has two parts:

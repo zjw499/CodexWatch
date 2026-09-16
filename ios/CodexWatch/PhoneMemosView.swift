@@ -4,6 +4,7 @@ struct PhoneMemosView: View {
     @EnvironmentObject private var recorder: PhoneRecorderService
     @EnvironmentObject private var uploader: PhoneUploadService
     @EnvironmentObject private var memoService: PhoneMemoService
+    @Environment(\.scenePhase) private var scenePhase
     @State private var searchText = ""
     @State private var showingSettings = false
     private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
@@ -18,17 +19,34 @@ struct PhoneMemosView: View {
                 $0.title.localizedCaseInsensitiveContains(searchText) ||
                 $0.originalFilename.localizedCaseInsensitiveContains(searchText)
             }
-        let groups = Dictionary(grouping: filtered) { monthTitle($0.createdAt) }
-        return groups.keys.sorted(by: >).map { ($0, groups[$0] ?? []) }
+        let sorted = filtered.sorted {
+            (MeetingDate.parse($0.createdAt) ?? .distantPast) > (MeetingDate.parse($1.createdAt) ?? .distantPast)
+        }
+        var result: [(String, [MemoSummary])] = []
+        for memo in sorted {
+            let month = monthTitle(memo.createdAt)
+            if result.last?.0 == month { result[result.count - 1].1.append(memo) }
+            else { result.append((month, [memo])) }
+        }
+        return result
     }
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            Color.black.ignoresSafeArea()
+            LinearGradient(
+                colors: [Color(red: 0.02, green: 0.07, blue: 0.08), .black, .black],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            ).ignoresSafeArea()
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
                     header
+                    destinationCard
                     searchBar
+                    if memoService.errorMessage != nil {
+                        Label("Connection unavailable. Saved recordings will retry.", systemImage: "wifi.exclamationmark")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                     if recorder.isRecording {
                         activeRecordingCard
                     }
@@ -36,6 +54,7 @@ struct PhoneMemosView: View {
                         "Ready",
                         "Ready for watch recordings",
                         "Transcript delivered",
+                        "Saved in Notion",
                     ].contains(uploader.statusMessage) {
                         watchRelayCard
                     }
@@ -63,6 +82,8 @@ struct PhoneMemosView: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
+                .frame(maxWidth: 720)
+                .frame(maxWidth: .infinity)
             }
 
             recordButton
@@ -73,8 +94,14 @@ struct PhoneMemosView: View {
                 PhoneSettingsView()
             }
         }
-        .task {
-            await memoService.refresh()
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            await memoService.loadDestination()
+            while !Task.isCancelled {
+                await memoService.refresh()
+                do { try await Task.sleep(for: .seconds(15)) }
+                catch { return }
+            }
         }
         .refreshable {
             await memoService.refresh()
@@ -82,13 +109,16 @@ struct PhoneMemosView: View {
         .onReceive(timer) { _ in
             recorder.updateElapsedTime()
         }
-        .onChange(of: uploader.finalUploadSequence) { _, _ in
-            Task {
-                for _ in 0..<12 {
-                    try? await Task.sleep(for: .seconds(5))
-                    await memoService.refresh()
-                }
-            }
+        .task(id: uploader.finalUploadSequence) {
+            await memoService.refresh()
+        }
+        .alert("Recording could not start", isPresented: Binding(
+            get: { recorder.errorMessage != nil },
+            set: { if !$0 { recorder.errorMessage = nil } }
+        )) {
+            Button("OK") { recorder.errorMessage = nil }
+        } message: {
+            Text(recorder.errorMessage ?? "Please try again.")
         }
     }
 
@@ -99,7 +129,7 @@ struct PhoneMemosView: View {
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .tracking(2.2)
                     .foregroundStyle(.white.opacity(0.45))
-                Text("Memos")
+                Text("Meetings")
                     .font(.system(size: 32, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
             }
@@ -118,13 +148,43 @@ struct PhoneMemosView: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.white.opacity(0.45))
-            TextField("Search memos", text: $searchText)
+            TextField("Search meetings", text: $searchText)
                 .foregroundStyle(.white)
                 .textInputAutocapitalization(.never)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
         .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var destinationCard: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.text")
+                Text(memoService.destination?.isNotion == true ? "NOTION MEETING NOTES" : "MEETING DESTINATION")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(1.3)
+                Spacer()
+                if let raw = memoService.destination?.url, let url = URL(string: raw) {
+                    Link(destination: url) {
+                        Image(systemName: "arrow.up.right").frame(width: 32, height: 32)
+                    }
+                    .accessibilityLabel("Open meeting library in Notion")
+                }
+            }
+            .foregroundStyle(accent)
+            Text(memoService.destination?.name ?? "Connecting to your workspace")
+                .font(.headline)
+                .foregroundStyle(.white)
+            Text(memoService.destination?.isNotion == true
+                ? "Record once. Summary, action items, and the full transcript appear together."
+                : "Record on your Watch or iPhone. Follow each meeting here.")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+        }
+        .padding(17)
+        .background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 20))
+        .overlay { RoundedRectangle(cornerRadius: 20).stroke(accent.opacity(0.2), lineWidth: 1) }
     }
 
     private var activeRecordingCard: some View {
@@ -134,7 +194,7 @@ struct PhoneMemosView: View {
                 .frame(width: 10, height: 10)
                 .shadow(color: coral, radius: 8)
             VStack(alignment: .leading, spacing: 3) {
-                Text("Recording now")
+                Text("Meeting in progress")
                     .font(.subheadline.weight(.bold))
                 Text(formatDuration(recorder.elapsedTime) + "  •  Tap stop when finished")
                     .font(.caption)
@@ -159,7 +219,7 @@ struct PhoneMemosView: View {
                 .frame(width: 38, height: 38)
                 .background(accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
-                Text(uploader.finalChunkReceived ? "Finishing watch recording" : "Receiving from Apple Watch")
+                Text(uploader.finalChunkReceived ? "Preparing your meeting" : "Saving your recording")
                     .font(.subheadline.weight(.bold))
                 Text(uploader.statusMessage)
                     .font(.caption)
@@ -168,7 +228,7 @@ struct PhoneMemosView: View {
             }
             Spacer()
             if uploader.receivedChunkCount > 0 {
-                Text("\(uploader.uploadedChunkCount)/\(uploader.receivedChunkCount)")
+                Text("\(min(uploader.uploadedChunkCount, uploader.receivedChunkCount))/\(uploader.receivedChunkCount)")
                     .font(.caption.monospacedDigit().weight(.bold))
                     .foregroundStyle(accent)
             }
@@ -187,9 +247,9 @@ struct PhoneMemosView: View {
             Image(systemName: "waveform.and.mic")
                 .font(.system(size: 34, weight: .medium))
                 .foregroundStyle(accent)
-            Text(searchText.isEmpty ? "Your next thought starts here." : "No matching memos")
+            Text(searchText.isEmpty ? "Be present. Keep the details." : "No matching meetings")
                 .font(.headline)
-            Text(searchText.isEmpty ? "Record on your iPhone or watch. The PC will transcribe and file it here." : "Try a different title or filename.")
+            Text(searchText.isEmpty ? "Start a meeting on your Watch or iPhone. Your notes will appear here when they are ready." : "Try a different meeting title.")
                 .font(.subheadline)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.white.opacity(0.52))
@@ -209,7 +269,7 @@ struct PhoneMemosView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: recorder.isRecording ? "stop.fill" : "record.circle.fill")
-                Text(recorder.isRecording ? "Finish recording" : "Record")
+                Text(recorder.isRecording ? "Finish meeting" : "Record meeting")
             }
             .font(.system(size: 17, weight: .bold, design: .rounded))
             .foregroundStyle(.black)
@@ -222,8 +282,7 @@ struct PhoneMemosView: View {
     }
 
     private func monthTitle(_ value: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        let date = formatter.date(from: value) ?? Date()
+        guard let date = MeetingDate.parse(value) else { return "Earlier meetings" }
         let display = DateFormatter()
         display.dateFormat = "MMMM yyyy"
         return display.string(from: date)
@@ -263,6 +322,12 @@ private struct MemoRow: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.48))
+                if let summary = memo.summary, !summary.isEmpty {
+                    Text(summary).font(.caption).foregroundStyle(.white.opacity(0.58)).lineLimit(2)
+                }
+                if memo.notionURL != nil {
+                    Text("Saved in Notion").font(.caption2.weight(.medium)).foregroundStyle(.mint)
+                }
             }
             Spacer(minLength: 4)
             Image(systemName: statusIcon(memo.status))
@@ -277,8 +342,7 @@ private struct MemoRow: View {
     }
 
     private func dateText(_ value: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        guard let date = formatter.date(from: value) else { return "Recently" }
+        guard let date = MeetingDate.parse(value) else { return "Date unavailable" }
         let display = DateFormatter()
         display.dateFormat = "EEE, MMM d, h:mm a"
         return display.string(from: date)
@@ -292,7 +356,7 @@ private struct MemoRow: View {
     private func statusIcon(_ status: String) -> String {
         switch status {
         case "done": return "checkmark.circle.fill"
-        case "failed", "email_failed": return "exclamationmark.triangle.fill"
+        case "failed", "email_failed", "notion_failed": return "exclamationmark.triangle.fill"
         default: return "ellipsis.circle"
         }
     }
@@ -300,7 +364,7 @@ private struct MemoRow: View {
     private func statusColor(_ status: String) -> Color {
         switch status {
         case "done": return .green
-        case "failed", "email_failed": return .orange
+        case "failed", "email_failed", "notion_failed": return .orange
         default: return .blue
         }
     }

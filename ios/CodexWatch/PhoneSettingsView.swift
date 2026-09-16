@@ -5,70 +5,91 @@ struct PhoneSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft = PhonePreferences()
     @State private var isSaving = false
+    @State private var saveError: String?
+
+    private var isNotion: Bool { memoService.destination?.isNotion == true }
 
     private var recipientIsValid: Bool {
         let value = draft.recipient.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !draft.sendEmail || (value.contains("@") && value.contains("."))
+        return isNotion || !draft.sendEmail || (value.contains("@") && value.contains("."))
     }
 
     var body: some View {
         Form {
-            Section("Transcription") {
-                Toggle("Identify speakers", isOn: $draft.speakerLabelsEnabled)
-                Toggle("Auto paragraphs", isOn: $draft.autoParagraphs)
-                Toggle("AI-generated memo title", isOn: $draft.generateTitle)
-                Toggle("Local summary", isOn: $draft.summaryEnabled)
-                LabeledContent("Language") { Text(draft.language) }
+            Section("Destination") {
+                LabeledContent("Save meetings to", value: isNotion ? "Notion" : "Email")
+                if isNotion {
+                    Text(memoService.destination?.name ?? "Meeting notes")
+                    if let raw = memoService.destination?.url, let url = URL(string: raw) {
+                        Link("Open meeting library", destination: url)
+                    }
+                    Text("Your meeting becomes a page with a summary, action items, decisions, topics, and the full transcript. Delivery retries automatically if the connection is interrupted.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } else {
+                    Toggle("Send transcript email", isOn: $draft.sendEmail)
+                    TextField("Your transcript email", text: $draft.recipient)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.emailAddress)
+                    Toggle("Include summary when available", isOn: $draft.autoEmailSummary)
+                }
             }
 
-            Section("Email delivery") {
-                Toggle("Send transcript email", isOn: $draft.sendEmail)
-                Toggle("Include summary", isOn: $draft.autoEmailSummary)
-                TextField("Your transcript email", text: $draft.recipient)
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.emailAddress)
-                Text("This address is saved on this phone and attached to every recording. Each beta tester should enter their own address.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextField("Subject prefix", text: $draft.emailPrefix)
-                    .textInputAutocapitalization(.never)
-                Toggle("Remove local footer", isOn: $draft.removeFooter)
+            Section("Recording") {
+                Label("Start from your Watch or iPhone", systemImage: "mic.fill")
+                Text("Watch recordings transfer through your iPhone in the background. Keep the PC running and your configured connection available to finish processing.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Button {
+                    PhoneUploadService.shared.retryPendingRecordings()
+                } label: {
+                    Label("Retry saved recordings", systemImage: "arrow.clockwise")
+                }
             }
 
-            Section("Privacy") {
-                Toggle("Private mode", isOn: $draft.privateMode)
-                Text("SMTP credentials stay on the PC. This app stores only memo preferences and the PC API connection settings.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Section("Processing") {
+                LabeledContent("Transcription", value: "Groq Whisper")
+                if isNotion {
+                    LabeledContent("Meeting notes", value: "Local AI on your PC")
+                    Text("Audio is transcribed using Groq. Meeting notes are generated on the PC, then the notes and transcript are sent to your Notion workspace.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }
         }
-        .navigationTitle("Settings")
+        .navigationTitle("Meeting settings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button("Cancel") { dismiss() }
+                if !isNotion { Button("Cancel") { dismiss() } }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
+                    if isNotion { dismiss(); return }
                     isSaving = true
                     Task {
-                        await memoService.savePreferences(draft)
+                        let saved = await memoService.savePreferences(draft)
                         isSaving = false
-                        dismiss()
+                        if saved { dismiss() }
+                        else { saveError = memoService.errorMessage }
                     }
                 } label: {
                     if isSaving {
                         ProgressView()
                     } else {
-                        Text("Save").fontWeight(.bold)
+                        Text(isNotion ? "Done" : "Save").fontWeight(.bold)
                     }
                 }
                 .disabled(isSaving || !recipientIsValid)
             }
         }
         .task {
+            await memoService.loadDestination()
             await memoService.loadPreferences()
             draft = memoService.preferences
         }
+        .alert("Settings could not be saved", isPresented: Binding(
+            get: { saveError != nil }, set: { if !$0 { saveError = nil } }
+        )) {
+            Button("OK") { saveError = nil }
+        } message: { Text(saveError ?? "Please try again.") }
     }
 }

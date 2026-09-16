@@ -1,7 +1,7 @@
 import AppIntents
 
 struct StartRecordingIntent: AppIntent {
-    static let title: LocalizedStringResource = "Start Recording"
+    static let title: LocalizedStringResource = "Record Meeting on iPhone"
     static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
@@ -24,8 +24,8 @@ struct CodexWatchShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: StartRecordingIntent(),
-            phrases: ["Start a recording with \(.applicationName)"],
-            shortTitle: "Start Recording",
+            phrases: ["Start a recording with \(.applicationName)", "Record a meeting with \(.applicationName)"],
+            shortTitle: "Record Meeting",
             systemImageName: "record.circle"
         )
         AppShortcut(

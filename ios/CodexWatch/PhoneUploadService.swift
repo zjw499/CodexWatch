@@ -472,7 +472,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 uploadURL = CodexWatchPhoneConfiguration.audioUploadURL
             }
             let recovering = upload.chunk.map { isAudioRecovery($0.recordingID) } ?? false
-            guard recovering || !upload.recipient.isEmpty else {
+            guard recovering || PhoneRecipientSettings.usesNotion || !upload.recipient.isEmpty else {
                 setStatus("Add your transcript email in Settings; recording remains saved")
                 return
             }
@@ -782,8 +782,19 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                     let progress = try await PhoneMemoAPIClient.shared.getRecordingProgress(id: recordingID)
                     self.syncDisplayedProgress(progress, recordingID: recordingID)
                     if progress.status == "done" {
-                        self.finishCompletionPolling(recordingID: recordingID)
+                        self.finishCompletionPolling(recordingID: recordingID, savedInNotion: progress.notionURL != nil)
                         return
+                    }
+                    if let deliveryStatus = progress.deliveryStatus,
+                       ["transcribed", "summarizing", "publishing", "notion_failed"].contains(deliveryStatus),
+                       progress.deliveryMode == "notion" {
+                        let message = deliveryStatus == "notion_failed"
+                            ? "Notion delivery delayed; retrying automatically"
+                            : (deliveryStatus == "publishing" ? "Saving meeting in Notion" : "Creating meeting notes")
+                        self.setStatus(message, forRecordingID: recordingID)
+                        self.sendWatchMeetingStatus(recordingID: recordingID, message: message)
+                        try? await Task.sleep(for: .seconds(5))
+                        continue
                     }
                     let missingIndexes = Set(progress.missingChunkIndexes ?? [])
                         .union(progress.retryChunkIndexes ?? [])
@@ -855,7 +866,11 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         }
     }
 
-    private func finishCompletionPolling(recordingID: String) {
+    private func finishCompletionPolling(recordingID: String, savedInNotion: Bool = false) {
+        sendWatchMeetingStatus(
+            recordingID: recordingID,
+            message: savedInNotion ? "Saved in Notion" : "Transcript delivered"
+        )
         stateQueue.async {
             self.forgetPendingCompletion(recordingID)
             self.completionPollingRecordingIDs.remove(recordingID)
@@ -871,8 +886,21 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 self.uploadedChunkKeys.removeAll()
             }
             self.finalUploadSequence += 1
-            self.statusMessage = "Transcript delivered"
+            self.statusMessage = savedInNotion ? "Saved in Notion" : "Transcript delivered"
             UserDefaults.standard.set(self.statusMessage, forKey: Self.statusDefaultsKey)
+        }
+    }
+
+    private func sendWatchMeetingStatus(recordingID: String, message: String) {
+        DispatchQueue.main.async {
+            let session = WCSession.default
+            guard session.activationState == .activated else { return }
+            let context: [String: Any] = [
+                "command": "meeting-status", "recording_id": recordingID, "status": message,
+            ]
+            let previous = session.applicationContext
+            guard previous["recording_id"] as? String != recordingID || previous["status"] as? String != message else { return }
+            try? session.updateApplicationContext(context)
         }
     }
 

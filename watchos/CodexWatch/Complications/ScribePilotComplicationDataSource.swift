@@ -30,11 +30,11 @@ final class ScribePilotComplicationDataSource: NSObject, CLKComplicationDataSour
     ) {
         let record = CLKComplicationDescriptor(
             identifier: ScribePilotComplication.recordIdentifier,
-            displayName: "Start Recording",
+            displayName: "Record Meeting",
             supportedFamilies: ScribePilotComplication.supportedFamilies,
             userActivity: ScribePilotComplication.activity(
                 type: ScribePilotComplication.recordActivityType,
-                title: "Start Recording"
+                title: "Record Meeting"
             )
         )
         let open = CLKComplicationDescriptor(
@@ -125,7 +125,7 @@ private struct ScribePilotRectangularComplication: View {
                 .font(.title2)
                 .foregroundStyle(Color(red: 0.25, green: 0.82, blue: 0.78))
             VStack(alignment: .leading, spacing: 1) {
-                Text(startsRecording ? "RECORD" : "SCRIBE PILOT")
+                Text(startsRecording ? "MEETING" : "SCRIBE PILOT")
                     .font(.caption2.weight(.bold))
                 Text(startsRecording ? "Tap to start" : "Tap to open")
                     .font(.caption2)
