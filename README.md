@@ -2,7 +2,7 @@
 
 ## Meeting Recorder
 
-The iPhone and Watch apps support a meeting workflow backed by `D:\watch-audio-pipeline`. Record on either device; the iPhone relays saved Watch chunks, and the backend creates meeting notes in the configured Notion workspace. The phone displays summaries, action items, decisions, transcripts, delivery status, and an **Open in Notion** link. The Watch keeps a compact recording screen and receives completion status through WatchConnectivity.
+The iPhone and Watch apps support a meeting workflow backed by `D:\watch-audio-pipeline`. Record on either device; the iPhone relays saved Watch chunks, Groq Whisper creates the full transcript, and the backend can archive that transcript in the configured Notion workspace. The phone displays the transcript and delivery status, provides an **Open in Notion** link, and can copy a completed transcript before opening a configured Gemini destination. The Watch keeps a compact recording screen and receives completion status through WatchConnectivity.
 
 Destination selection is scoped to the phone's existing client ID by the backend. No Notion token is included in the app. Other beta testers keep their configured email delivery. Existing recording and launch complications remain available; recording shortcuts are labeled **Record Meeting**.
 

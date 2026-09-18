@@ -97,12 +97,14 @@ struct MeetingDestination: Codable {
     let name: String
     let url: String?
     let transcriptionProvider: String?
+    let geminiURL: String?
     var isNotion: Bool { mode == "notion" }
     var usesNativeNotion: Bool { isNotion && transcriptionProvider == "notion" }
 
     enum CodingKeys: String, CodingKey {
         case mode, name, url
         case transcriptionProvider = "transcription_provider"
+        case geminiURL = "gemini_url"
     }
 }
 

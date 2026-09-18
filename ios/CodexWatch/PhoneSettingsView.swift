@@ -6,12 +6,17 @@ struct PhoneSettingsView: View {
     @State private var draft = PhonePreferences()
     @State private var isSaving = false
     @State private var saveError: String?
+    @State private var geminiURL = PhoneGeminiSettings.defaultURLString
 
     private var isNotion: Bool { memoService.destination?.isNotion == true }
 
     private var recipientIsValid: Bool {
         let value = draft.recipient.trimmingCharacters(in: .whitespacesAndNewlines)
         return isNotion || !draft.sendEmail || (value.contains("@") && value.contains("."))
+    }
+
+    private var geminiURLIsValid: Bool {
+        PhoneGeminiSettings.validatedURL(geminiURL) != nil
     }
 
     var body: some View {
@@ -23,7 +28,7 @@ struct PhoneSettingsView: View {
                     if let raw = memoService.destination?.url, let url = URL(string: raw) {
                         Link("Open meeting library", destination: url)
                     }
-                    Text("Your meeting becomes a page with a summary, action items, decisions, topics, and the full transcript. Delivery retries automatically if the connection is interrupted.")
+                    Text("Groq creates the full transcript and Scribe Pilot saves that transcript in Notion. Delivery retries automatically if the connection is interrupted.")
                         .font(.footnote).foregroundStyle(.secondary)
                 } else {
                     Toggle("Send transcript email", isOn: $draft.sendEmail)
@@ -53,10 +58,19 @@ struct PhoneSettingsView: View {
                     Text("Your watch sends audio while you record. When you finish, the PC combines the audio and uploads it to Notion. Notion generates the full transcript and meeting notes. Audio is stored on the PC and in your Notion workspace.")
                         .font(.footnote).foregroundStyle(.secondary)
                 } else if isNotion {
-                    LabeledContent("Meeting notes", value: "Local AI on your PC")
-                    Text("Audio is transcribed using Groq. Meeting notes are generated on the PC, then the notes and transcript are sent to your Notion workspace.")
+                    LabeledContent("Notion content", value: "Full transcript only")
+                    Text("Audio is transcribed using Groq Whisper. Scribe Pilot stores the complete transcript in the app and sends the same transcript to your Notion workspace.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+            }
+
+            Section("Gemini handoff") {
+                TextField("Gemini or Gem link", text: $geminiURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                Text("Completed meetings include a button that copies the full transcript for five minutes and opens this Gemini destination.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
         }
         .navigationTitle("Meeting settings")
@@ -67,6 +81,7 @@ struct PhoneSettingsView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
+                    PhoneGeminiSettings.save(geminiURL)
                     if isNotion { dismiss(); return }
                     isSaving = true
                     Task {
@@ -82,13 +97,16 @@ struct PhoneSettingsView: View {
                         Text(isNotion ? "Done" : "Save").fontWeight(.bold)
                     }
                 }
-                .disabled(isSaving || !recipientIsValid)
+                .disabled(isSaving || !recipientIsValid || !geminiURLIsValid)
             }
         }
         .task {
             await memoService.loadDestination()
             await memoService.loadPreferences()
             draft = memoService.preferences
+            geminiURL = PhoneGeminiSettings.savedURLString
+                ?? memoService.destination?.geminiURL
+                ?? PhoneGeminiSettings.defaultURLString
         }
         .alert("Settings could not be saved", isPresented: Binding(
             get: { saveError != nil }, set: { if !$0 { saveError = nil } }

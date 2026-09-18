@@ -161,7 +161,7 @@ struct PhoneMemosView: View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
                 Image(systemName: "doc.text")
-                Text(memoService.destination?.isNotion == true ? "NOTION MEETING NOTES" : "MEETING DESTINATION")
+                Text(memoService.destination?.isNotion == true ? "GROQ TRANSCRIPTS" : "MEETING DESTINATION")
                     .font(.system(size: 10, weight: .bold, design: .rounded))
                     .tracking(1.3)
                 Spacer()
@@ -177,7 +177,7 @@ struct PhoneMemosView: View {
                 .font(.headline)
                 .foregroundStyle(.white)
             Text(memoService.destination?.isNotion == true
-                ? "Record once. Summary, action items, and the full transcript appear together."
+                ? "Groq creates the full transcript. Open a completed meeting to copy it into Gemini."
                 : "Record on your Watch or iPhone. Follow each meeting here.")
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.6))

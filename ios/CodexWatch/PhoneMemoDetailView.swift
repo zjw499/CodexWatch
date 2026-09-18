@@ -1,8 +1,11 @@
 import SwiftUI
+import UIKit
+import UniformTypeIdentifiers
 
 struct PhoneMemoDetailView: View {
     @EnvironmentObject private var memoService: PhoneMemoService
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     let memo: MemoSummary
     @State private var detail: MemoDetail?
     @State private var isLoading = true
@@ -10,6 +13,7 @@ struct PhoneMemoDetailView: View {
     @State private var recoveryProgress: AudioRecoveryProgress?
     @State private var requestingRecovery = false
     @State private var showingDeleteConfirmation = false
+    @State private var copiedForGemini = false
 
     var body: some View {
         ScrollView {
@@ -63,6 +67,26 @@ struct PhoneMemoDetailView: View {
                     section(title: "Transcript", icon: "text.quote") {
                         Text(detail.transcript.isEmpty ? "Transcript is not available yet." : detail.transcript)
                             .textSelection(.enabled)
+                    }
+
+                    if !detail.transcript.isEmpty {
+                        Button {
+                            copyTranscriptAndOpenGemini(detail.transcript)
+                        } label: {
+                            Label("Copy Transcript & Open Gemini", systemImage: "sparkles.rectangle.stack")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.cyan)
+                        .foregroundStyle(.black)
+
+                        if copiedForGemini {
+                            Label("Full transcript copied. Paste it into Gemini.", systemImage: "checkmark.circle.fill")
+                                .font(.footnote)
+                                .foregroundStyle(.mint)
+                        }
                     }
 
                     if ["failed", "email_failed", "notion_failed"].contains(detail.status) {
@@ -207,6 +231,18 @@ struct PhoneMemoDetailView: View {
         guard parts.count == 4, parts[0] == "stream",
               parts[1].count == 32, parts[1].allSatisfy(\.isHexDigit) else { return nil }
         return String(parts[1])
+    }
+
+    private func copyTranscriptAndOpenGemini(_ transcript: String) {
+        UIPasteboard.general.setItems(
+            [[UTType.plainText.identifier: transcript]],
+            options: [
+                .localOnly: true,
+                .expirationDate: Date().addingTimeInterval(5 * 60),
+            ]
+        )
+        copiedForGemini = true
+        openURL(PhoneGeminiSettings.resolvedURL(serverURL: memoService.destination?.geminiURL))
     }
 
     private func section<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
