@@ -18,13 +18,17 @@ if (-not (Test-Path -LiteralPath $python) -or -not (Test-Path -LiteralPath $KeyF
 # Lock down storage before creating an invitation, database, or runtime configuration.
 New-Item -ItemType Directory -Path $privateRoot -Force | Out-Null
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-$acl = New-Object System.Security.AccessControl.DirectorySecurity
+$directory = [System.IO.DirectoryInfo]::new($privateRoot)
+$acl = [System.IO.FileSystemAclExtensions]::GetAccessControl($directory, [System.Security.AccessControl.AccessControlSections]::Access)
 $acl.SetAccessRuleProtection($true, $false)
+foreach ($existingRule in $acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])) {
+    $acl.RemoveAccessRuleSpecific($existingRule)
+}
 foreach ($sid in @($identity.User, (New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18')))) {
     $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
     $acl.AddAccessRule($rule)
 }
-Set-Acl -LiteralPath $privateRoot -AclObject $acl
+[System.IO.FileSystemAclExtensions]::SetAccessControl($directory, $acl)
 
 New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 $moduleDestination = Join-Path $releaseRoot "server_workspace"
