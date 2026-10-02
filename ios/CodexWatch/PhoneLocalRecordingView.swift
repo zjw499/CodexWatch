@@ -44,6 +44,7 @@ struct PhoneLocalRecordingView: View {
         }
         .background(ScribeTheme.background.ignoresSafeArea()).foregroundStyle(.white).privacySensitive()
         .navigationTitle("Recording").navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -51,16 +52,11 @@ struct PhoneLocalRecordingView: View {
                         Label("Rename", systemImage: "pencil")
                     }
                     Button(role: .destructive) { removing = true } label: { Label("Remove recording", systemImage: "trash") }
-                } label: { Image(systemName: "ellipsis.circle") }
+                } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("Recording actions")
             }
         }
-        .confirmationDialog("Remove this recording?", isPresented: $removing, titleVisibility: .visible) {
-            Button("Remove recording", role: .destructive) {
-                do { try PhoneOpenAIService.shared.remove([recordingID]); dismiss() }
-                catch { errorMessage = error.localizedDescription }
-            }
-        } message: {
-            Text("Audio, transcript, and notes are removed from this iPhone. Saved Watch audio will be removed when it reconnects.")
+        .sheet(isPresented: $removing) {
+            PhoneRecordingRemovalView(ids: [recordingID]) { dismiss() }
         }
         .alert("Rename recording", isPresented: $renaming) {
             TextField("Title", text: $renameTitle)

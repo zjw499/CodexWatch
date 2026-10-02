@@ -38,6 +38,12 @@ final class ScribePilotUITests: XCTestCase {
         app.buttons["Project kickoff"].tap()
         XCTAssertTrue(app.staticTexts["Full transcript"].waitForExistence(timeout: 5))
         screenshot("phone-transcript")
+        app.buttons["Recording actions"].tap()
+        app.buttons["Remove recording"].tap()
+        XCTAssertTrue(app.buttons["Remove 1 recording"].waitForExistence(timeout: 10))
+        app.buttons["Remove 1 recording"].tap()
+        XCTAssertTrue(app.staticTexts["Your recordings"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Project kickoff"].exists)
     }
     private func screenshot(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())

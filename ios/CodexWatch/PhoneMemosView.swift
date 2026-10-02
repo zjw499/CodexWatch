@@ -51,7 +51,9 @@ struct PhoneMemosView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { PhoneUploadService.shared.retryPendingRecordings() }
         }
-        .sheet(isPresented: $confirmingRemoval) { removalReview }
+        .sheet(isPresented: $confirmingRemoval) {
+            PhoneRecordingRemovalView(ids: removal) { selected.subtract(removal) }
+        }
         .alert("Rename recording", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Recording title", text: $renameTitle)
             Button("Cancel", role: .cancel) { renaming = nil }
@@ -66,28 +68,6 @@ struct PhoneMemosView: View {
         .alert("Scribe Pilot", isPresented: Binding(get: { displayedError != nil }, set: { if !$0 { clearError() } })) {
             Button("OK") { clearError() }
         } message: { Text(displayedError ?? "Please try again.") }
-    }
-
-    private var removalReview: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    Image(systemName: "trash").font(.system(size: 32)).foregroundStyle(ScribeTheme.red)
-                    Text(removal.count == 1 ? "Remove this recording?" : "Remove these recordings?")
-                        .font(.title2.bold())
-                    Text("Saved audio and transcripts will be removed from this iPhone. Watch copies will be removed when it reconnects. Already processed OpenAI requests cannot be recalled.")
-                        .font(.subheadline).foregroundStyle(ScribeTheme.muted)
-                    Button("Remove \(removal.count) recording\(removal.count == 1 ? "" : "s")", role: .destructive) {
-                        do { try PhoneOpenAIService.shared.remove(removal); selected.subtract(removal) }
-                        catch { errorMessage = error.localizedDescription }
-                        confirmingRemoval = false
-                    }.buttonStyle(.borderedProminent).tint(ScribeTheme.red).disabled(removal.isEmpty)
-                }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .background(ScribeTheme.background).foregroundStyle(.white)
-            .navigationTitle("Remove recording").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Cancel") { confirmingRemoval = false } } }
-        }.preferredColorScheme(.dark).presentationDetents([.medium, .large])
     }
 
     private var header: some View {
