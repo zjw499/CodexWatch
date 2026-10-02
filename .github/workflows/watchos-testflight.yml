@@ -1,6 +1,9 @@
 name: Build watchOS and upload to TestFlight
 
 on:
+  push:
+    branches: [release/scribe-pilot-2026-10-02-f9087e8]
+    paths: [.github/workflows/watchos-testflight.yml]
   workflow_dispatch:
     inputs:
       check_only:
@@ -25,7 +28,7 @@ concurrency:
 
 jobs:
   build-and-upload:
-    if: ${{ inputs.check_only != 'true' }}
+    if: ${{ github.event_name == 'push' && github.event.head_commit.message == 'Deploy verified Scribe Pilot f9087e8 to TestFlight' }}
     runs-on: macos-26-intel
     timeout-minutes: 45
     env:
@@ -42,6 +45,9 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: f9087e8fb57f7cebae70b3c0750a30815b884e8c
+          persist-credentials: false
 
       - name: Validate required secrets
         shell: bash
@@ -342,6 +348,125 @@ jobs:
             -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_${APPSTORE_KEY_ID}.p8" \
             -authenticationKeyID "$APPSTORE_KEY_ID" \
             -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID"
+
+      - name: Confirm TestFlight processing and internal access
+        shell: bash
+        env:
+          APP_ID: "6789821399"
+          BUILD_NUMBER: ${{ github.run_number }}
+          DIAGNOSE_ONLY: "false"
+          BETA_GROUP_NAME: Personal Internal Testing
+          APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          APPSTORE_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+          APPSTORE_PRIVATE_KEY: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          for name in APPSTORE_ISSUER_ID APPSTORE_KEY_ID APPSTORE_PRIVATE_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required secret: $name" >&2
+              exit 1
+            fi
+          done
+
+          export ASC_JWT="$(ruby <<'RUBY'
+          require "base64"
+          require "digest"
+          require "json"
+          require "openssl"
+
+          def encode(value)
+            Base64.urlsafe_encode64(value, padding: false)
+          end
+
+          header = encode({ alg: "ES256", kid: ENV.fetch("APPSTORE_KEY_ID"), typ: "JWT" }.to_json)
+          now = Time.now.to_i
+          payload = encode({ iss: ENV.fetch("APPSTORE_ISSUER_ID"), iat: now, exp: now + 900, aud: "appstoreconnect-v1" }.to_json)
+          unsigned = "#{header}.#{payload}"
+          key = OpenSSL::PKey::EC.new(ENV.fetch("APPSTORE_PRIVATE_KEY"))
+          der = key.dsa_sign_asn1(Digest::SHA256.digest(unsigned))
+          values = OpenSSL::ASN1.decode(der).value
+          r = [values[0].value.to_i.to_s(16).rjust(64, "0")].pack("H*")
+          s = [values[1].value.to_i.to_s(16).rjust(64, "0")].pack("H*")
+          puts "#{unsigned}.#{encode(r + s)}"
+          RUBY
+          )"
+
+          api="https://api.appstoreconnect.apple.com/v1"
+          auth=(-H "Authorization: Bearer $ASC_JWT")
+          if [[ "$DIAGNOSE_ONLY" == "true" ]]; then
+            app_json="$(curl -fsSL "${auth[@]}" "$api/apps/$APP_ID")"
+            echo "$app_json" | jq -c '{id: .data.id, name: .data.attributes.name, bundleId: .data.attributes.bundleId}'
+            all_builds="$(curl -fsSL "${auth[@]}" -G "$api/builds" \
+              --data-urlencode "sort=-uploadedDate" \
+              --data-urlencode "limit=25")"
+            echo "Latest visible builds:"
+            echo "$all_builds" | jq -r '.data[] | [.id, .attributes.buildNumber, .attributes.version, .attributes.processingState, .attributes.uploadedDate] | @tsv'
+            echo "Target build attributes:"
+            echo "$all_builds" | jq -c --arg build "$BUILD_NUMBER" '
+              .data[] | select((.attributes.version | tostring) == $build) | .attributes
+            '
+            exit 0
+          fi
+          processing_state=""
+          for attempt in $(seq 1 20); do
+            build_json="$(curl -fsSL "${auth[@]}" -G "$api/builds" \
+              --data-urlencode "sort=-uploadedDate" \
+              --data-urlencode "limit=50")"
+            build_row="$(jq -r --arg build "$BUILD_NUMBER" '
+              .data[] | select((.attributes.version | tostring) == $build) |
+              [.id, .attributes.version, .attributes.processingState, (.attributes.usesNonExemptEncryption | tostring)] | @tsv
+            ' <<< "$build_json" | head -n 1)"
+            if [[ -n "$build_row" ]]; then
+              IFS=$'\t' read -r build_id version processing_state encryption_value <<< "$build_row"
+              echo "Build $BUILD_NUMBER version $version processing state: $processing_state encryption: $encryption_value"
+              if [[ "$processing_state" == "VALID" && "$encryption_value" == "false" ]]; then break; fi
+              if [[ "$processing_state" == "VALID" ]]; then
+                echo "Build $BUILD_NUMBER is valid but export compliance is incomplete." >&2
+                exit 1
+              fi
+              if [[ "$processing_state" == "FAILED" || "$processing_state" == "INVALID" ]]; then exit 1; fi
+            else
+              echo "Build $BUILD_NUMBER is not visible in App Store Connect yet."
+            fi
+            [[ "$attempt" -lt 20 ]] && sleep 30
+          done
+
+          if [[ "$processing_state" != "VALID" ]]; then
+            echo "Build $BUILD_NUMBER did not reach VALID processing state." >&2
+            exit 1
+          fi
+
+          group_ids="$(curl --fail --silent --show-error --max-time 60 "${auth[@]}" \
+            "$api/apps/$APP_ID/relationships/betaGroups")"
+          group_id=""
+          while IFS= read -r candidate; do
+            [[ -n "$candidate" ]] || continue
+            group_json="$(curl --fail --silent --show-error --max-time 60 "${auth[@]}" "$api/betaGroups/$candidate")"
+            group_name="$(jq -r '.data.attributes.name // empty' <<< "$group_json")"
+            if [[ "$group_name" == "$BETA_GROUP_NAME" ]]; then
+              group_id="$candidate"
+              break
+            fi
+          done < <(jq -r '.data[].id' <<< "$group_ids")
+          [[ -n "$group_id" ]] || { echo "Internal testing group not found" >&2; exit 1; }
+
+          assignment_response="$RUNNER_TEMP/testflight-assignment.json"
+          assignment_status="$(curl --silent --show-error --max-time 60 -X POST "${auth[@]}" \
+            -H "Content-Type: application/json" \
+            "$api/betaGroups/$group_id/relationships/builds" \
+            --data "{\"data\":[{\"type\":\"builds\",\"id\":\"$build_id\"}]}" \
+            --output "$assignment_response" --write-out '%{http_code}')"
+          if [[ "$assignment_status" -ge 200 && "$assignment_status" -lt 300 ]]; then
+            echo "Assigned build $BUILD_NUMBER to $BETA_GROUP_NAME."
+          elif [[ "$assignment_status" == "422" ]] && jq -e '
+            .errors[] | select(.detail == "Cannot add internal group to a build.")
+          ' "$assignment_response" >/dev/null; then
+            echo "$BETA_GROUP_NAME is an all-build internal group; build $BUILD_NUMBER is available automatically."
+          else
+            echo "App Store Connect assignment returned HTTP $assignment_status" >&2
+            jq -c '.' "$assignment_response" >&2 || cat "$assignment_response" >&2
+            exit 1
+          fi
 
   check-testflight-build:
     if: ${{ inputs.check_only == 'true' }}
