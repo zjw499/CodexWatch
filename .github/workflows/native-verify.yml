@@ -1,0 +1,59 @@
+name: Verify Scribe Pilot phone and Watch
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/gunmetal-red-openai]
+jobs:
+  native:
+    runs-on: macos-26-intel
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate native project
+        run: |
+          command -v xcodegen || brew install xcodegen
+          xcodegen generate
+      - name: Build phone and Watch and run queue tests
+        run: |
+          set -o pipefail
+          PHONE_ID=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; d=json.load(sys.stdin); print(next(v["udid"] for k,vs in d["devices"].items() if "iOS" in k for v in vs if "iPhone" in v["name"]))')
+          echo "$PHONE_ID" > phone-simulator.txt
+          xcodebuild test -project CodexWatch.xcodeproj -scheme CodexWatch -configuration Debug -destination "platform=iOS Simulator,id=$PHONE_ID" -derivedDataPath DerivedData -resultBundlePath native-results.xcresult CODE_SIGNING_ALLOWED=NO | tee native-build.log
+      - name: Capture Watch preview
+        if: success()
+        run: |
+          set -euo pipefail
+          PHONE_ID=$(cat phone-simulator.txt)
+          WATCH_ID=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; d=json.load(sys.stdin); print(next((v["udid"] for k,vs in d["devices"].items() if "watchOS" in k for v in vs if "Apple Watch" in v["name"]), ""))')
+          mkdir -p native-screenshots
+          if [ -n "$WATCH_ID" ]; then
+            xcrun simctl pair "$WATCH_ID" "$PHONE_ID" || true
+            xcrun simctl boot "$WATCH_ID" || true
+            xcrun simctl bootstatus "$WATCH_ID" -b
+            WATCH_APP="DerivedData/Build/Products/Debug-watchsimulator/Scribe Pilot.app"
+            xcrun simctl install "$WATCH_ID" "$WATCH_APP"
+            xcrun simctl launch "$WATCH_ID" com.zachwyatt.codexwatch.watchkitapp -scribe-ui-preview
+            sleep 5
+            xcrun simctl io "$WATCH_ID" screenshot native-screenshots/watch-capture.png
+          fi
+      - name: Export UI screenshots
+        if: always()
+        run: |
+          mkdir -p native-screenshots
+          if [ -d native-results.xcresult ]; then
+            xcrun xcresulttool export attachments --path native-results.xcresult --output-path native-screenshots || true
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scribe-native-verification
+          path: |
+            native-build.log
+            native-results.xcresult
+            native-screenshots
+            DerivedData/Build/Products/Debug-iphonesimulator/*.app
+            DerivedData/Build/Products/Debug-watchsimulator/*.app

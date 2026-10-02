@@ -41,8 +41,8 @@ struct PhoneMemoDetailView: View {
                                 .padding(.vertical, 8)
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(.mint)
-                        .foregroundStyle(.black)
+                        .tint(ScribeTheme.red)
+                        .foregroundStyle(.white)
                     }
 
                     if let summary = detail.summary, !summary.isEmpty {
@@ -79,8 +79,8 @@ struct PhoneMemoDetailView: View {
                                 .padding(.vertical, 8)
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(.cyan)
-                        .foregroundStyle(.black)
+                        .tint(ScribeTheme.red)
+                        .foregroundStyle(.white)
 
                         if copiedForGemini {
                             Label("Full transcript copied. Paste it into Gemini.", systemImage: "checkmark.circle.fill")
@@ -155,7 +155,7 @@ struct PhoneMemoDetailView: View {
             }
             .padding(20)
         }
-        .background(Color.black.ignoresSafeArea())
+        .background(ScribeTheme.background.ignoresSafeArea())
         .foregroundStyle(.white)
         .navigationTitle("Meeting")
         .navigationBarTitleDisplayMode(.inline)

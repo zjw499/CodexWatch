@@ -18,6 +18,9 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     @Published private(set) var queuedChunkCount = 0
     @Published private(set) var deliveredChunkCount = 0
     @Published private(set) var meetingStatus: String?
+    @Published private(set) var openAIReady = UserDefaults.standard.bool(forKey: "ScribePilot.OpenAIReady")
+    @Published private(set) var protectedWorkflow = true
+    private var removedRecordingIDs = Set(UserDefaults.standard.stringArray(forKey: "ScribePilot.RemovedWatchRecordings") ?? [])
     @Published private(set) var lastRecordingID = UserDefaults.standard.string(
         forKey: "CodexWatch.LastStreamRecordingID"
     )
@@ -76,6 +79,10 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         finalChunkQueued = false
         meetingStatus = nil
         statusMessage = "Recording \(recordingID.prefix(6))"
+        Task { @MainActor in
+            do { try RecordingQueueStore.shared.begin(id: recordingID, source: "Apple Watch") }
+            catch { RecordingQueueStore.shared.errorMessage = error.localizedDescription }
+        }
     }
 
     func restoreRecording(recordingID: String) {
@@ -122,6 +129,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     private func resendRecording(_ recordingID: String, chunkIndexes: Set<Int>? = nil) {
+        guard !removedRecordingIDs.contains(recordingID) else { return }
         let directory = recordingsDirectory()
         fileQueue.async { [weak self] in
             guard let self else { return }
@@ -164,6 +172,16 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func enqueueChunk(fileURL: URL, recordingID: String, chunkIndex: Int, isFinal: Bool) {
+        guard !removedRecordingIDs.contains(recordingID) else {
+            try? FileManager.default.removeItem(at: fileURL)
+            return
+        }
+        Task { @MainActor in
+            do {
+                try RecordingQueueStore.shared.accept(fileURL: fileURL, id: recordingID, index: chunkIndex,
+                    isFinal: isFinal, source: "Apple Watch")
+            } catch { RecordingQueueStore.shared.errorMessage = error.localizedDescription }
+        }
         let metadata: [String: Any] = [
             "kind": "audio-recording-chunk",
             "filename": fileURL.lastPathComponent,
@@ -323,11 +341,11 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
-        handleResendRequest(userInfo)
+        handleQueueMessage(userInfo)
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-        handleResendRequest(message)
+        handleQueueMessage(message)
     }
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
@@ -353,6 +371,78 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         }
         DispatchQueue.main.async {
             self.resendRecording(recordingID, chunkIndexes: requestedIndexes)
+        }
+    }
+
+    private func handleQueueMessage(_ message: [String: Any]) {
+        if message["command"] as? String == "resend-recording" { handleResendRequest(message); return }
+        Task { @MainActor in
+            if message["command"] as? String == "processing-settings" {
+                self.openAIReady = message["ready"] as? Bool ?? false
+                self.protectedWorkflow = message["protected"] as? Bool ?? true
+                UserDefaults.standard.set(self.openAIReady, forKey: "ScribePilot.OpenAIReady")
+                return
+            }
+            guard let id = message["recording_id"] as? String, RecordingQueueStore.validID(id) else { return }
+            do {
+                switch message["command"] as? String {
+                case "remove-recording": try self.removeRecording(id, notifyPhone: false)
+                case "rename-recording":
+                    if let title = message["title"] as? String { try RecordingQueueStore.shared.rename(id, title: title) }
+                case "recording-complete":
+                    try RecordingQueueStore.shared.update(id) { $0.state = .ready; $0.progress = 1; $0.error = nil }
+                    if message["delete_audio"] as? Bool == true {
+                        try RecordingQueueStore.shared.purgeAudio(id)
+                        try self.purgeOriginalAudio(id)
+                    }
+                    if id == self.lastRecordingID { self.meetingStatus = "Transcript ready on iPhone" }
+                case "meeting-status":
+                    if id == self.lastRecordingID { self.meetingStatus = message["status"] as? String }
+                default: break
+                }
+            } catch { RecordingQueueStore.shared.errorMessage = error.localizedDescription }
+        }
+    }
+
+    @MainActor
+    func retryRecording(_ id: String) {
+        guard !removedRecordingIDs.contains(id) else { return }
+        resendRecording(id)
+        WCSession.default.transferUserInfo(["command": "retry-recording", "recording_id": id])
+        statusMessage = "Requested processing on iPhone"
+    }
+
+    @MainActor
+    func renameRecording(_ id: String, title: String) throws {
+        try RecordingQueueStore.shared.rename(id, title: title)
+        WCSession.default.transferUserInfo(["command": "rename-recording", "recording_id": id, "title": title])
+    }
+
+    @MainActor
+    func removeRecording(_ id: String, notifyPhone: Bool = true) throws {
+        if AudioRecorderService.shared.isRecording && id == lastRecordingID {
+            AudioRecorderService.shared.stopRecording()
+            try RecordingQueueStore.shared.update(id) { $0.state = .receiving }
+        }
+        try RecordingQueueStore.shared.remove([id])
+        removedRecordingIDs.insert(id)
+        UserDefaults.standard.set(removedRecordingIDs.sorted(), forKey: "ScribePilot.RemovedWatchRecordings")
+        pendingFiles.removeAll { ($0.metadata["recording_id"] as? String) == id }
+        for transfer in WCSession.default.outstandingFileTransfers where transfer.file.metadata?["recording_id"] as? String == id {
+            inFlightFiles.remove(transfer.file.fileURL.lastPathComponent)
+            transfer.cancel()
+        }
+        try purgeOriginalAudio(id)
+        if notifyPhone { WCSession.default.transferUserInfo(["command": "remove-recording", "recording_id": id]) }
+        if id == lastRecordingID { meetingStatus = nil; statusMessage = "Recording removed" }
+    }
+
+    private func purgeOriginalAudio(_ id: String) throws {
+        let directory = recordingsDirectory()
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        for file in files where file.lastPathComponent.contains("_\(id)_") {
+            try FileManager.default.removeItem(at: file)
         }
     }
 

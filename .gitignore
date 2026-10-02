@@ -15,3 +15,9 @@ env/
 venv/
 data/*.json
 macos/CodexWatch/Config/Local.xcconfig
+.env*
+!.env.example
+.codex-tmp/
+native-results.xcresult/
+native-screenshots/
+native-build.log

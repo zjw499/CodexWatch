@@ -7,6 +7,8 @@ final class PhoneRecorderService: NSObject, ObservableObject {
     static let shared = PhoneRecorderService()
 
     @Published private(set) var isRecording = false
+    @Published private(set) var isPaused = false
+    @Published private(set) var audioLevel: CGFloat = 0
     @Published private(set) var elapsedTime: TimeInterval = 0
     @Published private(set) var statusMessage = "Ready to record"
     @Published var errorMessage: String?
@@ -30,9 +32,7 @@ final class PhoneRecorderService: NSObject, ObservableObject {
             try audioSession.setActive(true)
 
             let directory = try recordingsDirectory()
-            let formatter = ISO8601DateFormatter()
-            let name = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
-            let fileURL = directory.appendingPathComponent("iphone-\(name)-\(UUID().uuidString).m4a")
+            let fileURL = directory.appendingPathComponent("phone_\(UUID().uuidString.lowercased()).m4a")
             let settings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: 16_000,
@@ -41,6 +41,7 @@ final class PhoneRecorderService: NSObject, ObservableObject {
                 AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
             ]
             let recorder = try AVAudioRecorder(url: fileURL, settings: settings)
+            recorder.isMeteringEnabled = true
             recorder.prepareToRecord()
             guard recorder.record() else {
                 throw NSError(
@@ -53,6 +54,7 @@ final class PhoneRecorderService: NSObject, ObservableObject {
             self.recorder = recorder
             elapsedTime = 0
             isRecording = true
+            isPaused = false
             statusMessage = "Recording"
         } catch {
             try? AVAudioSession.sharedInstance().setActive(false)
@@ -64,6 +66,21 @@ final class PhoneRecorderService: NSObject, ObservableObject {
     func updateElapsedTime() {
         guard let recorder, recorder.isRecording else { return }
         elapsedTime = recorder.currentTime
+        recorder.updateMeters()
+        audioLevel = CGFloat(max(0, min(1, pow(10, recorder.averagePower(forChannel: 0) / 25))))
+    }
+
+    func pauseRecording() {
+        guard isRecording, !isPaused else { return }
+        recorder?.pause()
+        isPaused = true
+        audioLevel = 0
+    }
+
+    func resumeRecording() {
+        guard isRecording, isPaused else { return }
+        if recorder?.record() == true { isPaused = false }
+        else { errorMessage = "Recording could not resume. Finish this recording to keep the saved audio." }
     }
 
     func stopRecording() {
@@ -71,8 +88,10 @@ final class PhoneRecorderService: NSObject, ObservableObject {
         recorder.stop()
         self.recorder = nil
         isRecording = false
+        isPaused = false
+        audioLevel = 0
         elapsedTime = recorder.currentTime
-        statusMessage = "Uploading audio to PC"
+        statusMessage = "Saved to recording queue"
         try? AVAudioSession.sharedInstance().setActive(false)
         PhoneUploadService.shared.enqueue(fileURL: recorder.url)
     }
@@ -88,7 +107,7 @@ final class PhoneRecorderService: NSObject, ObservableObject {
     private func recordingsDirectory() throws -> URL {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Recordings", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try RecordingQueueStore.protectDirectory(directory)
         return directory
     }
 }
