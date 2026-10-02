@@ -5,7 +5,14 @@ struct RecorderView: View {
     @EnvironmentObject private var queue: RecordingQueueStore
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var transfer = WatchConnectivityTransferService.shared
-    @State private var page = 0
+    @State private var page = RecorderView.initialPage
+    private static var initialPage: Int {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-scribe-watch-queue") { return 1 }
+        if ProcessInfo.processInfo.arguments.contains("-scribe-watch-settings") { return 2 }
+        #endif
+        return 0
+    }
     private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
     var body: some View {

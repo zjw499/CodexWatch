@@ -93,7 +93,9 @@ final class PhoneRecorderService: NSObject, ObservableObject {
         elapsedTime = recorder.currentTime
         statusMessage = "Saved to recording queue"
         try? AVAudioSession.sharedInstance().setActive(false)
-        PhoneUploadService.shared.enqueue(fileURL: recorder.url)
+        PhoneOpenAIService.shared.receive(fileURL: recorder.url,
+            id: recorder.url.deletingPathExtension().lastPathComponent,
+            source: "iPhone", duration: elapsedTime)
     }
 
     private func requestMicrophonePermission() async -> Bool {

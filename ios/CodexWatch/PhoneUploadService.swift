@@ -693,7 +693,9 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 ImmediateWatchChunkEnvelope.self,
                 from: messageData
             )
-            guard envelope.version == 1, !envelope.audioData.isEmpty else {
+            guard envelope.version == 1, !envelope.audioData.isEmpty,
+                  RecordingQueueStore.validID(envelope.recordingID),
+                  envelope.chunkIndex >= 0, envelope.chunkIndex < 100_000 else {
                 throw CocoaError(.fileReadCorruptFile)
             }
             let context = ChunkContext(
@@ -709,7 +711,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                     context.isFinal ? 1 : 0
                 )
             )
-            try envelope.audioData.write(to: destination, options: [.atomic])
+            try envelope.audioData.write(to: destination, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
             immediateChunkKeys.insert(chunkKey(context))
             markChunkReceived(context)
             stateQueue.async {
@@ -1048,14 +1050,14 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     private func recordingsDirectory() throws -> URL {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Recordings", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try RecordingQueueStore.protectDirectory(directory)
         return directory
     }
 
     private func streamChunksDirectory() throws -> URL {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("StreamChunks", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try RecordingQueueStore.protectDirectory(directory)
         return directory
     }
 
@@ -1063,7 +1065,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         let boundary = "CodexWatch-\(UUID().uuidString)"
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Uploads", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try RecordingQueueStore.protectDirectory(directory)
         let bodyURL = directory.appendingPathComponent("\(boundary).body")
 
         guard FileManager.default.createFile(atPath: bodyURL.path, contents: nil) else {
@@ -1101,7 +1103,8 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     private func chunkContext(from metadata: [String: Any]) -> ChunkContext? {
         guard let recordingID = metadata["recording_id"] as? String,
               RecordingQueueStore.validID(recordingID),
-              let chunkIndex = metadata["chunk_index"] as? Int else { return nil }
+              let chunkIndex = metadata["chunk_index"] as? Int,
+              chunkIndex >= 0, chunkIndex < 100_000 else { return nil }
         let isFinal = metadata["is_final"] as? Bool ?? false
         return ChunkContext(recordingID: recordingID, chunkIndex: chunkIndex, isFinal: isFinal)
     }

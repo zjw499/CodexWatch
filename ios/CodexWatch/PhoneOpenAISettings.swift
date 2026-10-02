@@ -75,7 +75,10 @@ final class PhoneOpenAISettings: ObservableObject {
         return configuration.protectedMode ? "Protected workflow configured" : "OpenAI configured"
     }
 
-    func refreshKeyAvailability() { hasKey = !(OpenAIKeychain.read() ?? "").isEmpty }
+    func refreshKeyAvailability() {
+        hasKey = !(OpenAIKeychain.read() ?? "").isEmpty
+        PhoneOpenAIService.shared.syncConfiguration()
+    }
 
     func save(_ draft: OpenAIConfiguration, newKey: String) throws {
         guard PhoneOpenAIClient.models.contains(draft.model),
@@ -84,7 +87,10 @@ final class PhoneOpenAISettings: ObservableObject {
         }
         let key = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !key.isEmpty {
-            guard key.hasPrefix("sk-"), key.count > 20 else { throw OpenAIError.invalidKey }
+            guard key.hasPrefix("sk-"), key.count > 20,
+                  key.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else {
+                throw OpenAIError.invalidKey
+            }
             try OpenAIKeychain.save(key)
         }
         var saved = draft

@@ -39,6 +39,14 @@ jobs:
             xcrun simctl launch "$WATCH_ID" com.zachwyatt.codexwatch.watchkitapp -scribe-ui-preview
             sleep 5
             xcrun simctl io "$WATCH_ID" screenshot native-screenshots/watch-capture.png
+            xcrun simctl terminate "$WATCH_ID" com.zachwyatt.codexwatch.watchkitapp || true
+            xcrun simctl launch "$WATCH_ID" com.zachwyatt.codexwatch.watchkitapp -scribe-ui-preview -scribe-watch-queue
+            sleep 5
+            xcrun simctl io "$WATCH_ID" screenshot native-screenshots/watch-queue.png
+            xcrun simctl terminate "$WATCH_ID" com.zachwyatt.codexwatch.watchkitapp || true
+            xcrun simctl launch "$WATCH_ID" com.zachwyatt.codexwatch.watchkitapp -scribe-ui-preview -scribe-watch-settings
+            sleep 5
+            xcrun simctl io "$WATCH_ID" screenshot native-screenshots/watch-settings.png
           fi
       - name: Export UI screenshots
         if: always()

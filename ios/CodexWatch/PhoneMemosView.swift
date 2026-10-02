@@ -47,6 +47,7 @@ struct PhoneMemosView: View {
         }
         .onReceive(timer) { _ in recorder.updateElapsedTime() }
         .onChange(of: section) { _, _ in selected = []; editing = false }
+        .onChange(of: search) { _, _ in selected = [] }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { PhoneUploadService.shared.retryPendingRecordings() }
         }
@@ -194,7 +195,7 @@ struct PhoneMemosView: View {
             if section == 0 {
                 Button("Process") {
                     PhoneOpenAIService.shared.process(Array(selected)); editing = false; selected = []
-                }.disabled(selected.isEmpty || !settings.ready)
+                }.disabled(!settings.ready || !queue.pending.contains { selected.contains($0.id) && $0.canProcess })
             }
             Button(role: .destructive) { removal = selected; confirmingRemoval = true } label: {
                 Label("Remove", systemImage: "trash")
@@ -219,8 +220,10 @@ struct PhoneMemosView: View {
                         Text(item.title).font(.subheadline.weight(.semibold)).foregroundStyle(.white).multilineTextAlignment(.leading)
                     }
                 } else { Text(item.title).font(.subheadline.weight(.semibold)) }
-                Text(item.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
-                    .font(.caption2).foregroundStyle(ScribeTheme.muted)
+                HStack(spacing: 7) {
+                    Text(item.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
+                    if let seconds = item.duration { Text("·"); Text(duration(seconds)).monospacedDigit() }
+                }.font(.caption2).foregroundStyle(ScribeTheme.muted)
                 ScribeStateLabel(state: item.state)
                 if item.state == .processing { ProgressView(value: item.progress).tint(ScribeTheme.red) }
                 if let error = item.error { Text(error).font(.caption).foregroundStyle(ScribeTheme.muted) }

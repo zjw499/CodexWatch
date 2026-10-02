@@ -46,11 +46,14 @@ final class PhoneOpenAIService: ObservableObject {
     func remove(_ ids: Set<String>, notify: Bool = true) throws {
         if let activeID, ids.contains(activeID) { task?.cancel() }
         requestedIDs.removeAll { ids.contains($0) }
-        try queue.remove(ids)
-        PhoneUploadService.shared.discardSavedRecordings(ids)
-        if notify {
-            for id in ids { sendWatchCommand(["command": "remove-recording", "recording_id": id]) }
+        defer {
+            let removed = Set(ids.filter { queue.isRemoved($0) })
+            PhoneUploadService.shared.discardSavedRecordings(removed)
+            if notify {
+                for id in removed { sendWatchCommand(["command": "remove-recording", "recording_id": id]) }
+            }
         }
+        try queue.remove(ids)
     }
 
     func rename(_ id: String, title: String) throws {
@@ -61,6 +64,10 @@ final class PhoneOpenAIService: ObservableObject {
     func configurationChanged() {
         task?.cancel()
         requestedIDs.removeAll()
+        syncConfiguration()
+    }
+
+    func syncConfiguration() {
         let settings = PhoneOpenAISettings.shared
         sendWatchCommand(["command": "processing-settings", "ready": settings.ready,
                           "protected": settings.configuration.protectedMode,
