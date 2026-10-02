@@ -15,6 +15,7 @@ targets:
   CodexWatch:
     type: application
     platform: iOS
+    deploymentTarget: "17.0"
     configFiles:
       Debug: macos/CodexWatch/Config/Debug.xcconfig
       Release: macos/CodexWatch/Config/Release.xcconfig
@@ -28,6 +29,7 @@ targets:
         CODEX_WATCH_AUDIO_UPLOAD_USERNAME: $(CODEX_WATCH_AUDIO_UPLOAD_USERNAME)
         ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: Scribe Pilot records meetings for transcription and delivery to your configured meeting workspace.
+        NSFaceIDUsageDescription: Unlock your protected Scribe Pilot recordings and OpenAI settings.
         UIBackgroundModes:
           - audio
         UILaunchScreen: {}
@@ -40,6 +42,7 @@ targets:
           - UIInterfaceOrientationLandscapeRight
     sources:
       - path: ios/CodexWatch
+      - path: shared
     resources:
       - path: ios/CodexWatch/Assets.xcassets
       - path: ios/CodexWatch/Resources/watch-audio-ca.crt
@@ -53,12 +56,15 @@ targets:
         MARKETING_VERSION: $(MARKETING_VERSION)
         PRODUCT_BUNDLE_IDENTIFIER: $(PRODUCT_BUNDLE_IDENTIFIER)
         PRODUCT_NAME: Scribe Pilot
+        PRODUCT_MODULE_NAME: ScribePilot
         SKIP_INSTALL: NO
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
       - target: CodexWatch Watch App
     scheme:
-      testTargets: []
+      testTargets:
+        - ScribePilotTests
+        - ScribePilotUITests
       gatherCoverageData: false
 
   CodexWatch Watch App:
@@ -103,6 +109,7 @@ targets:
       Release: macos/CodexWatch/Config/WatchExtension-Release.xcconfig
     sources:
       - path: watchos/CodexWatch
+      - path: shared
     info:
       path: macos/CodexWatch/Support/WatchExtension-Info.plist
       properties:
@@ -137,3 +144,32 @@ targets:
         TARGETED_DEVICE_FAMILY: 4
         INFOPLIST_KEY_WKAppBundleIdentifier: com.zachwyatt.codexwatch.watchkitapp
         WK_APP_BUNDLE_IDENTIFIER: com.zachwyatt.codexwatch.watchkitapp
+
+  ScribePilotTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: native-tests
+    dependencies:
+      - target: CodexWatch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zachwyatt.codexwatch.tests
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Scribe Pilot.app/Scribe Pilot
+        BUNDLE_LOADER: $(TEST_HOST)
+        GENERATE_INFOPLIST_FILE: YES
+
+  ScribePilotUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: native-ui-tests
+    dependencies:
+      - target: CodexWatch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zachwyatt.codexwatch.uitests
+        TEST_TARGET_NAME: CodexWatch
+        GENERATE_INFOPLIST_FILE: YES

@@ -2,370 +2,263 @@ import SwiftUI
 
 struct PhoneMemosView: View {
     @EnvironmentObject private var recorder: PhoneRecorderService
-    @EnvironmentObject private var uploader: PhoneUploadService
-    @EnvironmentObject private var memoService: PhoneMemoService
+    @EnvironmentObject private var queue: RecordingQueueStore
+    @EnvironmentObject private var settings: PhoneOpenAISettings
     @Environment(\.scenePhase) private var scenePhase
-    @State private var searchText = ""
+    @State private var section = 0
+    @State private var search = ""
     @State private var showingSettings = false
-    private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+    @State private var editing = false
+    @State private var selected: Set<String> = []
+    @State private var removal: PhoneRecordingRemovalRequest?
+    @State private var renaming: QueuedRecording?
+    @State private var renameTitle = ""
+    @State private var errorMessage: String?
+    private let timer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
 
-    private let accent = Color(red: 0.20, green: 0.77, blue: 0.95)
-    private let coral = Color(red: 1.0, green: 0.35, blue: 0.27)
-
-    private var sections: [(String, [MemoSummary])] {
-        let filtered = searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? memoService.memos
-            : memoService.memos.filter {
-                $0.title.localizedCaseInsensitiveContains(searchText) ||
-                $0.originalFilename.localizedCaseInsensitiveContains(searchText)
-            }
-        let sorted = filtered.sorted {
-            (MeetingDate.parse($0.createdAt) ?? .distantPast) > (MeetingDate.parse($1.createdAt) ?? .distantPast)
+    private var visible: [QueuedRecording] {
+        let items = section == 0 ? queue.pending : queue.completed
+        return items.filter {
+            search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || $0.source.localizedCaseInsensitiveContains(search)
         }
-        var result: [(String, [MemoSummary])] = []
-        for memo in sorted {
-            let month = monthTitle(memo.createdAt)
-            if result.last?.0 == month { result[result.count - 1].1.append(memo) }
-            else { result.append((month, [memo])) }
-        }
-        return result
     }
-
     var body: some View {
-        ZStack(alignment: .bottom) {
-            LinearGradient(
-                colors: [Color(red: 0.02, green: 0.07, blue: 0.08), .black, .black],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            ).ignoresSafeArea()
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 18) {
-                    header
-                    destinationCard
-                    searchBar
-                    if memoService.errorMessage != nil {
-                        Label("Connection unavailable. Saved recordings will retry.", systemImage: "wifi.exclamationmark")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                    if recorder.isRecording {
-                        activeRecordingCard
-                    }
-                    if uploader.activeRecordingID != nil || ![
-                        "Ready",
-                        "Ready for watch recordings",
-                        "Transcript delivered",
-                        "Saved in Notion",
-                    ].contains(uploader.statusMessage) {
-                        watchRelayCard
-                    }
-                    if sections.isEmpty {
-                        emptyState
-                    } else {
-                        ForEach(sections, id: \.0) { section, memos in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(section)
-                                    .font(.headline.weight(.bold))
-                                    .foregroundStyle(.white.opacity(0.62))
-                                    .padding(.horizontal, 4)
-                                ForEach(memos) { memo in
-                                    NavigationLink {
-                                        PhoneMemoDetailView(memo: memo)
-                                    } label: {
-                                        MemoRow(memo: memo)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-                    }
-                    Color.clear.frame(height: 96)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                header
+                capturePanel
+                setupPanel
+                queueHeader
+                searchField
+                if editing { selectionActions }
+                if visible.isEmpty { emptyState }
+                else {
+                    LazyVStack(spacing: 10) { ForEach(visible) { item in recordingRow(item) } }
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .frame(maxWidth: 720)
-                .frame(maxWidth: .infinity)
-            }
-
-            recordButton
+                Text("Saved on this device · OpenAI processing").font(.caption).foregroundStyle(ScribeTheme.muted)
+                    .frame(maxWidth: .infinity).padding(.top, 8)
+            }.padding(20).frame(maxWidth: 760).frame(maxWidth: .infinity)
         }
-        .navigationBarHidden(true)
+        .background(ScribeTheme.background.ignoresSafeArea()).foregroundStyle(.white)
+        .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showingSettings) {
-            NavigationStack {
-                PhoneSettingsView()
+            NavigationStack { PhoneSettingsView() }.preferredColorScheme(.dark)
+        }
+        .onReceive(timer) { _ in recorder.updateElapsedTime() }
+        .onChange(of: section) { _, _ in selected = []; editing = false }
+        .onChange(of: search) { _, _ in selected = [] }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { PhoneUploadService.shared.retryPendingRecordings() }
+        }
+        .sheet(item: $removal) { request in
+            PhoneRecordingRemovalView(ids: request.ids) { selected.subtract(request.ids) }
+        }
+        .alert("Rename recording", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Recording title", text: $renameTitle)
+            Button("Cancel", role: .cancel) { renaming = nil }
+            Button("Save") {
+                if let item = renaming {
+                    do { try PhoneOpenAIService.shared.rename(item.id, title: renameTitle) }
+                    catch { errorMessage = error.localizedDescription }
+                }
+                renaming = nil
             }
         }
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
-            await memoService.loadDestination()
-            while !Task.isCancelled {
-                await memoService.refresh()
-                do { try await Task.sleep(for: .seconds(15)) }
-                catch { return }
-            }
-        }
-        .refreshable {
-            await memoService.refresh()
-        }
-        .onReceive(timer) { _ in
-            recorder.updateElapsedTime()
-        }
-        .task(id: uploader.finalUploadSequence) {
-            await memoService.refresh()
-        }
-        .alert("Recording could not start", isPresented: Binding(
-            get: { recorder.errorMessage != nil },
-            set: { if !$0 { recorder.errorMessage = nil } }
-        )) {
-            Button("OK") { recorder.errorMessage = nil }
-        } message: {
-            Text(recorder.errorMessage ?? "Please try again.")
-        }
+        .alert("Scribe Pilot", isPresented: Binding(get: { displayedError != nil }, set: { if !$0 { clearError() } })) {
+            Button("OK") { clearError() }
+        } message: { Text(displayedError ?? "Please try again.") }
     }
 
     private var header: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("SCRIBE PILOT")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .tracking(2.2)
-                    .foregroundStyle(.white.opacity(0.45))
-                Text("Meetings")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
+        HStack {
+            HStack(spacing: 10) {
+                Image(systemName: "waveform").font(.title3.weight(.bold)).foregroundStyle(ScribeTheme.red)
+                    .frame(width: 40, height: 40).background(ScribeTheme.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("SCRIBE PILOT").font(.system(size: 11, weight: .bold)).tracking(2.2).foregroundStyle(ScribeTheme.muted)
+                    Text("Your recordings").font(.system(size: 27, weight: .bold))
+                }
             }
             Spacer()
             Button { showingSettings = true } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 42, height: 42)
-                    .background(.white.opacity(0.1), in: Circle())
-            }
-            .foregroundStyle(.white)
+                Image(systemName: "slider.horizontal.3").font(.headline)
+                    .frame(width: 44, height: 44).background(ScribeTheme.raised, in: Circle())
+            }.accessibilityLabel("Open settings")
         }
     }
-
-    private var searchBar: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.white.opacity(0.45))
-            TextField("Search meetings", text: $searchText)
-                .foregroundStyle(.white)
-                .textInputAutocapitalization(.never)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    private var destinationCard: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                Image(systemName: "doc.text")
-                Text(memoService.destination?.isNotion == true ? "GROQ TRANSCRIPTS" : "MEETING DESTINATION")
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .tracking(1.3)
+    private var capturePanel: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack {
+                Label(recorder.isRecording ? (recorder.isPaused ? "PAUSED" : "RECORDING") : "READY TO CAPTURE",
+                      systemImage: "circle.fill")
+                    .font(.system(size: 10, weight: .bold)).tracking(1.5).foregroundStyle(ScribeTheme.red)
                 Spacer()
-                if let raw = memoService.destination?.url, let url = URL(string: raw) {
-                    Link(destination: url) {
-                        Image(systemName: "arrow.up.right").frame(width: 32, height: 32)
-                    }
-                    .accessibilityLabel("Open meeting library in Notion")
+                Image(systemName: "iphone").foregroundStyle(ScribeTheme.muted)
+            }
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(recorder.isRecording ? duration(recorder.elapsedTime) : "Capture the\nconversation.")
+                        .font(.system(size: recorder.isRecording ? 40 : 30, weight: .semibold,
+                                      design: recorder.isRecording ? .monospaced : .default))
+                        .monospacedDigit().contentTransition(.numericText())
+                    Text(recorder.isRecording ? "Audio is saved on this iPhone." : "Record now. Review before processing.")
+                        .font(.caption).foregroundStyle(ScribeTheme.muted)
                 }
+                Spacer(minLength: 4)
+                Button {
+                    if recorder.isRecording { recorder.stopRecording() }
+                    else { Task { await recorder.startRecording() } }
+                } label: {
+                    ZStack {
+                        Circle().stroke(ScribeTheme.red.opacity(0.25), lineWidth: 1).frame(width: 94, height: 94)
+                        Circle().fill(ScribeTheme.red).frame(width: 78, height: 78)
+                        Image(systemName: recorder.isRecording ? "stop.fill" : "mic.fill")
+                            .font(.system(size: 28, weight: .bold)).foregroundStyle(.white)
+                    }
+                }.buttonStyle(.plain).accessibilityLabel(recorder.isRecording ? "Finish recording" : "Start recording")
             }
-            .foregroundStyle(accent)
-            Text(memoService.destination?.name ?? "Connecting to your workspace")
-                .font(.headline)
-                .foregroundStyle(.white)
-            Text(memoService.destination?.isNotion == true
-                ? "Groq creates the full transcript. Open a completed meeting to copy it into Gemini."
-                : "Record on your Watch or iPhone. Follow each meeting here.")
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.6))
-        }
-        .padding(17)
-        .background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 20))
-        .overlay { RoundedRectangle(cornerRadius: 20).stroke(accent.opacity(0.2), lineWidth: 1) }
-    }
-
-    private var activeRecordingCard: some View {
-        HStack(spacing: 12) {
-            Circle()
-                .fill(coral)
-                .frame(width: 10, height: 10)
-                .shadow(color: coral, radius: 8)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Meeting in progress")
-                    .font(.subheadline.weight(.bold))
-                Text(formatDuration(recorder.elapsedTime) + "  •  Tap stop when finished")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.55))
-            }
-            Spacer()
-        }
-        .padding(15)
-        .foregroundStyle(.white)
-        .background(coral.opacity(0.16), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(coral.opacity(0.38), lineWidth: 1)
-        }
-    }
-
-    private var watchRelayCard: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "applewatch.radiowaves.left.and.right")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(accent)
-                .frame(width: 38, height: 38)
-                .background(accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(uploader.finalChunkReceived ? "Preparing your meeting" : "Saving your recording")
-                    .font(.subheadline.weight(.bold))
-                Text(uploader.statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.55))
-                    .lineLimit(2)
-            }
-            Spacer()
-            if uploader.receivedChunkCount > 0 {
-                Text("\(min(uploader.uploadedChunkCount, uploader.receivedChunkCount))/\(uploader.receivedChunkCount)")
-                    .font(.caption.monospacedDigit().weight(.bold))
-                    .foregroundStyle(accent)
-            }
-        }
-        .padding(15)
-        .foregroundStyle(.white)
-        .background(accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(accent.opacity(0.28), lineWidth: 1)
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "waveform.and.mic")
-                .font(.system(size: 34, weight: .medium))
-                .foregroundStyle(accent)
-            Text(searchText.isEmpty ? "Be present. Keep the details." : "No matching meetings")
-                .font(.headline)
-            Text(searchText.isEmpty ? "Start a meeting on your Watch or iPhone. Your notes will appear here when they are ready." : "Try a different meeting title.")
-                .font(.subheadline)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.white.opacity(0.52))
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 72)
-        .foregroundStyle(.white)
-    }
-
-    private var recordButton: some View {
-        Button {
             if recorder.isRecording {
-                recorder.stopRecording()
-            } else {
-                Task { await recorder.startRecording() }
-            }
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: recorder.isRecording ? "stop.fill" : "record.circle.fill")
-                Text(recorder.isRecording ? "Finish meeting" : "Record meeting")
-            }
-            .font(.system(size: 17, weight: .bold, design: .rounded))
-            .foregroundStyle(.black)
-            .padding(.horizontal, 27)
-            .padding(.vertical, 15)
-            .background(recorder.isRecording ? coral : accent, in: Capsule())
-            .shadow(color: (recorder.isRecording ? coral : accent).opacity(0.28), radius: 18, y: 8)
-        }
-        .padding(.bottom, 18)
-    }
-
-    private func monthTitle(_ value: String) -> String {
-        guard let date = MeetingDate.parse(value) else { return "Earlier meetings" }
-        let display = DateFormatter()
-        display.dateFormat = "MMMM yyyy"
-        return display.string(from: date)
-    }
-
-    private func formatDuration(_ duration: TimeInterval?) -> String {
-        guard let duration else { return "--:--" }
-        let seconds = max(0, Int(duration))
-        return String(format: "%02d:%02d", seconds / 60, seconds % 60)
-    }
-}
-
-private struct MemoRow: View {
-    let memo: MemoSummary
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: memo.source.lowercased().contains("watch") ? "applewatch" : "iphone")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.82))
-                .frame(width: 36, height: 36)
-                .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(memo.title)
-                    .font(.system(size: 17, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                HStack(spacing: 7) {
-                    Text(dateText(memo.createdAt))
-                    Text("•")
-                    Text(durationText(memo.durationSeconds))
-                    if let speakerCount = memo.speakerCount, speakerCount > 1 {
-                        Text("•")
-                        Label("\(speakerCount)", systemImage: "person.2")
+                HStack(spacing: 3) {
+                    ForEach(0..<34, id: \.self) { bar in
+                        Capsule().fill(ScribeTheme.red.opacity(recorder.isPaused ? 0.25 : 0.85))
+                            .frame(height: 4 + (recorder.isPaused ? 0 : recorder.audioLevel) * CGFloat(10 + (bar * 17) % 29))
                     }
+                }.frame(height: 42).accessibilityLabel("Microphone level")
+                Button {
+                    if recorder.isPaused { recorder.resumeRecording() } else { recorder.pauseRecording() }
+                } label: {
+                    Label(recorder.isPaused ? "Resume recording" : "Pause recording",
+                          systemImage: recorder.isPaused ? "play.fill" : "pause.fill")
+                        .frame(maxWidth: .infinity).padding(.vertical, 9)
+                }.buttonStyle(.bordered).tint(ScribeTheme.muted)
+            } else {
+                HStack {
+                    Label("Watch + iPhone", systemImage: "applewatch")
+                    Spacer()
+                    Text("Tap to record").foregroundStyle(.white)
+                }.font(.caption).foregroundStyle(ScribeTheme.muted)
+            }
+        }.scribePanel()
+    }
+    private var setupPanel: some View {
+        Button { showingSettings = true } label: {
+            HStack(spacing: 11) {
+                Image(systemName: settings.ready ? "lock.shield" : "key").foregroundStyle(ScribeTheme.red)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(settings.readinessLabel).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                    Text(settings.ready ? "Direct to OpenAI · transcripts saved here" : "Recordings stay queued until setup is complete")
+                        .font(.caption).foregroundStyle(ScribeTheme.muted)
                 }
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.48))
-                if let summary = memo.summary, !summary.isEmpty {
-                    Text(summary).font(.caption).foregroundStyle(.white.opacity(0.58)).lineLimit(2)
-                }
-                if memo.notionURL != nil {
-                    Text("Saved in Notion").font(.caption2.weight(.medium)).foregroundStyle(.mint)
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(ScribeTheme.muted)
+            }.padding(15).background(ScribeTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+        }.buttonStyle(.plain)
+    }
+    private var queueHeader: some View {
+        VStack(spacing: 16) {
+            Picker("Recordings", selection: $section) {
+                Text("Queue · \(queue.pending.count)").tag(0)
+                Text("Library · \(queue.completed.count)").tag(1)
+            }.pickerStyle(.segmented)
+            HStack {
+                Text(section == 0 ? "Recording queue" : "Transcript library").font(.title3.weight(.bold))
+                Spacer()
+                if !visible.isEmpty {
+                    Button(editing ? "Done" : "Edit") { editing.toggle(); selected = [] }
+                        .font(.subheadline.weight(.semibold)).frame(minWidth: 44, minHeight: 36)
                 }
             }
-            Spacer(minLength: 4)
-            Image(systemName: statusIcon(memo.status))
-                .font(.caption.weight(.bold))
-                .foregroundStyle(statusColor(memo.status))
-        }
-        .padding(.vertical, 14)
-        .padding(.horizontal, 4)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
         }
     }
-
-    private func dateText(_ value: String) -> String {
-        guard let date = MeetingDate.parse(value) else { return "Date unavailable" }
-        let display = DateFormatter()
-        display.dateFormat = "EEE, MMM d, h:mm a"
-        return display.string(from: date)
+    private var searchField: some View {
+        HStack {
+            Image(systemName: "magnifyingglass").foregroundStyle(ScribeTheme.muted)
+            TextField("Search recordings", text: $search).autocorrectionDisabled()
+            if !search.isEmpty {
+                Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }.accessibilityLabel("Clear search")
+            }
+        }.padding(13).background(ScribeTheme.surface, in: RoundedRectangle(cornerRadius: 13))
     }
-
-    private func durationText(_ value: Double?) -> String {
-        guard let value else { return "Audio" }
-        return String(format: "%d min", max(1, Int(value / 60)))
+    private var selectionActions: some View {
+        HStack {
+            Button(selected.count == visible.count ? "Clear" : "Select all") {
+                selected = selected.count == visible.count ? [] : Set(visible.filter { $0.state != .recording }.map(\.id))
+            }
+            Spacer()
+            if section == 0 {
+                Button("Process") {
+                    PhoneOpenAIService.shared.process(Array(selected)); editing = false; selected = []
+                }.disabled(!settings.ready || !queue.pending.contains { selected.contains($0.id) && $0.canProcess })
+            }
+            Button(role: .destructive) { removal = PhoneRecordingRemovalRequest(ids: selected) } label: {
+                Label("Remove", systemImage: "trash")
+            }.disabled(selected.isEmpty)
+        }.font(.caption.weight(.semibold))
     }
-
-    private func statusIcon(_ status: String) -> String {
-        switch status {
-        case "done": return "checkmark.circle.fill"
-        case "failed", "email_failed", "notion_failed": return "exclamationmark.triangle.fill"
-        default: return "ellipsis.circle"
-        }
+    private func recordingRow(_ item: QueuedRecording) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            if editing {
+                Button {
+                    if selected.contains(item.id) { selected.remove(item.id) } else { selected.insert(item.id) }
+                } label: {
+                    Image(systemName: selected.contains(item.id) ? "checkmark.circle.fill" : "circle").font(.title2)
+                }.disabled(item.state == .recording).accessibilityLabel("Select \(item.title)").padding(.top, 4)
+            } else {
+                Image(systemName: item.isWatch ? "applewatch" : "iphone").font(.headline).foregroundStyle(ScribeTheme.muted)
+                    .frame(width: 36, height: 42).background(ScribeTheme.raised, in: RoundedRectangle(cornerRadius: 10))
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                if item.state == .ready {
+                    NavigationLink { PhoneLocalRecordingView(recordingID: item.id) } label: {
+                        Text(item.title).font(.subheadline.weight(.semibold)).foregroundStyle(.white).multilineTextAlignment(.leading)
+                    }
+                } else { Text(item.title).font(.subheadline.weight(.semibold)) }
+                HStack(spacing: 7) {
+                    Text(item.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
+                    if let seconds = item.duration { Text("·"); Text(duration(seconds)).monospacedDigit() }
+                }.font(.caption2).foregroundStyle(ScribeTheme.muted)
+                ScribeStateLabel(state: item.state)
+                if item.state == .processing { ProgressView(value: item.progress).tint(ScribeTheme.red) }
+                if let error = item.error { Text(error).font(.caption).foregroundStyle(ScribeTheme.muted) }
+                if item.state == .receiving, let final = item.finalIndex {
+                    Text("\(item.parts.count) of \(final + 1) audio parts received").font(.caption2).foregroundStyle(ScribeTheme.muted)
+                    Button("Request missing audio") {
+                        PhoneUploadService.shared.requestMissingQueueAudio(item.id)
+                    }.font(.caption)
+                }
+                if item.canProcess && !editing {
+                    Button { PhoneOpenAIService.shared.process([item.id]) } label: {
+                        Label(item.state == .failed ? "Retry" : "Process", systemImage: "play.fill")
+                            .font(.caption.weight(.bold)).padding(.horizontal, 13).padding(.vertical, 8)
+                    }.buttonStyle(.borderedProminent).tint(ScribeTheme.red).disabled(!settings.ready)
+                }
+            }
+            Spacer(minLength: 0)
+            if !editing {
+                Menu {
+                    Button { renaming = item; renameTitle = item.title } label: { Label("Rename", systemImage: "pencil") }
+                    Button(role: .destructive) { removal = PhoneRecordingRemovalRequest(ids: [item.id]) } label: {
+                        Label("Remove recording", systemImage: "trash")
+                    }.disabled(item.state == .recording)
+                } label: { Image(systemName: "ellipsis").frame(width: 36, height: 36).contentShape(Rectangle()) }
+                .accessibilityLabel("Actions for \(item.title)")
+            }
+        }.padding(15).background(ScribeTheme.surface, in: RoundedRectangle(cornerRadius: 17))
     }
-
-    private func statusColor(_ status: String) -> Color {
-        switch status {
-        case "done": return .green
-        case "failed", "email_failed", "notion_failed": return .orange
-        default: return .blue
-        }
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: section == 0 ? "tray" : "doc.text").font(.system(size: 30)).foregroundStyle(ScribeTheme.red)
+            Text(search.isEmpty ? (section == 0 ? "A clear queue." : "Your notes start here.") : "No matching recordings.").font(.headline)
+            Text(section == 0 ? "Record on your iPhone or Watch. Rename, process, or remove it here."
+                 : "Processed transcripts and meeting notes appear in your library.")
+                .font(.subheadline).foregroundStyle(ScribeTheme.muted).multilineTextAlignment(.center)
+        }.frame(maxWidth: .infinity).padding(.vertical, 40)
     }
+    private func duration(_ seconds: TimeInterval) -> String {
+        let value = max(0, Int(seconds))
+        return value >= 3600 ? String(format: "%d:%02d:%02d", value / 3600, (value / 60) % 60, value % 60)
+            : String(format: "%02d:%02d", value / 60, value % 60)
+    }
+    private var displayedError: String? { errorMessage ?? recorder.errorMessage ?? queue.errorMessage }
+    private func clearError() { errorMessage = nil; recorder.errorMessage = nil; queue.errorMessage = nil }
 }

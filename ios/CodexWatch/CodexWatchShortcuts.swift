@@ -2,6 +2,8 @@ import AppIntents
 
 struct StartRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Record Meeting on iPhone"
+    static let openAppWhenRun = true
+    @available(iOS 26.0, *)
     static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
@@ -12,6 +14,8 @@ struct StartRecordingIntent: AppIntent {
 
 struct StopRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Stop Recording"
+    static let openAppWhenRun = true
+    @available(iOS 26.0, *)
     static let supportedModes: IntentModes = [.background, .foreground(.immediate)]
 
     func perform() async throws -> some IntentResult {
@@ -21,6 +25,7 @@ struct StopRecordingIntent: AppIntent {
 }
 
 struct CodexWatchShortcuts: AppShortcutsProvider {
+    static let shortcutTileColor: ShortcutTileColor = .red
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: StartRecordingIntent(),

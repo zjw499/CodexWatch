@@ -579,7 +579,7 @@ final class AudioRecorderService: NSObject, ObservableObject {
     private func recordingsDirectory() throws -> URL {
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Recordings", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try RecordingQueueStore.protectDirectory(directory)
         return directory
     }
 

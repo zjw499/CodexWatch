@@ -64,7 +64,7 @@ struct OpenScribePilotIntent: AppIntent {
 }
 
 struct CodexWatchWatchShortcuts: AppShortcutsProvider {
-    static let shortcutTileColor: ShortcutTileColor = .teal
+    static let shortcutTileColor: ShortcutTileColor = .red
 
     static var appShortcuts: [AppShortcut] {
         AppShortcut(

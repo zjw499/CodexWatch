@@ -118,12 +118,45 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         }
     }
 
+    /// Cancel legacy upload/retry work as well as saved source files when a queue item is removed.
+    func discardSavedRecordings(_ ids: Set<String>) {
+        stateQueue.async {
+            func matches(_ url: URL) -> Bool {
+                ids.contains { url.lastPathComponent.contains($0) }
+            }
+            let keys = self.pendingUploadsByKey.filter { matches($0.value.fileURL) }.map(\.key)
+            for key in keys {
+                self.pendingUploadsByKey.removeValue(forKey: key)
+                self.scheduledRetryAttempts.removeValue(forKey: key)
+            }
+            self.pendingUploadOrder.removeAll { keys.contains($0) }
+            for id in ids { self.forgetPendingCompletion(id) }
+            self.uploadSession?.getAllTasks { tasks in
+                for task in tasks {
+                    if let context = self.persistedTaskContext(from: task.taskDescription),
+                       let source = context.sourceURL, matches(source) { task.cancel() }
+                }
+            }
+            for directory in [try? self.recordingsDirectory(), try? self.streamChunksDirectory()].compactMap({ $0 }) {
+                let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+                for file in files where matches(file) { try? FileManager.default.removeItem(at: file) }
+            }
+        }
+    }
+
     func retryPendingRecordings() {
         start()
         stateQueue.async {
             self.recoverSavedUploads(manual: true)
-            self.resumeCompletionPolling()
         }
+    }
+
+    @MainActor
+    func requestMissingQueueAudio(_ id: String) {
+        guard let recording = RecordingQueueStore.shared.recording(id) else { return }
+        let indexes = Set(recording.parts.map(\.index))
+        let missing = recording.finalIndex.map { final in (0...final).filter { !indexes.contains($0) } }
+        requestWatchResend(id, chunkIndexes: missing)
     }
 
     @MainActor
@@ -172,7 +205,9 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                     )
                 )
             } else {
-                destination = directory.appendingPathComponent(file.fileURL.lastPathComponent)
+                let name = (metadata["filename"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent }
+                    ?? file.fileURL.lastPathComponent
+                destination = directory.appendingPathComponent(name)
             }
             if let context, immediateChunkKeys.contains(chunkKey(context)) {
                 return
@@ -202,6 +237,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             setStatus("Watch transfer unavailable: \(error.localizedDescription)")
         } else if activationState == .activated {
             setStatus("Ready for watch recordings")
+            Task { @MainActor in PhoneOpenAIService.shared.configurationChanged() }
         }
     }
 
@@ -411,6 +447,17 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         manual: Bool = false
     ) {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        // New recordings use the phone's protected queue and OpenAI only.
+        // The PC route is retained exclusively for explicit recovery of an older archived recording.
+        if chunk.map({ !isAudioRecovery($0.recordingID) }) ?? true {
+            let id = chunk?.recordingID ?? fileURL.deletingPathExtension().lastPathComponent
+            Task { @MainActor in
+                PhoneOpenAIService.shared.receive(fileURL: fileURL, id: id,
+                    index: chunk?.chunkIndex ?? 0, isFinal: chunk?.isFinal ?? true,
+                    source: chunk == nil ? "iPhone" : "Apple Watch")
+            }
+            return
+        }
         let key = uploadKey(fileURL: fileURL, chunk: chunk)
         if manual {
             scheduledRetryAttempts.removeValue(forKey: key)
@@ -530,6 +577,11 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 task.cancel()
                 continue
             }
+            if persisted.chunk.map({ !isAudioRecovery($0.recordingID) }) ?? true {
+                task.cancel()
+                try? FileManager.default.removeItem(at: persisted.bodyURL)
+                continue
+            }
             let key = uploadKey(fileURL: sourceURL, chunk: persisted.chunk)
             if activeTaskIDsByKey[key] != nil {
                 task.cancel()
@@ -546,7 +598,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         }
         isRestoringBackgroundTasks = false
         recoverSavedUploads(manual: false)
-        resumeCompletionPolling()
+        // Previous PC work is inspected only when the user opens the previous workspace.
         clearLegacyStaleCompletionStatus()
         pumpUploads()
     }
@@ -641,7 +693,9 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 ImmediateWatchChunkEnvelope.self,
                 from: messageData
             )
-            guard envelope.version == 1, !envelope.audioData.isEmpty else {
+            guard envelope.version == 1, !envelope.audioData.isEmpty,
+                  RecordingQueueStore.validID(envelope.recordingID),
+                  envelope.chunkIndex >= 0, envelope.chunkIndex < 100_000 else {
                 throw CocoaError(.fileReadCorruptFile)
             }
             let context = ChunkContext(
@@ -657,7 +711,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                     context.isFinal ? 1 : 0
                 )
             )
-            try envelope.audioData.write(to: destination, options: [.atomic])
+            try envelope.audioData.write(to: destination, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
             immediateChunkKeys.insert(chunkKey(context))
             markChunkReceived(context)
             stateQueue.async {
@@ -671,9 +725,26 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     }
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
-        guard userInfo["command"] as? String == "retry-recording",
-              let recordingID = userInfo["recording_id"] as? String else { return }
-        retryRecording(recordingID: recordingID)
+        handleQueueCommand(userInfo)
+    }
+
+    func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        handleQueueCommand(message)
+    }
+
+    private func handleQueueCommand(_ message: [String: Any]) {
+        guard let id = message["recording_id"] as? String, RecordingQueueStore.validID(id) else { return }
+        Task { @MainActor in
+            do {
+                switch message["command"] as? String {
+                case "retry-recording": PhoneOpenAIService.shared.process([id])
+                case "remove-recording": try PhoneOpenAIService.shared.remove([id], notify: false)
+                case "rename-recording":
+                    if let title = message["title"] as? String { try RecordingQueueStore.shared.rename(id, title: title) }
+                default: break
+                }
+            } catch { RecordingQueueStore.shared.errorMessage = error.localizedDescription }
+        }
     }
 
     private func retryRecording(recordingID: String) {
@@ -979,14 +1050,14 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     private func recordingsDirectory() throws -> URL {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Recordings", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try RecordingQueueStore.protectDirectory(directory)
         return directory
     }
 
     private func streamChunksDirectory() throws -> URL {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("StreamChunks", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try RecordingQueueStore.protectDirectory(directory)
         return directory
     }
 
@@ -994,7 +1065,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         let boundary = "CodexWatch-\(UUID().uuidString)"
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Uploads", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try RecordingQueueStore.protectDirectory(directory)
         let bodyURL = directory.appendingPathComponent("\(boundary).body")
 
         guard FileManager.default.createFile(atPath: bodyURL.path, contents: nil) else {
@@ -1031,7 +1102,9 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
 
     private func chunkContext(from metadata: [String: Any]) -> ChunkContext? {
         guard let recordingID = metadata["recording_id"] as? String,
-              let chunkIndex = metadata["chunk_index"] as? Int else { return nil }
+              RecordingQueueStore.validID(recordingID),
+              let chunkIndex = metadata["chunk_index"] as? Int,
+              chunkIndex >= 0, chunkIndex < 100_000 else { return nil }
         let isFinal = metadata["is_final"] as? Bool ?? false
         return ChunkContext(recordingID: recordingID, chunkIndex: chunkIndex, isFinal: isFinal)
     }
@@ -1040,6 +1113,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         let parts = fileURL.deletingPathExtension().lastPathComponent.split(separator: "_")
         guard parts.count == 4,
               parts[0] == "stream",
+              RecordingQueueStore.validID(String(parts[1])),
               let chunkIndex = Int(parts[2]),
               let finalFlag = Int(parts[3]) else { return nil }
         return ChunkContext(

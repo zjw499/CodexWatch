@@ -11,9 +11,11 @@ struct CodexWatchApp: App {
         )
     )
     @StateObject private var recorder = AudioRecorderService.shared
+    @StateObject private var queue = RecordingQueueStore.shared
 
     init() {
         CodexWatchWatchShortcuts.updateAppShortcutParameters()
+        ScribePreviewFixtures.loadIfRequested()
     }
 
     var body: some Scene {
@@ -21,16 +23,18 @@ struct CodexWatchApp: App {
             NavigationStack {
                 RecorderView()
                 .task {
-                    if store.desktops.isEmpty {
-                        await store.loadBootstrap()
-                    }
+                    #if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("-scribe-ui-preview") { return }
+                    #endif
                     await recorder.prepare()
                     await WatchShortcutCommandRouter.consumePendingCommand(using: recorder)
                 }
             }
             .environmentObject(store)
             .environmentObject(recorder)
-            .background(Color.black)
+            .environmentObject(queue)
+            .tint(ScribeTheme.red)
+            .background(ScribeTheme.background)
             .preferredColorScheme(.dark)
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }

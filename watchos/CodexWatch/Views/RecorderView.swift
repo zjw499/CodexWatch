@@ -2,204 +2,192 @@ import SwiftUI
 
 struct RecorderView: View {
     @EnvironmentObject private var recorder: AudioRecorderService
+    @EnvironmentObject private var queue: RecordingQueueStore
     @Environment(\.scenePhase) private var scenePhase
-    @ObservedObject private var transfer = WatchConnectivityTransferService.shared
+    @StateObject private var transfer = WatchConnectivityTransferService.shared
+    @State private var page = RecorderView.initialPage
+    private static var initialPage: Int {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-scribe-watch-queue") { return 1 }
+        if ProcessInfo.processInfo.arguments.contains("-scribe-watch-settings") { return 2 }
+        #endif
+        return 0
+    }
     private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
-    private let coral = Color(red: 1.0, green: 0.36, blue: 0.24)
-    private let aqua = Color(red: 0.25, green: 0.82, blue: 0.78)
+    var body: some View {
+        TabView(selection: $page) {
+            capture.tag(0)
+            WatchRecordingQueueView().tag(1)
+            WatchProcessingView().tag(2)
+        }
+        .tabViewStyle(.verticalPage)
+        .background(ScribeTheme.background.ignoresSafeArea()).tint(ScribeTheme.red)
+        .navigationTitle("")
+        .onReceive(timer) { _ in recorder.updateElapsedTime() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { recorder.appDidBecomeActive() } else { recorder.appDidEnterBackground() }
+        }
+        .alert("Recorder", isPresented: Binding(get: { recorder.errorMessage != nil }, set: { if !$0 { recorder.errorMessage = nil } })) {
+            Button("OK") { recorder.errorMessage = nil }
+        } message: { Text(recorder.errorMessage ?? "Please try again.") }
+    }
+
+    private var capture: some View {
+        GeometryReader { geometry in
+            let diameter = min(80.0, max(54.0, geometry.size.height * 0.36))
+            VStack(spacing: 5) {
+                HStack(spacing: 5) {
+                    Circle().fill(ScribeTheme.red).frame(width: 5, height: 5)
+                    Text("SCRIBE PILOT").font(.system(size: 10, weight: .bold)).tracking(1)
+                    Spacer(minLength: 0)
+                }.foregroundStyle(ScribeTheme.muted)
+                Spacer(minLength: 0)
+                Button {
+                    if recorder.isRecording {
+                        if recorder.isPausedForInterruption { recorder.resumeRecording() }
+                        else { recorder.stopRecording() }
+                    } else { Task { await recorder.startRecording() } }
+                } label: {
+                    ZStack {
+                        Circle().stroke(ScribeTheme.red.opacity(0.3), lineWidth: 1).frame(width: diameter + 10, height: diameter + 10)
+                        Circle().fill(ScribeTheme.red).frame(width: diameter, height: diameter)
+                        Image(systemName: recorder.isRecording ? (recorder.isPausedForInterruption ? "play.fill" : "stop.fill") : "mic.fill")
+                            .font(.system(size: diameter * 0.29, weight: .bold)).foregroundStyle(.white)
+                    }
+                }.buttonStyle(.plain).accessibilityLabel(recorder.isRecording ? "Finish recording" : "Start recording")
+                Text(recorder.isRecording ? duration(recorder.elapsedTime) : "Record")
+                    .font(.system(size: 21, weight: .semibold, design: .monospaced))
+                    .monospacedDigit().contentTransition(.numericText()).lineLimit(1).minimumScaleFactor(0.7)
+                Text(recorder.isRecording ? (recorder.isPausedForInterruption ? "PAUSED · AUDIO SAVED" : "RECORDING")
+                     : (transfer.meetingStatus ?? "Ready when you are"))
+                    .font(.system(size: 9, weight: .semibold)).foregroundStyle(ScribeTheme.muted)
+                    .lineLimit(2).multilineTextAlignment(.center)
+                Spacer(minLength: 0)
+                Button { page = 1 } label: {
+                    HStack {
+                        Image(systemName: "tray")
+                        Text("Queue")
+                        Spacer(minLength: 2)
+                        Text("\(queue.pending.count)").monospacedDigit()
+                        Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+                    }.font(.system(size: 11, weight: .semibold)).padding(.horizontal, 10).padding(.vertical, 8)
+                        .background(ScribeTheme.raised, in: Capsule())
+                }.buttonStyle(.plain)
+                if recorder.isPausedForInterruption {
+                    Button("Finish saved recording") { recorder.stopRecording() }
+                        .font(.caption2).foregroundStyle(ScribeTheme.red)
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }.foregroundStyle(.white)
+    }
+    private func duration(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        return total >= 3600 ? String(format: "%d:%02d:%02d", total / 3600, (total / 60) % 60, total % 60)
+            : String(format: "%02d:%02d", total / 60, total % 60)
+    }
+}
+
+struct WatchRecordingQueueView: View {
+    @EnvironmentObject private var queue: RecordingQueueStore
+    var body: some View {
+        List {
+            Section {
+                if queue.recordings.isEmpty {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Image(systemName: "tray").foregroundStyle(ScribeTheme.red)
+                        Text("Queue is clear").font(.headline)
+                        Text("Record now. Review and process on your iPhone.").font(.caption2).foregroundStyle(ScribeTheme.muted)
+                    }.padding(.vertical, 10)
+                }
+                ForEach(queue.recordings.sorted { $0.createdAt > $1.createdAt }) { recording in
+                    NavigationLink { WatchRecordingDetailView(recordingID: recording.id) } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(recording.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)
+                            ScribeStateLabel(state: recording.state)
+                            Text(recording.createdAt, style: .time).font(.caption2).foregroundStyle(ScribeTheme.muted)
+                        }.padding(.vertical, 3)
+                    }
+                }
+            } header: { Text("Recording queue").foregroundStyle(ScribeTheme.muted) }
+            .listRowBackground(ScribeTheme.surface)
+        }
+        .scrollContentBackground(.hidden).background(ScribeTheme.background)
+    }
+}
+
+struct WatchRecordingDetailView: View {
+    @EnvironmentObject private var queue: RecordingQueueStore
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var transfer = WatchConnectivityTransferService.shared
+    @State private var removing = false
+    @State private var renaming = false
+    @State private var title = ""
+    @State private var errorMessage: String?
+    let recordingID: String
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                LinearGradient(
-                    colors: [Color.black, Color(red: 0.08, green: 0.04, blue: 0.06)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
-
-                VStack(spacing: 4) {
-                    compactHeader
-                    Spacer(minLength: 0)
-                    recordControl(diameter: controlDiameter(for: proxy.size))
-                    Spacer(minLength: 0)
-                    transferStatus
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 3)
-            }
-        }
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .onReceive(timer) { _ in
-            recorder.updateElapsedTime()
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
-                recorder.appDidBecomeActive()
-            } else {
-                recorder.appDidEnterBackground()
-            }
-        }
-        .task {
-            await recorder.prepare()
-        }
-        .alert("Recorder Error", isPresented: Binding(
-            get: { recorder.errorMessage != nil },
-            set: { if !$0 { recorder.errorMessage = nil } }
-        )) {
-            Button("OK") { recorder.errorMessage = nil }
-        } message: {
-            Text(recorder.errorMessage ?? "Unknown recorder error")
-        }
-    }
-
-    private var compactHeader: some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(recorder.isRecording ? coral : aqua)
-                .frame(width: 6, height: 6)
-                .shadow(color: (recorder.isRecording ? coral : aqua).opacity(0.8), radius: 4)
-
-            Text("SCRIBE PILOT")
-                .font(.system(size: 10, weight: .bold, design: .rounded))
-                .tracking(1.1)
-                .foregroundStyle(.white.opacity(0.62))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-
-            Spacer(minLength: 2)
-
-            Text(recorder.isRecording
-                ? (recorder.isPausedForInterruption ? "PAUSED" : "RECORDING")
-                : "READY")
-                .font(.system(size: 9, weight: .bold, design: .rounded))
-                .foregroundStyle(recorder.isPausedForInterruption ? .yellow : .white.opacity(0.62))
-        }
-        .frame(height: 15)
-    }
-
-    private func recordControl(diameter: CGFloat) -> some View {
-        VStack(spacing: 2) {
-            Button {
-                if recorder.isRecording {
-                    if recorder.isPausedForInterruption {
-                        recorder.resumeRecording()
-                    } else {
-                        recorder.stopRecording()
+        ScrollView {
+            if let item = queue.recording(recordingID) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(item.title).font(.headline)
+                    ScribeStateLabel(state: item.state)
+                    Text(item.state == .ready ? "Open your iPhone for the transcript." : "Audio transfers to your iPhone. Review it there before processing.")
+                        .font(.caption2).foregroundStyle(ScribeTheme.muted)
+                    if item.state != .ready && item.state != .recording {
+                        Button {
+                            transfer.retryRecording(item.id)
+                        } label: { Label("Retry / process", systemImage: "arrow.clockwise").frame(maxWidth: .infinity) }
+                        .buttonStyle(.borderedProminent).tint(ScribeTheme.red)
                     }
-                } else {
-                    Task { await recorder.startRecording() }
-                }
-            } label: {
-                ZStack {
-                    Circle()
-                        .stroke((recorder.isRecording ? coral : aqua).opacity(0.3), lineWidth: 1)
-                        .frame(width: diameter + 8, height: diameter + 8)
-                    Circle()
-                        .fill((recorder.isRecording ? coral : aqua).opacity(0.14))
-                        .frame(width: diameter, height: diameter)
-                    Circle()
-                        .fill(recorder.isRecording ? coral : .white.opacity(0.12))
-                        .frame(width: diameter - 12, height: diameter - 12)
-                        .shadow(color: (recorder.isRecording ? coral : aqua).opacity(0.45), radius: 8)
-                    Image(systemName: recorder.isRecording
-                        ? (recorder.isPausedForInterruption ? "play.fill" : "stop.fill")
-                        : "mic.fill")
-                        .font(.system(size: max(18, diameter * 0.27), weight: .bold))
-                        .foregroundStyle(recorder.isRecording ? .white : aqua)
-                }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(recorder.isRecording
-                ? (recorder.isPausedForInterruption ? "Resume recording" : "Finish recording")
-                : "Start meeting recording")
-
-            Text(recorder.isRecording ? formatDuration(recorder.elapsedTime) : "Record meeting")
-                .font(.system(size: 18, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.white)
-                .contentTransition(.numericText())
-                .minimumScaleFactor(0.7)
-                .lineLimit(1)
-        }
-        .animation(.easeInOut(duration: 0.2), value: recorder.isRecording)
-    }
-
-    private var transferStatus: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "iphone.and.arrow.forward")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(aqua)
-
-            Text(transferLabel)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.68))
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-
-            Spacer(minLength: 2)
-
-            if let countLabel {
-                Text(countLabel)
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundStyle(aqua)
-            }
-
-            if recorder.isRecording && recorder.isPausedForInterruption {
-                Button {
-                    recorder.stopRecording()
-                } label: {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .bold))
-                }
-                .frame(width: 25, height: 25)
-                .buttonStyle(.plain)
-                .foregroundStyle(coral)
-                .accessibilityLabel("Finish paused recording")
-            } else if !recorder.isRecording && transfer.lastRecordingID != nil {
-                Button {
-                    transfer.retryLastRecording()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10, weight: .bold))
-                }
-                .frame(width: 25, height: 25)
-                .buttonStyle(.plain)
-                .foregroundStyle(aqua)
-                .accessibilityLabel("Retry last upload")
+                    Button {
+                        title = item.title; renaming = true
+                    } label: { Label("Rename", systemImage: "pencil").frame(maxWidth: .infinity) }
+                    Button(role: .destructive) { removing = true } label: {
+                        Label("Remove", systemImage: "trash").frame(maxWidth: .infinity)
+                    }.disabled(item.state == .recording)
+                }.padding(.horizontal, 8)
             }
         }
-        .padding(.horizontal, 7)
-        .frame(height: 25)
-        .background(.white.opacity(0.08), in: Capsule())
-    }
-
-    private var transferLabel: String {
-        if recorder.isRecording && recorder.isPausedForInterruption {
-            return "Audio saved; restoring"
+        .background(ScribeTheme.background).navigationTitle("Recording")
+        .sheet(isPresented: $renaming) {
+            VStack(spacing: 10) {
+                Text("Rename").font(.headline)
+                TextField("Recording title", text: $title)
+                Button("Save") {
+                    do { try transfer.renameRecording(recordingID, title: title); renaming = false }
+                    catch { errorMessage = error.localizedDescription }
+                }.buttonStyle(.borderedProminent).tint(ScribeTheme.red)
+                Button("Cancel") { renaming = false }
+            }.padding()
         }
-        if !recorder.isRecording, let meetingStatus = transfer.meetingStatus {
-            return meetingStatus
-        }
-        if transfer.statusMessage.isEmpty {
-            return "Meeting recorder ready"
-        }
-        return transfer.statusMessage
+        .confirmationDialog("Remove this recording?", isPresented: $removing, titleVisibility: .visible) {
+            Button("Remove", role: .destructive) {
+                do { try transfer.removeRecording(recordingID); dismiss() }
+                catch { errorMessage = error.localizedDescription }
+            }
+        } message: { Text("Remove saved audio and transcript from your Watch and iPhone when they reconnect.") }
+        .alert("Recording queue", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+            Button("OK") { errorMessage = nil }
+        } message: { Text(errorMessage ?? "Please try again.") }
     }
+}
 
-    private var countLabel: String? {
-        guard transfer.queuedChunkCount > 0 else { return nil }
-        return "\(min(transfer.deliveredChunkCount, transfer.queuedChunkCount))/\(transfer.queuedChunkCount)"
-    }
-
-    private func controlDiameter(for size: CGSize) -> CGFloat {
-        min(76, max(68, size.height * 0.42))
-    }
-
-    private func formatDuration(_ duration: TimeInterval) -> String {
-        let totalSeconds = max(0, Int(duration))
-        return String(format: "%02d:%02d:%02d", totalSeconds / 3600, (totalSeconds / 60) % 60, totalSeconds % 60)
+struct WatchProcessingView: View {
+    @StateObject private var transfer = WatchConnectivityTransferService.shared
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Label("OpenAI", systemImage: "lock.shield").font(.headline).foregroundStyle(ScribeTheme.red)
+                Text(transfer.openAIReady ? "Configured on iPhone" : "Finish setup on iPhone").font(.headline)
+                Text("Manage your API key, model, privacy settings, and recording workflow in Scribe Pilot on your iPhone.")
+                    .font(.caption2).foregroundStyle(ScribeTheme.muted)
+                Label(transfer.protectedWorkflow ? "Protected workflow" : "Standard workflow", systemImage: "iphone")
+                    .font(.caption2)
+                Text("Your API key stays on the iPhone.").font(.caption2).foregroundStyle(ScribeTheme.muted)
+            }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        }.background(ScribeTheme.background)
     }
 }

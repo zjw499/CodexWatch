@@ -2,6 +2,8 @@
 
 ## Meeting Recorder
 
+The current phone and Watch interface uses gunmetal grey and red with an editable recording queue. New recordings process directly from the iPhone through OpenAI; API and privacy settings are configured in the app. Review is enabled by default. See [OpenAI workflow and safeguards](docs/OPENAI_WORKFLOW.md) for setup, retention, deletion behavior, and verification. The following describes the previous PC workflow, retained for older meetings.
+
 The iPhone and Watch apps support a meeting workflow backed by `D:\watch-audio-pipeline`. Record on either device; the iPhone relays saved Watch chunks, Groq Whisper creates the full transcript, and the backend can archive that transcript in the configured Notion workspace. The phone displays the transcript and delivery status, provides an **Open in Notion** link, and can copy a completed transcript before opening a configured Gemini destination. The Watch keeps a compact recording screen and receives completion status through WatchConnectivity.
 
 Destination selection is scoped to the phone's existing client ID by the backend. No Notion token is included in the app. Other beta testers keep their configured email delivery. Existing recording and launch complications remain available; recording shortcuts are labeled **Record Meeting**.
