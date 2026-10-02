@@ -24,9 +24,9 @@ struct PhoneRemoteRecordingView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 Text(title).font(.largeTitle.bold())
-                if review { Label("Administrator review Â· access recorded", systemImage: "person.badge.shield.checkmark").font(.caption).foregroundStyle(ScribeTheme.muted) }
+                if review { Label("Administrator review · access recorded", systemImage: "person.badge.shield.checkmark").font(.caption).foregroundStyle(ScribeTheme.muted) }
                 if let model = remote?.result_model {
-                    Text("\(remote?.assistant_name ?? "Assistant") Â· \(model)").font(.caption).foregroundStyle(ScribeTheme.muted)
+                    Text("\(remote?.assistant_name ?? "Assistant") · \(model)").font(.caption).foregroundStyle(ScribeTheme.muted)
                 }
                 if let count = remote?.expected_parts ?? queue.recording(recordingID)?.remotePartCount, count > 0 {
                     audioControls(count)
@@ -54,7 +54,7 @@ struct PhoneRemoteRecordingView: View {
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
                                 .background(turn.role == "user" ? ScribeTheme.raised : ScribeTheme.background, in: RoundedRectangle(cornerRadius: 12))
                         }
-                        TextField("Ask about this recordingâ€¦", text: $prompt, axis: .vertical).lineLimit(2...5)
+                        TextField("Ask about this recording…", text: $prompt, axis: .vertical).lineLimit(2...5)
                             .padding(12).background(ScribeTheme.background, in: RoundedRectangle(cornerRadius: 12))
                         Button("Send message") { chat() }.buttonStyle(.borderedProminent).tint(ScribeTheme.red)
                             .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || busy || !workspace.processingEnabled)
@@ -92,7 +92,7 @@ struct PhoneRemoteRecordingView: View {
         } message: { Text("Review the recipient and use an email account approved for this information. You send the draft from Mail.") }
         .confirmationDialog("Regenerate with a selected assistant", isPresented: $regenerating, titleVisibility: .visible) {
             ForEach(workspace.assistants) { assistant in
-                Button(assistant.name + " Â· " + assistant.model) {
+                Button(assistant.name + " · " + assistant.model) {
                     workspace.selectedAssistantID = assistant.id; workspace.savePreferences()
                     PhoneOpenAIService.shared.process([recordingID]); message = "Regeneration queued. Your updated results will appear in the library."
                 }

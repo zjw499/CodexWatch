@@ -26,7 +26,7 @@ final class PhoneOpenAIService: ObservableObject {
                              duration: duration, ownerID: owner)
             if FileManager.default.fileExists(atPath: fileURL.path) { try FileManager.default.removeItem(at: fileURL) }
             if queue.isRemoved(id) { return }
-            notifyWatch(id: id, status: queue.recording(id)?.isComplete == true ? "Saved Â· review on iPhone" : "Receiving audio")
+            notifyWatch(id: id, status: queue.recording(id)?.isComplete == true ? "Saved · review on iPhone" : "Receiving audio")
         } catch { queue.errorMessage = "Audio could not be saved to the queue. The original file has been kept." }
     }
 
