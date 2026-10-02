@@ -25,3 +25,5 @@ HIPAA eligibility depends on the actual BAA and account configuration. Code/togg
 ## Verification
 
 Native tests check persistent deletion, duplicate/out-of-order transfers, missing parts, corrupted storage, resume checkpoints, protected setup, API host/project scoping, safe provider errors, and disabled Responses storage. UI tests exercise queue rename/removal and capture screenshots. `.github/workflows/native-verify.yml` compiles both apps on macOS and runs iPhone simulator tests. Non-sensitive preview fixtures are Debug-only and require `-scribe-ui-preview`.
+
+On October 2, 2026, a user-supplied credential passed a model-access check. A locally generated, synthetic speech recording returned a transcript from `gpt-4o-mini-transcribe` with HTTP 200, and notes generated with `gpt-4.1-mini` and `store: false` also returned HTTP 200. This verifies the live API path with synthetic content; it does not verify a BAA, retention approval, physical-device microphone quality, or background Watch delivery.

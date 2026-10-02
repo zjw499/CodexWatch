@@ -2,6 +2,7 @@ import XCTest
 
 final class ScribePilotUITests: XCTestCase {
     func testQueueRenameRemoveAndSettingsScreens() {
+        continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["-scribe-ui-preview"]
         app.launch()
@@ -20,7 +21,10 @@ final class ScribePilotUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Weekly review"].waitForExistence(timeout: 5))
         app.buttons["Actions for Weekly review"].tap()
         app.buttons["Remove recording"].tap()
-        app.buttons["Remove 1 recording"].tap()
+        let remove = app.buttons["Remove 1 recording"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 10))
+        screenshot("phone-remove-confirmation")
+        remove.tap()
         XCTAssertFalse(app.staticTexts["Weekly review"].exists)
         app.swipeDown()
         app.buttons["Open settings"].tap()
