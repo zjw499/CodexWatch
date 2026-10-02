@@ -91,12 +91,13 @@ final class PhoneRecorderService: NSObject, ObservableObject {
 
     func stopRecording() {
         guard let recorder else { return }
+        let recordedDuration = recorder.currentTime
         recorder.stop()
         self.recorder = nil
         isRecording = false
         isPaused = false
         audioLevel = 0
-        elapsedTime = recorder.currentTime
+        elapsedTime = recordedDuration
         statusMessage = "Saved to recording queue"
         try? AVAudioSession.sharedInstance().setActive(false)
         PhoneOpenAIService.shared.receive(fileURL: recorder.url,

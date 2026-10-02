@@ -68,6 +68,25 @@ final class ScribePilotUITests: XCTestCase {
         XCTAssertTrue(app.textViews.firstMatch.exists)
         screenshot("phone-assistant-editor")
     }
+    func testFullRecordingReplayCoverageAndRetranscriptionControls() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-scribe-ui-preview", "-scribe-full-recording-preview"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Your recordings"].waitForExistence(timeout: 15))
+        app.segmentedControls.buttons["Library · 1"].tap()
+        app.swipeUp()
+        app.buttons["Project kickoff"].tap()
+        XCTAssertTrue(app.buttons["play-full-recording"].waitForExistence(timeout: 10))
+        screenshot("phone-full-recording-replay")
+        app.swipeUp()
+        let transcribe = app.buttons["Transcribe again from saved audio"]
+        XCTAssertTrue(transcribe.waitForExistence(timeout: 5))
+        screenshot("phone-transcript-coverage")
+        transcribe.tap()
+        XCTAssertTrue(app.buttons["Transcribe again"].waitForExistence(timeout: 5))
+        screenshot("phone-retranscription-confirmation")
+    }
     private func screenshot(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name

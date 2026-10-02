@@ -58,6 +58,9 @@ struct WorkspaceRecording: Codable, Identifiable {
     let error: String?
     let assistant_name: String?
     let result_model: String?
+    let transcribed_seconds: Double?
+    let transcription_complete: Bool?
+    let quality_warning: String?
 }
 
 struct WorkspacePolicy: Codable {
@@ -152,7 +155,8 @@ final class PhoneWorkspace: ObservableObject {
     @Published private(set) var transcriptionModels = ["gpt-4o-mini-transcribe", "gpt-4o-transcribe"]
     @Published private(set) var generationModels = ["gpt-4.1-mini", "gpt-4.1"]
     @Published var selectedAssistantID = ""
-    @Published var transcriptionModel = "gpt-4o-mini-transcribe"
+    @Published var transcriptionModel = "gpt-4o-transcribe"
+    @Published var transcriptionContext = ""
     @Published var connectionMessage: String?
     private let session: URLSession
     private let networkDelegate = WorkspaceNetworkDelegate()
@@ -224,7 +228,7 @@ final class PhoneWorkspace: ObservableObject {
         try WorkspaceKeychain.save(pending, account: "revocations")
         try WorkspaceKeychain.remove()
         PhoneOpenAIService.shared.configurationChanged()
-        credential = nil; processingEnabled = false; assistants = []; selectedAssistantID = ""
+        credential = nil; processingEnabled = false; assistants = []; selectedAssistantID = ""; transcriptionContext = ""
         RecordingQueueStore.shared.setAccount(nil)
         syncWatchAccount()
         await revokePendingSessions()
@@ -242,12 +246,14 @@ final class PhoneWorkspace: ObservableObject {
         guard let id = user?.id else { return }
         UserDefaults.standard.set(selectedAssistantID, forKey: "ScribePilot.Assistant.\(id)")
         UserDefaults.standard.set(transcriptionModel, forKey: "ScribePilot.Transcription.\(id)")
+        saveAssistantCache()
         syncWatchAccount()
     }
     private func loadPreferences() {
         guard let id = user?.id else { selectedAssistantID = ""; return }
         selectedAssistantID = UserDefaults.standard.string(forKey: "ScribePilot.Assistant.\(id)") ?? ""
-        transcriptionModel = UserDefaults.standard.string(forKey: "ScribePilot.Transcription.\(id)") ?? "gpt-4o-mini-transcribe"
+        transcriptionModel = UserDefaults.standard.string(forKey: "ScribePilot.Transcription.\(id)") ?? "gpt-4o-transcribe"
+        transcriptionContext = ""
     }
     private struct AssistantCache: Codable {
         let assistants: [WorkspaceAssistant]
@@ -255,6 +261,7 @@ final class PhoneWorkspace: ObservableObject {
         let generationModels: [String]
         let processingEnabled: Bool
         let server: String
+        var transcriptionContext: String?
     }
     private func cacheURL() -> URL? {
         guard let owner = user?.id, RecordingQueueStore.validID(owner) else { return nil }
@@ -266,13 +273,15 @@ final class PhoneWorkspace: ObservableObject {
               let cache = try? JSONDecoder().decode(AssistantCache.self, from: data), cache.server == credential?.server else { return }
         assistants = cache.assistants; transcriptionModels = cache.transcriptionModels
         generationModels = cache.generationModels; processingEnabled = cache.processingEnabled
+        transcriptionContext = cache.transcriptionContext ?? ""
     }
     private func saveAssistantCache() {
         guard let url = cacheURL(), let server = credential?.server else { return }
         do {
             try RecordingQueueStore.protectDirectory(url.deletingLastPathComponent())
             let cache = AssistantCache(assistants: assistants, transcriptionModels: transcriptionModels,
-                                       generationModels: generationModels, processingEnabled: processingEnabled, server: server)
+                                       generationModels: generationModels, processingEnabled: processingEnabled, server: server,
+                                       transcriptionContext: transcriptionContext)
             try JSONEncoder().encode(cache).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
             try RecordingQueueStore.protectFile(url)
         } catch { /* Server definitions remain authoritative if cache persistence fails. */ }
@@ -384,6 +393,7 @@ final class PhoneWorkspace: ObservableObject {
                                          expires: Date().timeIntervalSince1970 + 3600, server: Self.defaultServer)
         assistants = [WorkspaceAssistant(id: "preview-assistant", name: "Meeting notes", instructions: "Create concise notes and explicit follow-up actions.", model: "gpt-4.1-mini")]
         selectedAssistantID = "preview-assistant"
+        processingEnabled = true
         RecordingQueueStore.shared.setAccount("preview-user")
     }
     #endif

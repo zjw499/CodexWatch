@@ -17,7 +17,12 @@ enum ScribePreviewFixtures {
             try queue.accept(fileURL: audio, id: queued, index: 0, isFinal: true, source: "Apple Watch")
             try queue.rename(queued, title: "Team check-in")
             let completed = UUID().uuidString
-            try queue.accept(fileURL: audio, id: completed, index: 0, isFinal: true, source: "iPhone")
+            let fullPreview = ProcessInfo.processInfo.arguments.contains("-scribe-full-recording-preview")
+            try queue.accept(fileURL: audio, id: completed, index: 0, isFinal: !fullPreview, source: fullPreview ? "Apple Watch" : "iPhone", ownerID: fullPreview ? "preview-user" : nil)
+            if fullPreview {
+                try queue.accept(fileURL: audio, id: completed, index: 1, isFinal: false, source: "Apple Watch", ownerID: "preview-user")
+                try queue.accept(fileURL: audio, id: completed, index: 2, isFinal: true, source: "Apple Watch", duration: 90, ownerID: "preview-user")
+            }
             try queue.update(completed) {
                 $0.title = "Project kickoff"
                 $0.state = .ready

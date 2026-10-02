@@ -56,6 +56,8 @@ struct QueuedRecording: Identifiable, Codable {
     var processingRequested: Bool?
     var requestedAssistantID: String?
     var requestedTranscriptionModel: String?
+    var requestedTranscriptionContext: String?
+    var requestedRetranscription: Bool?
     var pendingTitle: String?
     var pendingSummary: String?
     var importRequested: Bool?

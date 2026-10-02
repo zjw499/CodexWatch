@@ -30,7 +30,7 @@ final class PhoneOpenAIService: ObservableObject {
         } catch { queue.errorMessage = "Audio could not be saved to the queue. The original file has been kept." }
     }
 
-    func process(_ ids: [String]) {
+    func process(_ ids: [String], retranscribe: Bool = false) {
         let workspace = PhoneWorkspace.shared
         guard let owner = workspace.user?.id, workspace.ready, !workspace.selectedAssistantID.isEmpty else {
             queue.errorMessage = workspace.signedIn ? "Organization processing approval is pending, or no assistant is selected." : WorkspaceError.signIn.localizedDescription
@@ -43,6 +43,8 @@ final class PhoneOpenAIService: ObservableObject {
                 try queue.update(id) {
                     $0.processingRequested = true; $0.requestedAssistantID = workspace.selectedAssistantID
                     $0.requestedTranscriptionModel = workspace.transcriptionModel
+                    $0.requestedTranscriptionContext = workspace.transcriptionContext
+                    $0.requestedRetranscription = retranscribe
                 }
             } catch { queue.errorMessage = error.localizedDescription; continue }
             if id != activeID && !requestedIDs.contains(id) { requestedIDs.append(id) }
@@ -168,7 +170,10 @@ final class PhoneOpenAIService: ObservableObject {
         let title: String; let source: String; let expected_parts: Int; let duration: Double?
         let transcript: String; let summary: String
     }
-    private struct ProcessRecording: Encodable { let assistant_id: String; let transcription_model: String }
+    private struct ProcessRecording: Encodable {
+        let assistant_id: String; let transcription_model: String
+        let transcription_context: String; let retranscribe: Bool
+    }
     private func processOne(_ id: String) async {
         let workspace = PhoneWorkspace.shared
         guard let item = queue.recording(id), item.ownerID == workspace.user?.id, let token = workspace.credential?.token else { return }
@@ -207,7 +212,9 @@ final class PhoneOpenAIService: ObservableObject {
             }
             try check(id, token: token)
             let _: PhoneWorkspace.OK = try await workspace.request("recordings/\(id)/process", method: "POST", body: JSONEncoder().encode(
-                ProcessRecording(assistant_id: assistant, transcription_model: model)))
+                ProcessRecording(assistant_id: assistant, transcription_model: model,
+                    transcription_context: item.requestedTranscriptionContext ?? workspace.transcriptionContext,
+                    retranscribe: item.requestedRetranscription ?? false)))
             try check(id, token: token)
             try queue.update(id) { $0.processingRequested = false; $0.state = .processing; $0.error = nil }
             notifyWatch(id: id, status: "Processing on PC")

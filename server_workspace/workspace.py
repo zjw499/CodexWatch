@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import aclosing, asynccontextmanager, contextmanager
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,9 @@ import threading
 import time
 from typing import Any
 import uuid
+import wave
+
+from .audio import AudioError, AudioPreparer, TRANSCRIPTION_VERSION, wav_audio
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import Response
@@ -105,14 +109,21 @@ DEFAULT_INSTRUCTIONS = (
 )
 
 
+class RecordingSuperseded(Exception):
+    pass
+
+
 class Workspace:
-    def __init__(self, config: WorkspaceConfig, cipher=None, provider=None):
+    def __init__(self, config: WorkspaceConfig, cipher=None, provider=None, audio_preparer=None):
         self.config = config
         self.cipher = cipher or WindowsCipher()
         self.lock = threading.RLock()
         config.root.mkdir(parents=True, exist_ok=True)
         self.database = config.root / "workspace.sqlite3"
         self.provider = provider or OpenAIProvider(config)
+        decoder_file = config.root / "audio-decoder.txt"
+        decoder = decoder_file.read_text(encoding="utf-8-sig").strip() if decoder_file.exists() else None
+        self.audio_preparer = audio_preparer or AudioPreparer(decoder)
         with self.db() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL,
@@ -262,6 +273,8 @@ class Workspace:
         data = self.decode(row["content"])
         data.pop("checkpoints", None)
         data.pop("run_assistant", None)
+        data.pop("transcription_context", None)
+        data.pop("checkpoint_audio_hashes", None)
         return {**data, "id": row["id"], "owner": row["owner"], "state": row["state"], "created": row["created"], "updated": row["updated"]}
 
     def approval(self):
@@ -286,29 +299,59 @@ class Workspace:
         try:
             if not self.processing_enabled:
                 raise RuntimeError("Organization processing approval is incomplete")
-            for index in range(data["expected_parts"]):
-                checkpoint = str(index)
-                if checkpoint in data.get("checkpoints", {}):
-                    continue
-                with self.db() as db:
-                    if not self.still_current(db, record_id, generation):
-                        return True
-                    part = db.execute("SELECT content FROM parts WHERE recording=? AND idx=?", (record_id, index)).fetchone()
-                    if not part:
-                        raise RuntimeError("Audio upload is incomplete")
-                    audio = self.cipher.open(part[0])
-                self.require_approval()
-                transcript = await self.provider.transcribe(audio, data["transcription_model"])
-                del audio
-                data.setdefault("checkpoints", {})[checkpoint] = transcript
-                with self.db() as db:
-                    if not self.still_current(db, record_id, generation):
-                        return True
-                    latest = self.decode(db.execute("SELECT content FROM recordings WHERE id=?", (record_id,)).fetchone()[0])
-                    latest["checkpoints"] = data["checkpoints"]
-                    data = latest
-                    db.execute("UPDATE recordings SET content=?,updated=? WHERE id=?", (self.encode(data), time.time(), record_id))
-            transcript = "\n\n".join(data.get("checkpoints", {}).get(str(i), "") for i in range(data["expected_parts"])) if data["expected_parts"] else data.get("transcript", "")
+            async def source_parts():
+                for index in range(data["expected_parts"]):
+                    with self.db() as db:
+                        if not self.still_current(db, record_id, generation):
+                            raise RecordingSuperseded()
+                        part = db.execute("SELECT content FROM parts WHERE recording=? AND idx=?", (record_id, index)).fetchone()
+                        if not part:
+                            raise AudioError("Audio upload is incomplete")
+                        audio = self.cipher.open(part[0])
+                    yield audio
+
+            segments = []
+            async with aclosing(self.audio_preparer.segments(source_parts())) as prepared:
+                async for segment in prepared:
+                    with self.db() as db:
+                        if not self.still_current(db, record_id, generation):
+                            return True
+                    checkpoint = str(segment.index)
+                    audio_hash = hashlib.sha256(segment.audio).hexdigest()
+                    if checkpoint not in data.get("checkpoints", {}) or data.get("checkpoint_audio_hashes", {}).get(checkpoint) != audio_hash:
+                        self.require_approval()
+                        previous = "\n".join(data.get("checkpoints", {}).get(str(i), "") for i in range(segment.index))[-1000:]
+                        prompt = "Transcribe all audible speech verbatim. Preserve complete sentences; do not summarize or omit speech. Do not invent speech during silence."
+                        if data.get("transcription_context"):
+                            prompt += "\nNames and vocabulary for recognition only: " + data["transcription_context"]
+                        if previous.strip():
+                            prompt += "\nPrevious audio context (do not repeat it): " + previous
+                        text = await self.provider.transcribe(segment.audio, data["transcription_model"], prompt)
+                        data.setdefault("checkpoints", {})[checkpoint] = text
+                        data.setdefault("checkpoint_audio_hashes", {})[checkpoint] = audio_hash
+                    segments.append({"index": segment.index, "start": segment.start, "end": segment.end})
+                    with self.db() as db:
+                        if not self.still_current(db, record_id, generation):
+                            return True
+                        latest = self.decode(db.execute("SELECT content FROM recordings WHERE id=?", (record_id,)).fetchone()[0])
+                        latest["checkpoints"] = data["checkpoints"]
+                        latest["checkpoint_audio_hashes"] = data.get("checkpoint_audio_hashes", {})
+                        latest["transcription_segments"] = segments
+                        data = latest
+                        db.execute("UPDATE recordings SET content=?,updated=? WHERE id=?", (self.encode(data), time.time(), record_id))
+            if data["expected_parts"] and not segments:
+                raise AudioError("No source audio could be decoded")
+            transcript = "\n\n".join(data["checkpoints"][str(i)] for i in range(len(segments))) if data["expected_parts"] else data.get("transcript", "")
+            duration = segments[-1]["end"] if segments else data.get("duration")
+            quality_warning = "Little speech was recognized for this recording's length. Listen to the source audio and check microphone placement before relying on the transcript." if duration and duration >= 120 and len(transcript.split()) / (duration / 60) < 25 else None
+            with self.db() as db:
+                if not self.still_current(db, record_id, generation):
+                    return True
+                latest = self.decode(db.execute("SELECT content FROM recordings WHERE id=?", (record_id,)).fetchone()[0])
+                latest.update({"transcript": transcript, "duration": duration,
+                               "transcribed_seconds": duration if segments else None,
+                               "transcription_complete": bool(segments), "quality_warning": quality_warning})
+                db.execute("UPDATE recordings SET content=?,updated=? WHERE id=?", (self.encode(latest), time.time(), record_id))
             assistant = data["run_assistant"]
             self.require_approval()
             notes = await self.provider.generate(assistant["model"], assistant["instructions"], transcript, []) if transcript.strip() else "No speech was detected."
@@ -317,20 +360,25 @@ class Workspace:
                     # Preserve title/result edits made while a job was running.
                     latest = self.decode(db.execute("SELECT content FROM recordings WHERE id=?", (record_id,)).fetchone()[0])
                     latest.update({"transcript": transcript, "summary": notes, "chat": [], "error": None,
+                                   "duration": duration, "transcribed_seconds": duration if segments else None,
+                                   "transcription_complete": bool(segments),
+                                   "quality_warning": quality_warning,
                                    "assistant_name": assistant["name"], "result_model": assistant["model"]})
                     db.execute("UPDATE recordings SET state='ready',content=?,updated=? WHERE id=?", (self.encode(latest), time.time(), record_id))
                     self.audit(db, owner, "processing-completed", record_id)
+        except RecordingSuperseded:
+            return True
         except asyncio.CancelledError:
             with self.db() as db:
                 if self.still_current(db, record_id, generation):
                     db.execute("UPDATE recordings SET state='queued' WHERE id=?", (record_id,))
             raise
-        except Exception:
+        except Exception as error:
             # Never persist provider exceptions, response bodies, transcripts, or credentials in logs/errors.
             with self.db() as db:
                 if self.still_current(db, record_id, generation):
                     latest = self.decode(db.execute("SELECT content FROM recordings WHERE id=?", (record_id,)).fetchone()[0])
-                    latest["error"] = "Processing could not finish. Check organization approval or model access, then retry."
+                    latest["error"] = "The complete source audio could not be decoded. Your original audio is retained; retry or check the recording." if isinstance(error, AudioError) else "Processing could not finish. Check organization approval or model access, then retry."
                     db.execute("UPDATE recordings SET state='failed',content=?,updated=? WHERE id=?", (self.encode(latest), time.time(), record_id))
                     self.audit(db, owner, "processing-failed", record_id)
         return True
@@ -357,14 +405,26 @@ class OpenAIProvider:
                    "OpenAI-Project": self.config.project_id}
         return headers
 
-    async def transcribe(self, audio: bytes, model: str):
+    async def transcribe(self, audio: bytes, model: str, prompt: str = ""):
         async with httpx.AsyncClient(timeout=300, follow_redirects=False, trust_env=False) as client:
             response = await client.post("https://api.openai.com/v1/audio/transcriptions", headers=self.headers(),
-                                         data={"model": model, "response_format": "json"},
-                                         files={"file": ("recording.m4a", audio, "audio/mp4")})
+                                         data={"model": model, "response_format": "json", "prompt": prompt, "temperature": "0"},
+                                         files={"file": ("recording.wav", audio, "audio/wav")})
             if response.status_code != 200:
                 raise RuntimeError("Transcription failed")
-            return response.json()["text"]
+            result = response.json()
+            if result.get("usage", {}).get("output_tokens", 0) >= 1900:
+                # Discard the capped response and retry both halves; never save partial text.
+                with wave.open(io.BytesIO(audio), "rb") as reader:
+                    frames = reader.getnframes()
+                    if frames < reader.getframerate() * 10:
+                        raise RuntimeError("Transcription reached its output limit")
+                    left = wav_audio(reader.readframes(frames // 2))
+                    right = wav_audio(reader.readframes(frames - frames // 2))
+                first = await self.transcribe(left, model, prompt)
+                second = await self.transcribe(right, model, prompt + "\nPrevious audio context (do not repeat it): " + first[-1000:])
+                return first + "\n" + second
+            return result["text"]
 
     async def generate(self, model: str, instructions: str, transcript: str, chat: list):
         # User text, including custom instructions, cannot enable tools or override data routing.
@@ -379,7 +439,7 @@ class OpenAIProvider:
             if response.status_code != 200:
                 raise RuntimeError("Generation failed")
             texts = [part["text"] for item in response.json().get("output", []) for part in item.get("content", []) if part.get("type") == "output_text"]
-            if not texts:
+            if not texts or response.json().get("status") == "incomplete":
                 raise RuntimeError("No result returned")
             return "\n".join(texts)
 
@@ -422,6 +482,8 @@ class EditBody(BaseModel):
 class ProcessBody(BaseModel):
     assistant_id: str = Field(max_length=140)
     transcription_model: str = Field(max_length=80)
+    transcription_context: str = Field(default="", max_length=2000)
+    retranscribe: bool = False
 
 
 class ChatBody(BaseModel):
@@ -679,9 +741,16 @@ def create_app(workspace: Workspace, run_worker: bool = True):
             count = db.execute("SELECT COUNT(*) FROM parts WHERE recording=?", (record_id,)).fetchone()[0]
             if count != data["expected_parts"]:
                 fail(409, "Wait for every audio part to upload")
-            if data.get("transcription_model") != body.transcription_model:
+            if (data.get("transcription_model") != body.transcription_model
+                    or data.get("transcription_version") != TRANSCRIPTION_VERSION
+                    or data.get("transcription_context", "") != body.transcription_context or body.retranscribe):
                 data["checkpoints"] = {}
-            data.update({"transcription_model": body.transcription_model, "run_assistant": workspace.decode(assistant[0]), "error": None})
+                data["checkpoint_audio_hashes"] = {}
+                data["transcription_segments"] = []
+                data["transcription_complete"] = False
+                data["transcribed_seconds"] = None
+            data.update({"transcription_model": body.transcription_model, "transcription_version": TRANSCRIPTION_VERSION,
+                         "transcription_context": body.transcription_context, "run_assistant": workspace.decode(assistant[0]), "error": None})
             db.execute("UPDATE recordings SET state='queued',generation=generation+1,content=?,updated=? WHERE id=?", (workspace.encode(data), time.time(), record_id))
             workspace.audit(db, user["id"], "processing-requested", record_id)
         return {"ok": True}
