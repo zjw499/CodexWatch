@@ -98,16 +98,15 @@ final class PhoneOpenAIService: ObservableObject {
                           "model": workspace.transcriptionModel, "owner_id": workspace.user?.id ?? ""])
     }
     func changeFromWatch(_ id: String, owner: String?, title: String? = nil, removing: Bool = false) throws {
-        guard let item = queue.recording(id), item.ownerID == owner else { throw WorkspaceError.ownership }
-        if removing {
-            if activeID == id { task?.cancel() }
-            requestedIDs.removeAll { $0 == id }
-            try queue.remove([id]); PhoneUploadService.shared.discardSavedRecordings([id])
-        } else if let title {
-            try queue.rename(id, title: title)
-            if item.ownerID != nil { try queue.update(id) { $0.pendingTitle = title } }
+        defer {
+            if removing && queue.isRemoved(id) {
+                if activeID == id { task?.cancel() }
+                requestedIDs.removeAll { $0 == id }
+                PhoneUploadService.shared.discardSavedRecordings([id])
+            }
+            Task { await reconcile() }
         }
-        Task { await reconcile() }
+        try queue.applyCompanionChange(id, owner: owner, title: title, removing: removing)
     }
     func reconcile() async {
         let workspace = PhoneWorkspace.shared
@@ -138,7 +137,7 @@ final class PhoneOpenAIService: ObservableObject {
                 sendWatchCommand(["command": "remove-recording", "recording_id": item.id])
             }
             for item in remote where !queue.isRemoved(item.id) {
-                if let local = queue.recording(item.id), local.id == activeID || local.pendingTitle != nil || local.pendingSummary != nil { continue }
+                if item.id == activeID { continue }
                 let state: RecordingState = item.state == "ready" ? .ready : (item.state == "failed" ? .failed :
                     (["queued", "processing"].contains(item.state) ? .processing : .queued))
                 let previous = queue.recording(item.id)?.state

@@ -236,6 +236,36 @@ final class RecordingQueueStore: ObservableObject {
         try commit(items, removed: removedIDs)
     }
 
+    /// Companion edits may arrive before the first audio transfer, even after an account switch.
+    func applyCompanionChange(_ id: String, owner: String?, title: String? = nil, removing: Bool = false) throws {
+        guard Self.validID(id) else { throw RecordingQueueError.invalidRecording }
+        if let owner, !Self.validID(owner) { throw RecordingQueueError.invalidRecording }
+        if let existing = recording(id), existing.ownerID != owner { throw RecordingQueueError.invalidRecording }
+        if let original = removedOwners[id], original != owner { throw RecordingQueueError.invalidRecording }
+        if removing {
+            let previous = removedOwners
+            if let owner { removedOwners[id] = owner }
+            do { try remove([id]) }
+            catch {
+                if !isRemoved(id) { removedOwners = previous }
+                throw error
+            }
+        } else if let title, !isRemoved(id) {
+            let cleaned = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty, cleaned.count <= 160 else { throw RecordingQueueError.invalidRecording }
+            var items = recordings
+            if !items.contains(where: { $0.id == id }) {
+                var placeholder = newRecording(id: id, source: "Apple Watch")
+                placeholder.ownerID = owner
+                items.append(placeholder)
+            }
+            let index = items.firstIndex { $0.id == id }!
+            items[index].title = cleaned
+            if owner != nil { items[index].pendingTitle = cleaned }
+            try commit(items, removed: removedIDs)
+        }
+    }
+
     func remove(_ ids: Set<String>) throws {
         guard !recordings.contains(where: { ids.contains($0.id) && $0.state == .recording }) else {
             throw RecordingQueueError.stillRecording
@@ -275,8 +305,8 @@ final class RecordingQueueStore: ObservableObject {
             items.append(QueuedRecording(id: id, title: title, source: source, createdAt: created, state: state))
             position = items.count - 1
         }
-        items[position].ownerID = owner; items[position].title = title; items[position].state = state
-        items[position].transcript = transcript; items[position].summary = summary; items[position].error = error
+        items[position].ownerID = owner; items[position].title = items[position].pendingTitle ?? title; items[position].state = state
+        items[position].transcript = transcript; items[position].summary = items[position].pendingSummary ?? summary; items[position].error = error
         if state != .queued || items[position].serverUploaded == true { items[position].serverUploaded = true }
         items[position].remotePartCount = partCount
         items[position].duration = duration; items[position].serverUpdated = updated

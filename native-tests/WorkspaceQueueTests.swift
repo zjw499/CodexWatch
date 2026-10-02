@@ -42,6 +42,22 @@ final class WorkspaceQueueTests: XCTestCase {
         XCTAssertNil(reopened.removedOwners["older"])
         XCTAssertTrue(reopened.isRemoved("older"))
     }
+    func testCompanionEditsBeforeAudioPersistOriginalOwnershipAndPreventResurrection() throws {
+        let (queue, root, audio) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        queue.setAccount("bobby")
+        try queue.applyCompanionChange("deleted-before-audio", owner: "alice", removing: true)
+        let reopened = RecordingQueueStore(root: root.appendingPathComponent("queue"))
+        XCTAssertEqual(reopened.removedOwners["deleted-before-audio"], "alice")
+        XCTAssertFalse(try reopened.accept(fileURL: audio, id: "deleted-before-audio", index: 0, isFinal: true, source: "Apple Watch", ownerID: "alice"))
+        try reopened.applyCompanionChange("renamed-before-audio", owner: "alice", title: "Original owner's title")
+        try reopened.accept(fileURL: audio, id: "renamed-before-audio", index: 0, isFinal: true, source: "Apple Watch", ownerID: "alice")
+        try reopened.mergeRemote(id: "renamed-before-audio", owner: "alice", title: "Stale server title", source: "Apple Watch", created: Date(), state: .ready, transcript: "Saved transcript", summary: "Saved results", error: nil, partCount: 1, duration: 10, updated: 2)
+        XCTAssertEqual(reopened.recording("renamed-before-audio")?.title, "Original owner's title")
+        XCTAssertEqual(reopened.recording("renamed-before-audio")?.ownerID, "alice")
+        XCTAssertTrue(reopened.visibleRecordings.isEmpty)
+        XCTAssertThrowsError(try reopened.applyCompanionChange("renamed-before-audio", owner: "bobby", removing: true))
+    }
     func testWorkspaceAddressAndCredentialDecoding() throws {
         XCTAssertNotNil(PhoneWorkspace.validServer("https://example.tail123.ts.net/workspace"))
         XCTAssertNil(PhoneWorkspace.validServer("http://example.tail123.ts.net/workspace"))
