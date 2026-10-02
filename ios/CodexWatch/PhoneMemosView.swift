@@ -10,8 +10,7 @@ struct PhoneMemosView: View {
     @State private var showingSettings = false
     @State private var editing = false
     @State private var selected: Set<String> = []
-    @State private var removal: Set<String> = []
-    @State private var confirmingRemoval = false
+    @State private var removal: PhoneRecordingRemovalRequest?
     @State private var renaming: QueuedRecording?
     @State private var renameTitle = ""
     @State private var errorMessage: String?
@@ -51,8 +50,8 @@ struct PhoneMemosView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { PhoneUploadService.shared.retryPendingRecordings() }
         }
-        .sheet(isPresented: $confirmingRemoval) {
-            PhoneRecordingRemovalView(ids: removal) { selected.subtract(removal) }
+        .sheet(item: $removal) { request in
+            PhoneRecordingRemovalView(ids: request.ids) { selected.subtract(request.ids) }
         }
         .alert("Rename recording", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Recording title", text: $renameTitle)
@@ -191,7 +190,7 @@ struct PhoneMemosView: View {
                     PhoneOpenAIService.shared.process(Array(selected)); editing = false; selected = []
                 }.disabled(!settings.ready || !queue.pending.contains { selected.contains($0.id) && $0.canProcess })
             }
-            Button(role: .destructive) { removal = selected; confirmingRemoval = true } label: {
+            Button(role: .destructive) { removal = PhoneRecordingRemovalRequest(ids: selected) } label: {
                 Label("Remove", systemImage: "trash")
             }.disabled(selected.isEmpty)
         }.font(.caption.weight(.semibold))
@@ -238,7 +237,7 @@ struct PhoneMemosView: View {
             if !editing {
                 Menu {
                     Button { renaming = item; renameTitle = item.title } label: { Label("Rename", systemImage: "pencil") }
-                    Button(role: .destructive) { removal = [item.id]; confirmingRemoval = true } label: {
+                    Button(role: .destructive) { removal = PhoneRecordingRemovalRequest(ids: [item.id]) } label: {
                         Label("Remove recording", systemImage: "trash")
                     }.disabled(item.state == .recording)
                 } label: { Image(systemName: "ellipsis").frame(width: 36, height: 36).contentShape(Rectangle()) }

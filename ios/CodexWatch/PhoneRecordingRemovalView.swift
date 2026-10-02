@@ -1,5 +1,10 @@
 import SwiftUI
 
+struct PhoneRecordingRemovalRequest: Identifiable {
+    let id = UUID()
+    let ids: Set<String>
+}
+
 struct PhoneRecordingRemovalView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var errorMessage: String?
