@@ -111,9 +111,9 @@ struct PhoneSettingsView: View {
         }
         .task { draft = settings.configuration; loaded = true }
         .onChange(of: key) { _, _ in if loaded { resetConfirmations() } }
-        .onChange(of: draft.projectID) { _, _ in if loaded { resetConfirmations() } }
-        .onChange(of: draft.organizationID) { _, _ in if loaded { resetConfirmations() } }
-        .onChange(of: draft.retention) { _, _ in if loaded { draft.retentionConfirmed = false } }
+        .onChange(of: draft.projectID) { _, value in if loaded && value != settings.configuration.projectID { resetConfirmations() } }
+        .onChange(of: draft.organizationID) { _, value in if loaded && value != settings.configuration.organizationID { resetConfirmations() } }
+        .onChange(of: draft.retention) { _, value in if loaded && value != settings.configuration.retention { draft.retentionConfirmed = false } }
         .confirmationDialog("Remove your saved key?", isPresented: $confirmingKeyRemoval, titleVisibility: .visible) {
             Button("Remove key", role: .destructive) {
                 do { try settings.removeKey(); key = ""; draft = settings.configuration }

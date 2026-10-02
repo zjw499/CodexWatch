@@ -39,7 +39,7 @@ enum OpenAIKeychain {
     static func save(_ value: String) throws {
         let attributes: [String: Any] = [
             kSecValueData as String: Data(value.utf8),
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
         ]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
@@ -74,6 +74,8 @@ final class PhoneOpenAISettings: ObservableObject {
         if !configuration.safeguardsReady { return "Complete protected setup" }
         return configuration.protectedMode ? "Protected workflow configured" : "OpenAI configured"
     }
+
+    func refreshKeyAvailability() { hasKey = !(OpenAIKeychain.read() ?? "").isEmpty }
 
     func save(_ draft: OpenAIConfiguration, newKey: String) throws {
         guard PhoneOpenAIClient.models.contains(draft.model),

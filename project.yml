@@ -29,6 +29,7 @@ targets:
         CODEX_WATCH_AUDIO_UPLOAD_USERNAME: $(CODEX_WATCH_AUDIO_UPLOAD_USERNAME)
         ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: Scribe Pilot records meetings for transcription and delivery to your configured meeting workspace.
+        NSFaceIDUsageDescription: Unlock your protected Scribe Pilot recordings and OpenAI settings.
         UIBackgroundModes:
           - audio
         UILaunchScreen: {}

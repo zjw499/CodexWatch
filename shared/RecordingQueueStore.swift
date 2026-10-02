@@ -230,7 +230,7 @@ final class RecordingQueueStore: ObservableObject {
     }
 
     nonisolated static func protectFile(_ file: URL) throws {
-        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], atPath: file.path)
+        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: file.path)
         var url = file
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
