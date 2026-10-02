@@ -4,6 +4,9 @@ enum ScribePreviewFixtures {
     @MainActor static func loadIfRequested() {
         #if DEBUG
         guard ProcessInfo.processInfo.arguments.contains("-scribe-ui-preview") else { return }
+        #if os(iOS)
+        PhoneWorkspace.shared.loadPreview()
+        #endif
         let queue = RecordingQueueStore.shared
         do {
             try queue.remove(Set(queue.recordings.filter { $0.state != .recording }.map(\.id)))

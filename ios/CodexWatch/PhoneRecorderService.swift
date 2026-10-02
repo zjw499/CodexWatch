@@ -50,6 +50,12 @@ final class PhoneRecorderService: NSObject, ObservableObject {
                     userInfo: [NSLocalizedDescriptionKey: "The iPhone could not start recording."]
                 )
             }
+            do {
+                try RecordingQueueStore.shared.begin(id: fileURL.deletingPathExtension().lastPathComponent, source: "iPhone")
+            } catch {
+                recorder.stop()
+                throw error
+            }
 
             self.recorder = recorder
             elapsedTime = 0

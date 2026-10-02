@@ -4,6 +4,7 @@ struct PhoneMemosView: View {
     @EnvironmentObject private var recorder: PhoneRecorderService
     @EnvironmentObject private var queue: RecordingQueueStore
     @EnvironmentObject private var settings: PhoneOpenAISettings
+    @ObservedObject private var workspace = PhoneWorkspace.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var section = 0
     @State private var search = ""
@@ -14,6 +15,7 @@ struct PhoneMemosView: View {
     @State private var renaming: QueuedRecording?
     @State private var renameTitle = ""
     @State private var errorMessage: String?
+    @State private var processingIDs: [String] = []
     private let timer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
 
     private var visible: [QueuedRecording] {
@@ -35,7 +37,7 @@ struct PhoneMemosView: View {
                 else {
                     LazyVStack(spacing: 10) { ForEach(visible) { item in recordingRow(item) } }
                 }
-                Text("Saved on this device · OpenAI processing").font(.caption).foregroundStyle(ScribeTheme.muted)
+                Text("\(workspace.user?.username ?? "Signed out") · Shared OpenAI workspace").font(.caption).foregroundStyle(ScribeTheme.muted)
                     .frame(maxWidth: .infinity).padding(.top, 8)
             }.padding(20).frame(maxWidth: 760).frame(maxWidth: .infinity)
         }
@@ -45,6 +47,12 @@ struct PhoneMemosView: View {
             NavigationStack { PhoneSettingsView() }.preferredColorScheme(.dark)
         }
         .onReceive(timer) { _ in recorder.updateElapsedTime() }
+        .task {
+            while !Task.isCancelled {
+                await workspace.refresh()
+                do { try await Task.sleep(for: .seconds(12)) } catch { break }
+            }
+        }
         .onChange(of: section) { _, _ in selected = []; editing = false }
         .onChange(of: search) { _, _ in selected = [] }
         .onChange(of: scenePhase) { _, phase in
@@ -53,6 +61,15 @@ struct PhoneMemosView: View {
         .sheet(item: $removal) { request in
             PhoneRecordingRemovalView(ids: request.ids) { selected.subtract(request.ids) }
         }
+        .confirmationDialog("Choose an assistant", isPresented: Binding(get: { !processingIDs.isEmpty }, set: { if !$0 { processingIDs = [] } }), titleVisibility: .visible) {
+            ForEach(workspace.assistants) { assistant in
+                Button(assistant.name + " · " + assistant.model) {
+                    workspace.selectedAssistantID = assistant.id; workspace.savePreferences()
+                    PhoneOpenAIService.shared.process(processingIDs)
+                    processingIDs = []; editing = false; selected = []
+                }
+            }
+        } message: { Text("Transcription: \(workspace.transcriptionModel)") }
         .alert("Rename recording", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Recording title", text: $renameTitle)
             Button("Cancel", role: .cancel) { renaming = nil }
@@ -146,7 +163,7 @@ struct PhoneMemosView: View {
                 Image(systemName: settings.ready ? "lock.shield" : "key").foregroundStyle(ScribeTheme.red)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(settings.readinessLabel).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
-                    Text(settings.ready ? "Direct to OpenAI · transcripts saved here" : "Recordings stay queued until setup is complete")
+                    Text(workspace.ready ? "\(workspace.selectedAssistant?.name ?? "Assistant") · Process on your PC" : "Recordings stay queued until your workspace is ready")
                         .font(.caption).foregroundStyle(ScribeTheme.muted)
                 }
                 Spacer()
@@ -187,7 +204,7 @@ struct PhoneMemosView: View {
             Spacer()
             if section == 0 {
                 Button("Process") {
-                    PhoneOpenAIService.shared.process(Array(selected)); editing = false; selected = []
+                    processingIDs = Array(selected)
                 }.disabled(!settings.ready || !queue.pending.contains { selected.contains($0.id) && $0.canProcess })
             }
             Button(role: .destructive) { removal = PhoneRecordingRemovalRequest(ids: selected) } label: {
@@ -227,7 +244,7 @@ struct PhoneMemosView: View {
                     }.font(.caption)
                 }
                 if item.canProcess && !editing {
-                    Button { PhoneOpenAIService.shared.process([item.id]) } label: {
+                    Button { processingIDs = [item.id] } label: {
                         Label(item.state == .failed ? "Retry" : "Process", systemImage: "play.fill")
                             .font(.caption.weight(.bold)).padding(.horizontal, 13).padding(.vertical, 8)
                     }.buttonStyle(.borderedProminent).tint(ScribeTheme.red).disabled(!settings.ready)

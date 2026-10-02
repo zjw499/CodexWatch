@@ -10,6 +10,7 @@ private struct ImmediateWatchChunkEnvelope: Codable {
     let chunkIndex: Int
     let isFinal: Bool
     let audioData: Data
+    let ownerID: String?
 }
 
 final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, URLSessionDelegate, URLSessionTaskDelegate {
@@ -193,6 +194,9 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             let metadata = file.metadata ?? [:]
             let isChunk = metadata["kind"] as? String == "audio-recording-chunk"
             let context = chunkContext(from: metadata)
+            if let context {
+                rememberOwner(metadata["owner_id"] as? String, recordingID: context.recordingID)
+            }
             let directory = isChunk ? try streamChunksDirectory() : try recordingsDirectory()
             let destination: URL
             if let context {
@@ -220,8 +224,12 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                     self.queueChunkUpload(fileURL: destination, context: context)
                 }
             } else {
-                setStatus("Watch recording received; uploading to PC")
-                enqueue(fileURL: destination)
+                let id = destination.deletingPathExtension().lastPathComponent
+                let owner = metadata["owner_id"] as? String
+                Task { @MainActor in
+                    PhoneOpenAIService.shared.receive(fileURL: destination, id: id, source: "Apple Watch",
+                                                      ownerID: owner.flatMap { RecordingQueueStore.validID($0) ? $0 : nil })
+                }
             }
         } catch {
             setStatus("Could not receive watch recording: \(error.localizedDescription)")
@@ -237,7 +245,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             setStatus("Watch transfer unavailable: \(error.localizedDescription)")
         } else if activationState == .activated {
             setStatus("Ready for watch recordings")
-            Task { @MainActor in PhoneOpenAIService.shared.configurationChanged() }
+            Task { @MainActor in PhoneWorkspace.shared.syncWatchAccount() }
         }
     }
 
@@ -454,7 +462,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             Task { @MainActor in
                 PhoneOpenAIService.shared.receive(fileURL: fileURL, id: id,
                     index: chunk?.chunkIndex ?? 0, isFinal: chunk?.isFinal ?? true,
-                    source: chunk == nil ? "iPhone" : "Apple Watch")
+                    source: chunk == nil ? "iPhone" : "Apple Watch", ownerID: self.savedOwner(id))
             }
             return
         }
@@ -693,7 +701,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 ImmediateWatchChunkEnvelope.self,
                 from: messageData
             )
-            guard envelope.version == 1, !envelope.audioData.isEmpty,
+            guard [1, 2].contains(envelope.version), !envelope.audioData.isEmpty,
                   RecordingQueueStore.validID(envelope.recordingID),
                   envelope.chunkIndex >= 0, envelope.chunkIndex < 100_000 else {
                 throw CocoaError(.fileReadCorruptFile)
@@ -703,6 +711,7 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
                 chunkIndex: envelope.chunkIndex,
                 isFinal: envelope.isFinal
             )
+            rememberOwner(envelope.ownerID, recordingID: envelope.recordingID)
             let destination = try streamChunksDirectory().appendingPathComponent(
                 String(
                     format: "stream_%@_%06d_%d.m4a",
@@ -738,9 +747,14 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             do {
                 switch message["command"] as? String {
                 case "retry-recording": PhoneOpenAIService.shared.process([id])
-                case "remove-recording": try PhoneOpenAIService.shared.remove([id], notify: false)
+                case "remove-recording":
+                    let raw = message["owner_id"] as? String ?? ""
+                    try PhoneOpenAIService.shared.changeFromWatch(id, owner: RecordingQueueStore.validID(raw) ? raw : nil, removing: true)
                 case "rename-recording":
-                    if let title = message["title"] as? String { try RecordingQueueStore.shared.rename(id, title: title) }
+                    if let title = message["title"] as? String {
+                        let raw = message["owner_id"] as? String ?? ""
+                        try PhoneOpenAIService.shared.changeFromWatch(id, owner: RecordingQueueStore.validID(raw) ? raw : nil, title: title)
+                    }
                 default: break
                 }
             } catch { RecordingQueueStore.shared.errorMessage = error.localizedDescription }
@@ -1107,6 +1121,20 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
               chunkIndex >= 0, chunkIndex < 100_000 else { return nil }
         let isFinal = metadata["is_final"] as? Bool ?? false
         return ChunkContext(recordingID: recordingID, chunkIndex: chunkIndex, isFinal: isFinal)
+    }
+
+    private func rememberOwner(_ value: String?, recordingID: String) {
+        var owners = UserDefaults.standard.dictionary(forKey: "ScribePilot.ReceivedWatchOwners") as? [String: String] ?? [:]
+        // Immutable ownership survives fallback delivery and app restarts.
+        if owners[recordingID] == nil {
+            owners[recordingID] = value.flatMap { RecordingQueueStore.validID($0) ? $0 : nil } ?? "unassigned"
+            UserDefaults.standard.set(owners, forKey: "ScribePilot.ReceivedWatchOwners")
+        }
+    }
+    private func savedOwner(_ id: String) -> String? {
+        let owners = UserDefaults.standard.dictionary(forKey: "ScribePilot.ReceivedWatchOwners") as? [String: String] ?? [:]
+        guard let value = owners[id], value != "unassigned", RecordingQueueStore.validID(value) else { return nil }
+        return value
     }
 
     private func chunkContext(from fileURL: URL) -> ChunkContext? {

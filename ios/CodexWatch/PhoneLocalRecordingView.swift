@@ -10,6 +10,34 @@ struct PhoneLocalRecordingView: View {
     @State private var errorMessage: String?
 
     var body: some View {
+        Group {
+            if queue.recording(recordingID)?.ownerID != nil {
+                PhoneRemoteRecordingView(recordingID: recordingID)
+            } else { legacyContent }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { recordingActions }
+        }
+        .sheet(isPresented: $removing) { PhoneRecordingRemovalView(ids: [recordingID]) { dismiss() } }
+        .alert("Rename recording", isPresented: $renaming) {
+            TextField("Title", text: $renameTitle)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                do { try PhoneOpenAIService.shared.rename(recordingID, title: renameTitle) }
+                catch { errorMessage = error.localizedDescription }
+            }
+        }
+        .alert("Scribe Pilot", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+            Button("OK") { errorMessage = nil }
+        } message: { Text(errorMessage ?? "Please try again.") }
+    }
+    private var recordingActions: some View {
+        Menu {
+            Button { renameTitle = queue.recording(recordingID)?.title ?? ""; renaming = true } label: { Label("Rename", systemImage: "pencil") }
+            Button(role: .destructive) { removing = true } label: { Label("Remove recording", systemImage: "trash") }
+        } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("Recording actions")
+    }
+    private var legacyContent: some View {
         ScrollView {
             if let item = queue.recording(recordingID) {
                 VStack(alignment: .leading, spacing: 24) {
@@ -45,29 +73,5 @@ struct PhoneLocalRecordingView: View {
         .background(ScribeTheme.background.ignoresSafeArea()).foregroundStyle(.white).privacySensitive()
         .navigationTitle("Recording").navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button { renameTitle = queue.recording(recordingID)?.title ?? ""; renaming = true } label: {
-                        Label("Rename", systemImage: "pencil")
-                    }
-                    Button(role: .destructive) { removing = true } label: { Label("Remove recording", systemImage: "trash") }
-                } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("Recording actions")
-            }
-        }
-        .sheet(isPresented: $removing) {
-            PhoneRecordingRemovalView(ids: [recordingID]) { dismiss() }
-        }
-        .alert("Rename recording", isPresented: $renaming) {
-            TextField("Title", text: $renameTitle)
-            Button("Cancel", role: .cancel) {}
-            Button("Save") {
-                do { try PhoneOpenAIService.shared.rename(recordingID, title: renameTitle) }
-                catch { errorMessage = error.localizedDescription }
-            }
-        }
-        .alert("Scribe Pilot", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
-            Button("OK") { errorMessage = nil }
-        } message: { Text(errorMessage ?? "Please try again.") }
     }
 }

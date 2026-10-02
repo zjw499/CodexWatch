@@ -36,8 +36,8 @@ jobs:
       WATCH_EXTENSION_PROFILE_NAME: CodexWatch Watch Extension Store
       # Tailscale Serve provides system-trusted HTTPS for shared tailnet users.
       WATCH_AUDIO_UPLOAD_URL: https://zwyattpc.tail488e93.ts.net/upload
-      WATCH_AUDIO_BASIC_AUTH_USERNAME: ${{ secrets.WATCH_AUDIO_BASIC_AUTH_USERNAME }}
-      WATCH_AUDIO_BASIC_AUTH_PASSWORD: ${{ secrets.WATCH_AUDIO_BASIC_AUTH_PASSWORD }}
+      WATCH_AUDIO_BASIC_AUTH_USERNAME: ""
+      WATCH_AUDIO_BASIC_AUTH_PASSWORD: ""
 
     steps:
       - name: Check out source
@@ -68,9 +68,7 @@ jobs:
             APPSTORE_KEY_ID \
             APPSTORE_PRIVATE_KEY \
             KEYCHAIN_PASSWORD \
-            WATCH_AUDIO_UPLOAD_URL \
-            WATCH_AUDIO_BASIC_AUTH_USERNAME \
-            WATCH_AUDIO_BASIC_AUTH_PASSWORD; do
+            WATCH_AUDIO_UPLOAD_URL; do
             if [[ -z "${!name:-}" ]]; then
               echo "Missing required GitHub Actions secret: $name" >&2
               exit 1

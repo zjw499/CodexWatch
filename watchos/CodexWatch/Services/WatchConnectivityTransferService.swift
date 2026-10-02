@@ -9,6 +9,7 @@ private struct ImmediateWatchChunkEnvelope: Codable {
     let chunkIndex: Int
     let isFinal: Bool
     let audioData: Data
+    let ownerID: String?
 }
 
 final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSessionDelegate {
@@ -73,6 +74,9 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func beginRecording(recordingID: String) {
+        var owners = UserDefaults.standard.dictionary(forKey: "ScribePilot.WatchOwners") as? [String: String] ?? [:]
+        owners[recordingID] = UserDefaults.standard.string(forKey: "ScribePilot.WorkspaceOwner") ?? "unassigned"
+        UserDefaults.standard.set(owners, forKey: "ScribePilot.WatchOwners")
         lastRecordingID = recordingID
         counterRecordingID = recordingID
         UserDefaults.standard.set(recordingID, forKey: lastRecordingIDKey)
@@ -84,7 +88,10 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         meetingStatus = nil
         statusMessage = "Recording \(recordingID.prefix(6))"
         Task { @MainActor in
-            do { try RecordingQueueStore.shared.begin(id: recordingID, source: "Apple Watch") }
+            do {
+                try RecordingQueueStore.shared.begin(id: recordingID, source: "Apple Watch")
+                try RecordingQueueStore.shared.update(recordingID) { $0.ownerID = self.owner(for: recordingID) }
+            }
             catch { RecordingQueueStore.shared.errorMessage = error.localizedDescription }
         }
     }
@@ -183,7 +190,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         Task { @MainActor in
             do {
                 try RecordingQueueStore.shared.accept(fileURL: fileURL, id: recordingID, index: chunkIndex,
-                    isFinal: isFinal, source: "Apple Watch")
+                    isFinal: isFinal, source: "Apple Watch", ownerID: self.owner(for: recordingID))
             } catch { RecordingQueueStore.shared.errorMessage = error.localizedDescription }
         }
         let metadata: [String: Any] = [
@@ -192,6 +199,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             "recording_id": recordingID,
             "chunk_index": chunkIndex,
             "is_final": isFinal,
+            "owner_id": owner(for: recordingID) ?? "",
         ]
         pendingFiles.append(PendingFile(
             url: fileURL,
@@ -217,12 +225,13 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         fileQueue.async { [weak self] in
             do {
                 let envelope = ImmediateWatchChunkEnvelope(
-                    version: 1,
+                    version: 2,
                     filename: fileURL.lastPathComponent,
                     recordingID: recordingID,
                     chunkIndex: chunkIndex,
                     isFinal: isFinal,
-                    audioData: try Data(contentsOf: fileURL, options: .mappedIfSafe)
+                    audioData: try Data(contentsOf: fileURL, options: .mappedIfSafe),
+                    ownerID: metadata["owner_id"] as? String
                 )
                 let encoder = PropertyListEncoder()
                 encoder.outputFormat = .binary
@@ -274,6 +283,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             if let error {
                 self.statusMessage = "iPhone transfer unavailable: \(error.localizedDescription)"
             } else {
+                self.session(session, didReceiveApplicationContext: session.receivedApplicationContext)
                 self.recoverSavedTransfers()
             }
         }
@@ -353,6 +363,20 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        if applicationContext["command"] as? String == "workspace-account" {
+            Task { @MainActor in
+                let raw = applicationContext["owner_id"] as? String ?? ""
+                let owner = RecordingQueueStore.validID(raw) ? raw : nil
+                if RecordingQueueStore.shared.accountID != owner {
+                    self.meetingStatus = nil
+                    self.lastRecordingID = nil
+                }
+                RecordingQueueStore.shared.setAccount(owner)
+                UserDefaults.standard.set(applicationContext["username"] as? String ?? "", forKey: "ScribePilot.WorkspaceUsername")
+                self.openAIReady = applicationContext["ready"] as? Bool ?? false
+            }
+            return
+        }
         guard applicationContext["command"] as? String == "meeting-status",
               let recordingID = applicationContext["recording_id"] as? String,
               let message = applicationContext["status"] as? String else { return }
@@ -382,6 +406,8 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         if message["command"] as? String == "resend-recording" { handleResendRequest(message); return }
         Task { @MainActor in
             if message["command"] as? String == "processing-settings" {
+                let owner = message["owner_id"] as? String ?? ""
+                guard owner == (RecordingQueueStore.shared.accountID ?? "") else { return }
                 self.openAIReady = message["ready"] as? Bool ?? false
                 self.protectedWorkflow = message["protected"] as? Bool ?? true
                 UserDefaults.standard.set(self.openAIReady, forKey: "ScribePilot.OpenAIReady")
@@ -391,6 +417,14 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             guard let id = message["recording_id"] as? String, RecordingQueueStore.validID(id) else { return }
             do {
                 switch message["command"] as? String {
+                case "assign-recording":
+                    guard let owner = message["owner_id"] as? String, RecordingQueueStore.validID(owner),
+                          self.owner(for: id) == nil else { return }
+                    var owners = UserDefaults.standard.dictionary(forKey: "ScribePilot.WatchOwners") as? [String: String] ?? [:]
+                    owners[id] = owner; UserDefaults.standard.set(owners, forKey: "ScribePilot.WatchOwners")
+                    if RecordingQueueStore.shared.recording(id)?.ownerID == nil, RecordingQueueStore.shared.recording(id) != nil {
+                        try RecordingQueueStore.shared.assign(id, owner: owner)
+                    }
                 case "remove-recording": try self.removeRecording(id, notifyPhone: false)
                 case "rename-recording":
                     if let title = message["title"] as? String { try RecordingQueueStore.shared.rename(id, title: title) }
@@ -420,7 +454,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     @MainActor
     func renameRecording(_ id: String, title: String) throws {
         try RecordingQueueStore.shared.rename(id, title: title)
-        WCSession.default.transferUserInfo(["command": "rename-recording", "recording_id": id, "title": title])
+        WCSession.default.transferUserInfo(["command": "rename-recording", "recording_id": id, "title": title, "owner_id": owner(for: id) ?? ""])
     }
 
     @MainActor
@@ -439,7 +473,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                     inFlightFiles.remove(transfer.file.fileURL.lastPathComponent)
                     transfer.cancel()
                 }
-                if notifyPhone { WCSession.default.transferUserInfo(["command": "remove-recording", "recording_id": id]) }
+                if notifyPhone { WCSession.default.transferUserInfo(["command": "remove-recording", "recording_id": id, "owner_id": owner(for: id) ?? ""]) }
                 if id == lastRecordingID { meetingStatus = nil; statusMessage = "Recording removed" }
             }
         }
@@ -489,9 +523,16 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                 "recording_id": String(parts[1]),
                 "chunk_index": index,
                 "is_final": finalFlag == 1,
+                "owner_id": owner(for: String(parts[1])) ?? "",
             ]
         }
         return ["kind": "audio-recording", "filename": fileURL.lastPathComponent]
+    }
+
+    private func owner(for id: String) -> String? {
+        let owners = UserDefaults.standard.dictionary(forKey: "ScribePilot.WatchOwners") as? [String: String] ?? [:]
+        guard let value = owners[id], value != "unassigned", RecordingQueueStore.validID(value) else { return nil }
+        return value
     }
 
     private func recordingsDirectory() -> URL {

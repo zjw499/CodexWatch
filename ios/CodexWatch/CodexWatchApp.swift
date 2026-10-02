@@ -12,6 +12,7 @@ struct CodexWatchApp: App {
     @StateObject private var queue = RecordingQueueStore.shared
     @StateObject private var openAI = PhoneOpenAISettings.shared
     @StateObject private var privacy = PhonePrivacyGuard()
+    @StateObject private var workspace = PhoneWorkspace.shared
 
     init() {
         CodexWatchShortcuts.updateAppShortcutParameters()
@@ -23,6 +24,7 @@ struct CodexWatchApp: App {
             NavigationStack {
                 PhoneMemosView()
             }
+            .id(workspace.user?.id ?? "signed-out")
             .environmentObject(recorder)
             .environmentObject(uploader)
             .environmentObject(memoService)

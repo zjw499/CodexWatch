@@ -30,6 +30,7 @@ struct CodexWatchApp: App {
                     await WatchShortcutCommandRouter.consumePendingCommand(using: recorder)
                 }
             }
+            .id(queue.accountID ?? "signed-out")
             .environmentObject(store)
             .environmentObject(recorder)
             .environmentObject(queue)
