@@ -183,6 +183,7 @@ final class PhoneWorkspace: ObservableObject {
         }
         RecordingQueueStore.shared.setAccount(credential?.user.id)
         loadPreferences()
+        loadAssistantCache()
     }
     var user: WorkspaceUser? { credential?.user }
     var signedIn: Bool { credential != nil }
@@ -210,6 +211,7 @@ final class PhoneWorkspace: ObservableObject {
         processingEnabled = false; assistants = []
         RecordingQueueStore.shared.setAccount(result.user.id)
         loadPreferences()
+        loadAssistantCache()
         // Older device keys are no longer used by this workflow.
         try? OpenAIKeychain.remove()
         syncWatchAccount()
@@ -248,6 +250,34 @@ final class PhoneWorkspace: ObservableObject {
         selectedAssistantID = UserDefaults.standard.string(forKey: "ScribePilot.Assistant.\(id)") ?? ""
         transcriptionModel = UserDefaults.standard.string(forKey: "ScribePilot.Transcription.\(id)") ?? "gpt-4o-mini-transcribe"
     }
+    private struct AssistantCache: Codable {
+        let assistants: [WorkspaceAssistant]
+        let transcriptionModels: [String]
+        let generationModels: [String]
+        let processingEnabled: Bool
+        let server: String
+    }
+    private func cacheURL() -> URL? {
+        guard let owner = user?.id, RecordingQueueStore.validID(owner) else { return nil }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ScribePilot", isDirectory: true).appendingPathComponent("assistants-\(owner).json")
+    }
+    private func loadAssistantCache() {
+        guard let url = cacheURL(), let data = try? Data(contentsOf: url),
+              let cache = try? JSONDecoder().decode(AssistantCache.self, from: data), cache.server == credential?.server else { return }
+        assistants = cache.assistants; transcriptionModels = cache.transcriptionModels
+        generationModels = cache.generationModels; processingEnabled = cache.processingEnabled
+    }
+    private func saveAssistantCache() {
+        guard let url = cacheURL(), let server = credential?.server else { return }
+        do {
+            try RecordingQueueStore.protectDirectory(url.deletingLastPathComponent())
+            let cache = AssistantCache(assistants: assistants, transcriptionModels: transcriptionModels,
+                                       generationModels: generationModels, processingEnabled: processingEnabled, server: server)
+            try JSONEncoder().encode(cache).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            try RecordingQueueStore.protectFile(url)
+        } catch { /* Server definitions remain authoritative if cache persistence fails. */ }
+    }
 
     func refresh() async {
         #if DEBUG
@@ -265,7 +295,7 @@ final class PhoneWorkspace: ObservableObject {
             assistants = result.assistants
             if !assistants.contains(where: { $0.id == selectedAssistantID }) { selectedAssistantID = assistants.first?.id ?? "" }
             if !transcriptionModels.contains(transcriptionModel) { transcriptionModel = transcriptionModels.first ?? "" }
-            savePreferences(); connectionMessage = nil
+            savePreferences(); saveAssistantCache(); connectionMessage = nil
             await PhoneOpenAIService.shared.reconcile()
         } catch {
             guard credential?.token == saved.token else { return }

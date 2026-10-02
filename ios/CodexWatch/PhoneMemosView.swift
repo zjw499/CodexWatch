@@ -15,6 +15,7 @@ struct PhoneMemosView: View {
     @State private var renaming: QueuedRecording?
     @State private var renameTitle = ""
     @State private var errorMessage: String?
+    @State private var processingIDs: [String] = []
     private let timer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
 
     private var visible: [QueuedRecording] {
@@ -60,6 +61,15 @@ struct PhoneMemosView: View {
         .sheet(item: $removal) { request in
             PhoneRecordingRemovalView(ids: request.ids) { selected.subtract(request.ids) }
         }
+        .confirmationDialog("Choose an assistant", isPresented: Binding(get: { !processingIDs.isEmpty }, set: { if !$0 { processingIDs = [] } }), titleVisibility: .visible) {
+            ForEach(workspace.assistants) { assistant in
+                Button(assistant.name + " · " + assistant.model) {
+                    workspace.selectedAssistantID = assistant.id; workspace.savePreferences()
+                    PhoneOpenAIService.shared.process(processingIDs)
+                    processingIDs = []; editing = false; selected = []
+                }
+            }
+        } message: { Text("Transcription: \(workspace.transcriptionModel)") }
         .alert("Rename recording", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Recording title", text: $renameTitle)
             Button("Cancel", role: .cancel) { renaming = nil }
@@ -194,7 +204,7 @@ struct PhoneMemosView: View {
             Spacer()
             if section == 0 {
                 Button("Process") {
-                    PhoneOpenAIService.shared.process(Array(selected)); editing = false; selected = []
+                    processingIDs = Array(selected)
                 }.disabled(!settings.ready || !queue.pending.contains { selected.contains($0.id) && $0.canProcess })
             }
             Button(role: .destructive) { removal = PhoneRecordingRemovalRequest(ids: selected) } label: {
@@ -234,7 +244,7 @@ struct PhoneMemosView: View {
                     }.font(.caption)
                 }
                 if item.canProcess && !editing {
-                    Button { PhoneOpenAIService.shared.process([item.id]) } label: {
+                    Button { processingIDs = [item.id] } label: {
                         Label(item.state == .failed ? "Retry" : "Process", systemImage: "play.fill")
                             .font(.caption.weight(.bold)).padding(.horizontal, 13).padding(.vertical, 8)
                     }.buttonStyle(.borderedProminent).tint(ScribeTheme.red).disabled(!settings.ready)

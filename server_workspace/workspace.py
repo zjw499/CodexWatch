@@ -242,7 +242,12 @@ class Workspace:
             row = db.execute("SELECT u.id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>? AND u.active=1", (digest(token), time.time())).fetchone()
             if not row:
                 fail(401, "Sign in again")
-            return dict(row)
+            return {**dict(row), "session_hash": digest(token)}
+
+    def require_session(self, db, user):
+        row = db.execute("SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.user_id=? AND s.expires>? AND u.active=1", (user["session_hash"], user["id"], time.time())).fetchone()
+        if not row:
+            fail(401, "Sign in again")
 
     def recording(self, db, record_id: str, user, review: bool = False):
         identifier(record_id)
@@ -488,7 +493,7 @@ def create_app(workspace: Workspace, run_worker: bool = True):
 
     @app.get("/api/me")
     def me(user=Depends(account)):
-        return {"user": user, "processing_enabled": workspace.processing_enabled,
+        return {"user": {key: user[key] for key in ("id", "username", "role")}, "processing_enabled": workspace.processing_enabled,
                 "transcription_models": workspace.config.transcription_models, "generation_models": workspace.config.generation_models}
 
     @app.get("/api/admin/users")
@@ -607,6 +612,7 @@ def create_app(workspace: Workspace, run_worker: bool = True):
         if len(audio) >= 24*1024*1024 or not audio or await file.read(1):
             fail(413, "Audio parts must be nonempty and smaller than 24 MiB")
         with workspace.db() as db:
+            workspace.require_session(db, user)
             row = workspace.recording(db, record_id, user)
             data = workspace.decode(row["content"])
             if index < 0 or index >= data["expected_parts"]:
@@ -708,9 +714,15 @@ def create_app(workspace: Workspace, run_worker: bool = True):
             assistant = data.get("run_assistant")
             if not assistant:
                 fail(409, "Choose an assistant and regenerate this imported recording before starting a conversation")
-        answer = await workspace.provider.generate(assistant["model"], assistant["instructions"], data["transcript"],
-            [{"role": "assistant", "content": data.get("summary", "")}] + turns + [{"role": "user", "content": body.message}])
+        try:
+            answer = await workspace.provider.generate(assistant["model"], assistant["instructions"], data["transcript"],
+                [{"role": "assistant", "content": data.get("summary", "")}] + turns + [{"role": "user", "content": body.message}])
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            fail(502, "The assistant could not respond. Try again")
         with workspace.db() as db:
+            workspace.require_session(db, user)
             if not workspace.still_current(db, record_id, generation):
                 fail(409, "Recording changed or was deleted")
             row = workspace.recording(db, record_id, user)

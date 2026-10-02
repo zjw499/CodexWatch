@@ -88,7 +88,10 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         meetingStatus = nil
         statusMessage = "Recording \(recordingID.prefix(6))"
         Task { @MainActor in
-            do { try RecordingQueueStore.shared.begin(id: recordingID, source: "Apple Watch") }
+            do {
+                try RecordingQueueStore.shared.begin(id: recordingID, source: "Apple Watch")
+                try RecordingQueueStore.shared.update(recordingID) { $0.ownerID = self.owner(for: recordingID) }
+            }
             catch { RecordingQueueStore.shared.errorMessage = error.localizedDescription }
         }
     }
@@ -280,6 +283,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             if let error {
                 self.statusMessage = "iPhone transfer unavailable: \(error.localizedDescription)"
             } else {
+                self.session(session, didReceiveApplicationContext: session.receivedApplicationContext)
                 self.recoverSavedTransfers()
             }
         }
