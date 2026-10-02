@@ -34,7 +34,8 @@ struct PhoneRemoteRecordingView: View {
                 contentPanel("Results", icon: "text.alignleft", text: summary.isEmpty ? "Results will appear after processing." : summary)
                 if !review {
                     HStack {
-                        Button("Edit results") { resultDraft = summary; editingResult = true }.disabled(summary.isEmpty || busy)
+                        Button("Edit results") { resultDraft = summary; editingResult = true }
+                            .disabled(summary.isEmpty || busy || queue.recording(recordingID)?.state == .processing)
                         Spacer()
                         Button("Regenerate") { regenerating = true }.disabled(!workspace.ready || busy)
                     }.font(.subheadline)
@@ -118,6 +119,7 @@ struct PhoneRemoteRecordingView: View {
         Task {
             defer { busy = false }
             do {
+                guard !PhoneRecorderService.shared.isRecording else { message = "Finish the active recording before playing audio."; return }
                 let data: Data
                 if !review, let local = queue.recording(recordingID), remote == nil, index < local.parts.count {
                     data = try Data(contentsOf: queue.audioURL(recordingID, part: local.parts.sorted { $0.index < $1.index }[index]))

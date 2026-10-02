@@ -55,10 +55,12 @@ The application never returns the key to clients. All new AI requests use
 `/v1/audio/transcriptions` and foreground `/v1/responses` with `store:false`.
 Conversation history and assistant definitions remain on the PC.
 
-The signed BAA has been verified, but approved retention for the actual org/project
-and full PC safeguards must be verified before enabling PHI processing. Users
-cannot change these approvals. Administrators record evidence under Organization
-approval; this does not itself provision OpenAI retention. See
+The signed BAA has been verified. On October 2, 2026, the owner confirmed that
+retention and PC safeguards are verified for the configured organization/project.
+That confirmation is recorded centrally and processing is enabled on this PC.
+New installations start with processing blocked until their approvals are recorded.
+Users cannot change these approvals. Administrators record evidence under
+Organization approval; this does not itself provision OpenAI retention. See
 [OpenAI's HIPAA requirements](https://help.openai.com/en/articles/20001069-hipaa-eligible-products-and-functionality)
 and [data controls](https://developers.openai.com/api/docs/guides/your-data).
 
@@ -70,7 +72,7 @@ and timestamps. Passwords use salted scrypt; session/invitation tokens are hashe
 on the server. Phone sessions use passcode-bound, device-only Keychain storage.
 
 The PC's OS, patching, recovery, audit oversight, network access policy, device
-controls, and backup handling still require organizational verification. Keep
+controls, and backup handling remain the organization's responsibility. Keep
 encrypted backups restricted, backed by a recoverable Windows DPAPI profile,
 and subject to the organization's deletion/retention process. Application deletion
 does not erase exported emails, earlier provider copies, or historical backups.

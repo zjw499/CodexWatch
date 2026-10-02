@@ -23,6 +23,8 @@ class Provider:
         self.before_response = None
     async def transcribe(self, audio, model):
         self.calls.append(("transcribe", model, audio))
+        if getattr(self, "during_transcription", None):
+            self.during_transcription()
         return "Alex will send the agenda Friday."
     async def generate(self, model, instructions, transcript, chat):
         self.calls.append(("generate", model, instructions, transcript, chat))
@@ -56,7 +58,7 @@ def upload(client, headers, record_id="recording-1", parts=1):
     assert response.status_code == 200, response.text
     for index in range(parts):
         response = client.put(f"/api/recordings/{record_id}/parts/{index}", headers=headers,
-                              files={"file": ("ignored.m4a", b"audio"+str(index).encode(), "audio/mp4")})
+                              content=b"audio"+str(index).encode())
         assert response.status_code == 200
 
 
@@ -72,7 +74,7 @@ def test_cross_user_read_write_delete_and_admin_review(setup):
         ("get", "", {}), ("get", "/parts/0", {}), ("delete", "", {}),
         ("patch", "", {"json": {"title": "stolen"}}),
         ("post", "/process", {"json": process_body(c, b)}),
-        ("put", "/parts/0", {"files": {"file": ("a.m4a", b"audio0")}}),
+        ("put", "/parts/0", {"content": b"audio0"}),
     ]:
         assert getattr(c, method)("/api/recordings/recording-1"+suffix, headers=b, **kwargs).status_code == 404
     assert c.get("/api/recordings/recording-1?review=true", headers=b).status_code == 404
@@ -146,7 +148,7 @@ def test_tombstone_before_upload_and_audio_conflict(setup):
     assert c.delete("/api/recordings/not-yet-uploaded", headers=a).status_code == 200
     assert c.put("/api/recordings/not-yet-uploaded", headers=a, json={"title": "late", "source": "Watch", "expected_parts": 1}).status_code == 410
     upload(c, a)
-    assert c.put("/api/recordings/recording-1/parts/0", headers=a, files={"file": ("a.m4a", b"changed")}).status_code == 409
+    assert c.put("/api/recordings/recording-1/parts/0", headers=a, content=b"changed").status_code == 409
 
 
 def test_approval_fail_closed_and_does_not_send_audio(setup):
@@ -199,3 +201,23 @@ def test_existing_results_import_without_audio_and_regenerate(setup):
     assert result["state"] == "ready"
     assert not any(call[0] == "transcribe" for call in p.calls)
     assert "Alex" in result["transcript"]
+
+
+def test_rename_during_transcription_is_not_overwritten(setup):
+    w, c, p, _, (_, a), _ = setup
+    upload(c, a)
+    c.post("/api/recordings/recording-1/process", headers=a, json=process_body(c, a))
+    p.during_transcription = lambda: c.patch("/api/recordings/recording-1", headers=a, json={"title": "Renamed while running"})
+    asyncio.run(w.run_next())
+    assert c.get("/api/recordings/recording-1", headers=a).json()["title"] == "Renamed while running"
+
+
+def test_revocation_during_chat_prevents_returning_or_saving_content(setup):
+    w, c, p, (_, ah), (alice, a), _ = setup
+    upload(c, a)
+    c.post("/api/recordings/recording-1/process", headers=a, json=process_body(c, a))
+    asyncio.run(w.run_next())
+    p.before_response = lambda: c.delete(f"/api/admin/users/{alice['user']['id']}/sessions", headers=ah)
+    assert c.post("/api/recordings/recording-1/chat", headers=a, json={"message": "Who?", "request_id": "revoked-chat"}).status_code == 401
+    with w.db() as db:
+        assert w.decode(db.execute("SELECT content FROM recordings").fetchone()[0])["chat"] == []

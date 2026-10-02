@@ -61,6 +61,7 @@ final class PhoneOpenAIService: ObservableObject {
     }
     func importRecording(_ id: String) async {
         guard queue.recording(id)?.ownerID == PhoneWorkspace.shared.user?.id else { return }
+        sendWatchCommand(["command": "assign-recording", "recording_id": id, "owner_id": PhoneWorkspace.shared.user?.id ?? ""])
         do { try queue.update(id) { $0.importRequested = true; $0.processingRequested = false } }
         catch { queue.errorMessage = error.localizedDescription; return }
         if id != activeID && !requestedIDs.contains(id) { requestedIDs.append(id) }
@@ -81,7 +82,7 @@ final class PhoneOpenAIService: ObservableObject {
     func rename(_ id: String, title: String) throws {
         guard let item = queue.recording(id), item.ownerID == PhoneWorkspace.shared.user?.id || item.ownerID == nil else { throw WorkspaceError.ownership }
         try queue.rename(id, title: title)
-        if item.serverUploaded == true { try queue.update(id) { $0.pendingTitle = title } }
+        if item.ownerID != nil { try queue.update(id) { $0.pendingTitle = title } }
         sendWatchCommand(["command": "rename-recording", "recording_id": id, "title": title])
         Task { await reconcile() }
     }
@@ -93,7 +94,20 @@ final class PhoneOpenAIService: ObservableObject {
     func configurationChanged() { task?.cancel(); requestedIDs.removeAll(); syncConfiguration() }
     func syncConfiguration() {
         let workspace = PhoneWorkspace.shared
-        sendWatchCommand(["command": "processing-settings", "ready": workspace.ready, "protected": true, "model": workspace.transcriptionModel])
+        sendWatchCommand(["command": "processing-settings", "ready": workspace.ready, "protected": true,
+                          "model": workspace.transcriptionModel, "owner_id": workspace.user?.id ?? ""])
+    }
+    func changeFromWatch(_ id: String, owner: String?, title: String? = nil, removing: Bool = false) throws {
+        guard let item = queue.recording(id), item.ownerID == owner else { throw WorkspaceError.ownership }
+        if removing {
+            if activeID == id { task?.cancel() }
+            requestedIDs.removeAll { $0 == id }
+            try queue.remove([id]); PhoneUploadService.shared.discardSavedRecordings([id])
+        } else if let title {
+            try queue.rename(id, title: title)
+            if item.serverUploaded == true { try queue.update(id) { $0.pendingTitle = title } }
+        }
+        Task { await reconcile() }
     }
     func reconcile() async {
         let workspace = PhoneWorkspace.shared
@@ -201,7 +215,10 @@ final class PhoneOpenAIService: ObservableObject {
         } catch is CancellationError {
             try? queue.update(id) { $0.state = .queued; $0.error = "Upload paused. Reconnect to resume." }
         } catch {
-            try? queue.update(id) { $0.state = .failed; $0.error = error.localizedDescription }
+            try? queue.update(id) {
+                $0.state = .failed; $0.error = error.localizedDescription
+                if !(error is URLError) { $0.processingRequested = false; $0.importRequested = false }
+            }
             notifyWatch(id: id, status: "Needs attention on iPhone")
         }
     }

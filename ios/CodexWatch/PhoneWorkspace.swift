@@ -156,7 +156,6 @@ final class PhoneWorkspace: ObservableObject {
     @Published var connectionMessage: String?
     private let session: URLSession
     private let networkDelegate = WorkspaceNetworkDelegate()
-    private var refreshTask: Task<Void, Never>?
     private struct Me: Decodable {
         let user: WorkspaceUser
         let processing_enabled: Bool
@@ -355,11 +354,9 @@ final class PhoneWorkspace: ObservableObject {
     }
 
     func upload(_ url: URL, recordingID: String, index: Int) async throws {
-        let boundary = "ScribePilot-" + UUID().uuidString
-        var body = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"recording.m4a\"\r\nContent-Type: audio/mp4\r\n\r\n".utf8)
-        body.append(try Data(contentsOf: url)); body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        let body = try Data(contentsOf: url)
         _ = try await rawRequest("recordings/\(recordingID)/parts/\(index)", method: "PUT", body: body,
-                                contentType: "multipart/form-data; boundary=\(boundary)")
+                                contentType: "audio/mp4")
     }
 
     func saveAssistant(_ assistant: WorkspaceAssistant) async throws {

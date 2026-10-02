@@ -406,6 +406,8 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         if message["command"] as? String == "resend-recording" { handleResendRequest(message); return }
         Task { @MainActor in
             if message["command"] as? String == "processing-settings" {
+                let owner = message["owner_id"] as? String ?? ""
+                guard owner == (RecordingQueueStore.shared.accountID ?? "") else { return }
                 self.openAIReady = message["ready"] as? Bool ?? false
                 self.protectedWorkflow = message["protected"] as? Bool ?? true
                 UserDefaults.standard.set(self.openAIReady, forKey: "ScribePilot.OpenAIReady")
@@ -415,6 +417,14 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             guard let id = message["recording_id"] as? String, RecordingQueueStore.validID(id) else { return }
             do {
                 switch message["command"] as? String {
+                case "assign-recording":
+                    guard let owner = message["owner_id"] as? String, RecordingQueueStore.validID(owner),
+                          self.owner(for: id) == nil else { return }
+                    var owners = UserDefaults.standard.dictionary(forKey: "ScribePilot.WatchOwners") as? [String: String] ?? [:]
+                    owners[id] = owner; UserDefaults.standard.set(owners, forKey: "ScribePilot.WatchOwners")
+                    if RecordingQueueStore.shared.recording(id)?.ownerID == nil, RecordingQueueStore.shared.recording(id) != nil {
+                        try RecordingQueueStore.shared.assign(id, owner: owner)
+                    }
                 case "remove-recording": try self.removeRecording(id, notifyPhone: false)
                 case "rename-recording":
                     if let title = message["title"] as? String { try RecordingQueueStore.shared.rename(id, title: title) }
@@ -444,7 +454,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     @MainActor
     func renameRecording(_ id: String, title: String) throws {
         try RecordingQueueStore.shared.rename(id, title: title)
-        WCSession.default.transferUserInfo(["command": "rename-recording", "recording_id": id, "title": title])
+        WCSession.default.transferUserInfo(["command": "rename-recording", "recording_id": id, "title": title, "owner_id": owner(for: id) ?? ""])
     }
 
     @MainActor
@@ -463,7 +473,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                     inFlightFiles.remove(transfer.file.fileURL.lastPathComponent)
                     transfer.cancel()
                 }
-                if notifyPhone { WCSession.default.transferUserInfo(["command": "remove-recording", "recording_id": id]) }
+                if notifyPhone { WCSession.default.transferUserInfo(["command": "remove-recording", "recording_id": id, "owner_id": owner(for: id) ?? ""]) }
                 if id == lastRecordingID { meetingStatus = nil; statusMessage = "Recording removed" }
             }
         }

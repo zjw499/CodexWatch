@@ -24,7 +24,7 @@ import time
 from typing import Any
 import uuid
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import httpx
@@ -304,6 +304,9 @@ class Workspace:
                 with self.db() as db:
                     if not self.still_current(db, record_id, generation):
                         return True
+                    latest = self.decode(db.execute("SELECT content FROM recordings WHERE id=?", (record_id,)).fetchone()[0])
+                    latest["checkpoints"] = data["checkpoints"]
+                    data = latest
                     db.execute("UPDATE recordings SET content=?,updated=? WHERE id=?", (self.encode(data), time.time(), record_id))
             transcript = "\n\n".join(data.get("checkpoints", {}).get(str(i), "") for i in range(data["expected_parts"])) if data["expected_parts"] else data.get("transcript", "")
             assistant = data["run_assistant"]
@@ -606,10 +609,15 @@ def create_app(workspace: Workspace, run_worker: bool = True):
             return workspace.public_record(workspace.recording(db, record_id, user))
 
     @app.put("/api/recordings/{record_id}/parts/{index}")
-    async def upload(record_id: str, index: int, file: UploadFile = File(...), user=Depends(account)):
-        # Bound memory independent of client Content-Length. No multipart filename reaches disk.
-        audio = await file.read(24*1024*1024)
-        if len(audio) >= 24*1024*1024 or not audio or await file.read(1):
+    async def upload(record_id: str, index: int, request: Request, user=Depends(account)):
+        # Read a bounded raw body. Multipart UploadFile can spool plaintext to OS temp storage.
+        incoming = bytearray()
+        async for chunk in request.stream():
+            if len(incoming) + len(chunk) >= 24*1024*1024:
+                fail(413, "Audio parts must be smaller than 24 MiB")
+            incoming.extend(chunk)
+        audio = bytes(incoming)
+        if not audio:
             fail(413, "Audio parts must be nonempty and smaller than 24 MiB")
         with workspace.db() as db:
             workspace.require_session(db, user)

@@ -18,7 +18,7 @@ struct PhoneRecordingRemovalView: View {
                     Image(systemName: "trash").font(.system(size: 32)).foregroundStyle(ScribeTheme.red)
                     Text(ids.count == 1 ? "Remove this recording?" : "Remove these recordings?")
                         .font(.title2.bold())
-                    Text("Saved audio and transcripts will be removed from this iPhone. Watch copies will be removed when it reconnects. Already processed OpenAI requests cannot be recalled.")
+                    Text("Saved audio, transcripts, results, and chats will be removed from your workspace. PC and Watch deletion will sync when they reconnect. Already submitted OpenAI requests and exported emails cannot be recalled.")
                         .font(.subheadline).foregroundStyle(ScribeTheme.muted)
                     Button("Remove \(ids.count) recording\(ids.count == 1 ? "" : "s")", role: .destructive, action: remove)
                         .buttonStyle(.borderedProminent).tint(ScribeTheme.red).disabled(ids.isEmpty)

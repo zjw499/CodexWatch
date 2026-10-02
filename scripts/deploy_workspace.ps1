@@ -104,4 +104,4 @@ if ($LASTEXITCODE -ne 0) { throw "Workspace started locally, but private HTTPS r
 Write-Output "Workspace release installed: $Version"
 Write-Output "Private HTTPS: https://zwyattpc.tail488e93.ts.net/workspace"
 Write-Output "Administrator invitation: $(Join-Path $privateRoot 'administrator-invitation.txt')"
-Write-Output "PHI processing remains blocked until organization/project retention and safeguards are verified."
+Write-Output "Processing follows the centrally recorded organization/project approval. New installations require retention and safeguards verification."

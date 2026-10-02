@@ -747,9 +747,14 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             do {
                 switch message["command"] as? String {
                 case "retry-recording": PhoneOpenAIService.shared.process([id])
-                case "remove-recording": try PhoneOpenAIService.shared.remove([id], notify: false)
+                case "remove-recording":
+                    let raw = message["owner_id"] as? String ?? ""
+                    try PhoneOpenAIService.shared.changeFromWatch(id, owner: RecordingQueueStore.validID(raw) ? raw : nil, removing: true)
                 case "rename-recording":
-                    if let title = message["title"] as? String { try PhoneOpenAIService.shared.rename(id, title: title) }
+                    if let title = message["title"] as? String {
+                        let raw = message["owner_id"] as? String ?? ""
+                        try PhoneOpenAIService.shared.changeFromWatch(id, owner: RecordingQueueStore.validID(raw) ? raw : nil, title: title)
+                    }
                 default: break
                 }
             } catch { RecordingQueueStore.shared.errorMessage = error.localizedDescription }

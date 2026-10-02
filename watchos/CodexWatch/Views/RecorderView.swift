@@ -168,7 +168,7 @@ struct WatchRecordingDetailView: View {
                 do { try transfer.removeRecording(recordingID); dismiss() }
                 catch { errorMessage = error.localizedDescription }
             }
-        } message: { Text("Remove saved audio and transcript from your Watch and iPhone when they reconnect.") }
+        } message: { Text("Remove saved audio and results from your Watch, iPhone, and PC workspace when they reconnect.") }
         .alert("Recording queue", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("OK") { errorMessage = nil }
         } message: { Text(errorMessage ?? "Please try again.") }
