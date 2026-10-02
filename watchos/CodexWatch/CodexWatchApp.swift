@@ -23,6 +23,9 @@ struct CodexWatchApp: App {
             NavigationStack {
                 RecorderView()
                 .task {
+                    #if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("-scribe-ui-preview") { return }
+                    #endif
                     await recorder.prepare()
                     await WatchShortcutCommandRouter.consumePendingCommand(using: recorder)
                 }
