@@ -57,6 +57,32 @@ final class RecordingQueueTests: XCTestCase {
         XCTAssertTrue(queue.recordings.isEmpty)
     }
 
+    func testInterruptedCaptureCanBeRemovedAfterRelaunch() async throws {
+        let (queue, root, audio) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try queue.begin(id: "watch-interrupted", source: "Apple Watch")
+        try queue.accept(fileURL: audio, id: "watch-interrupted", index: 0, isFinal: false, source: "Apple Watch")
+        let reopened = RecordingQueueStore(root: root.appendingPathComponent("queue"))
+        XCTAssertEqual(reopened.recording("watch-interrupted")?.state, .receiving)
+        XCTAssertFalse(try XCTUnwrap(reopened.recording("watch-interrupted")).canProcess)
+        try reopened.remove(["watch-interrupted"])
+        XCTAssertTrue(reopened.recordings.isEmpty)
+    }
+
+    func testSavedDeletionRetriesOrphanedAudioCleanupOnRelaunch() async throws {
+        let (queue, root, audio) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try queue.accept(fileURL: audio, id: "watch-orphan", index: 0, isFinal: true, source: "Apple Watch")
+        let stored = queue.audioURL("watch-orphan", part: try XCTUnwrap(queue.recording("watch-orphan")?.parts.first))
+        try queue.remove(["watch-orphan"])
+        // Simulate audio left behind after a saved deletion and interrupted cleanup.
+        try FileManager.default.createDirectory(at: stored.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(repeating: 9, count: 2048).write(to: stored)
+        let reopened = RecordingQueueStore(root: root.appendingPathComponent("queue"))
+        XCTAssertTrue(reopened.isRemoved("watch-orphan"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stored.path))
+    }
+
     func testUnfinishedRecordingCannotBeRemovedAndCorruptQueueFailsClosed() async throws {
         let (queue, root, audio) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

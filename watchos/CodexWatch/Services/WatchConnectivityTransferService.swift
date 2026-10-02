@@ -19,7 +19,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     @Published private(set) var deliveredChunkCount = 0
     @Published private(set) var meetingStatus: String?
     @Published private(set) var openAIReady = UserDefaults.standard.bool(forKey: "ScribePilot.OpenAIReady")
-    @Published private(set) var protectedWorkflow = true
+    @Published private(set) var protectedWorkflow = UserDefaults.standard.object(forKey: "ScribePilot.ProtectedWorkflow") as? Bool ?? true
     private var removedRecordingIDs = Set(UserDefaults.standard.stringArray(forKey: "ScribePilot.RemovedWatchRecordings") ?? [])
     @Published private(set) var lastRecordingID = UserDefaults.standard.string(
         forKey: "CodexWatch.LastStreamRecordingID"
@@ -56,6 +56,10 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         DispatchQueue.main.async {
             WCSession.default.delegate = self
             WCSession.default.activate()
+            for id in self.removedRecordingIDs {
+                do { try self.purgeOriginalAudio(id) }
+                catch { self.statusMessage = "Removed audio cleanup will retry when the app reopens" }
+            }
         }
     }
 
@@ -381,6 +385,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                 self.openAIReady = message["ready"] as? Bool ?? false
                 self.protectedWorkflow = message["protected"] as? Bool ?? true
                 UserDefaults.standard.set(self.openAIReady, forKey: "ScribePilot.OpenAIReady")
+                UserDefaults.standard.set(self.protectedWorkflow, forKey: "ScribePilot.ProtectedWorkflow")
                 return
             }
             guard let id = message["recording_id"] as? String, RecordingQueueStore.validID(id) else { return }
@@ -424,17 +429,22 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             AudioRecorderService.shared.stopRecording()
             try RecordingQueueStore.shared.update(id) { $0.state = .receiving }
         }
-        try RecordingQueueStore.shared.remove([id])
-        removedRecordingIDs.insert(id)
-        UserDefaults.standard.set(removedRecordingIDs.sorted(), forKey: "ScribePilot.RemovedWatchRecordings")
-        pendingFiles.removeAll { ($0.metadata["recording_id"] as? String) == id }
-        for transfer in WCSession.default.outstandingFileTransfers where transfer.file.metadata?["recording_id"] as? String == id {
-            inFlightFiles.remove(transfer.file.fileURL.lastPathComponent)
-            transfer.cancel()
+        defer {
+            // Notify the companion even when audio cleanup fails after the deletion was saved.
+            if RecordingQueueStore.shared.isRemoved(id) {
+                removedRecordingIDs.insert(id)
+                UserDefaults.standard.set(removedRecordingIDs.sorted(), forKey: "ScribePilot.RemovedWatchRecordings")
+                pendingFiles.removeAll { ($0.metadata["recording_id"] as? String) == id }
+                for transfer in WCSession.default.outstandingFileTransfers where transfer.file.metadata?["recording_id"] as? String == id {
+                    inFlightFiles.remove(transfer.file.fileURL.lastPathComponent)
+                    transfer.cancel()
+                }
+                if notifyPhone { WCSession.default.transferUserInfo(["command": "remove-recording", "recording_id": id]) }
+                if id == lastRecordingID { meetingStatus = nil; statusMessage = "Recording removed" }
+            }
         }
+        try RecordingQueueStore.shared.remove([id])
         try purgeOriginalAudio(id)
-        if notifyPhone { WCSession.default.transferUserInfo(["command": "remove-recording", "recording_id": id]) }
-        if id == lastRecordingID { meetingStatus = nil; statusMessage = "Recording removed" }
     }
 
     private func purgeOriginalAudio(_ id: String) throws {

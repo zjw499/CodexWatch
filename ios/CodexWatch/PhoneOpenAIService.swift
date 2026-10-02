@@ -140,8 +140,12 @@ final class PhoneOpenAIService: ObservableObject {
         } catch is CancellationError {
             try? queue.update(id) { $0.state = .queued; $0.error = "Processing paused. Tap Process to continue." }
         } catch {
-            try? queue.update(id) { $0.state = .failed; $0.error = error.localizedDescription }
-            notifyWatch(id: id, status: "Needs attention on iPhone")
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+                try? queue.update(id) { $0.state = .queued; $0.error = "Processing paused. Tap Process to continue." }
+            } else {
+                try? queue.update(id) { $0.state = .failed; $0.error = error.localizedDescription }
+                notifyWatch(id: id, status: "Needs attention on iPhone")
+            }
         }
     }
 
@@ -172,6 +176,7 @@ final class PhoneOpenAIService: ObservableObject {
                         exporter.exportAsynchronously { continuation.resume() }
                     }
                 } onCancel: { exporter.cancelExport() }
+                try Task.checkCancellation()
                 guard exporter.status == .completed else { throw OpenAIError.audioExport }
                 try RecordingQueueStore.protectFile(destination)
                 slices.append(AudioSlice(url: destination))

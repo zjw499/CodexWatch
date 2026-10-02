@@ -99,6 +99,15 @@ final class RecordingQueueStore: ObservableObject {
                     recordings[index].state = .queued
                     recordings[index].error = "Processing was interrupted. Tap Process to continue."
                 }
+                for index in recordings.indices where recordings[index].state == .recording {
+                    recordings[index].state = .receiving
+                    recordings[index].error = "Recording was interrupted. Retry the transfer or remove the saved audio."
+                }
+                // A saved deletion marker remains authoritative if cleanup was interrupted.
+                for id in removedIDs {
+                    do { try purgeAudio(id) }
+                    catch { errorMessage = "Removed recordings remain hidden. Audio cleanup will retry when the app reopens." }
+                }
             }
         } catch {
             // Fail closed: do not overwrite an unreadable queue with an empty snapshot.
