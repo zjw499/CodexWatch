@@ -12,7 +12,7 @@ final class PhonePrivacyGuard: ObservableObject {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-scribe-ui-preview") { return false }
         #endif
-        return PhoneOpenAISettings.shared.configuration.protectedMode
+        return true
     }
     func lock() { unlocked = false }
     func unlock() async {

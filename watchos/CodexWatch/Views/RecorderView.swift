@@ -95,14 +95,14 @@ struct WatchRecordingQueueView: View {
     var body: some View {
         List {
             Section {
-                if queue.recordings.isEmpty {
+                if queue.visibleRecordings.isEmpty {
                     VStack(alignment: .leading, spacing: 7) {
                         Image(systemName: "tray").foregroundStyle(ScribeTheme.red)
                         Text("Queue is clear").font(.headline)
                         Text("Record now. Review and process on your iPhone.").font(.caption2).foregroundStyle(ScribeTheme.muted)
                     }.padding(.vertical, 10)
                 }
-                ForEach(queue.recordings.sorted { $0.createdAt > $1.createdAt }) { recording in
+                ForEach(queue.visibleRecordings.sorted { $0.createdAt > $1.createdAt }) { recording in
                     NavigationLink { WatchRecordingDetailView(recordingID: recording.id) } label: {
                         VStack(alignment: .leading, spacing: 5) {
                             Text(recording.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)
@@ -180,13 +180,13 @@ struct WatchProcessingView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Label("OpenAI", systemImage: "lock.shield").font(.headline).foregroundStyle(ScribeTheme.red)
+                Label("Shared workspace", systemImage: "lock.shield").font(.headline).foregroundStyle(ScribeTheme.red)
                 Text(transfer.openAIReady ? "Configured on iPhone" : "Finish setup on iPhone").font(.headline)
-                Text("Manage your API key, model, privacy settings, and recording workflow in Scribe Pilot on your iPhone.")
+                Text("Sign in, choose models, and create assistants in Scribe Pilot on your iPhone.")
                     .font(.caption2).foregroundStyle(ScribeTheme.muted)
                 Label(transfer.protectedWorkflow ? "Protected workflow" : "Standard workflow", systemImage: "iphone")
                     .font(.caption2)
-                Text("Your API key stays on the iPhone.").font(.caption2).foregroundStyle(ScribeTheme.muted)
+                Text("Your organization's OpenAI connection stays on the PC. Audio is kept until you remove it.").font(.caption2).foregroundStyle(ScribeTheme.muted)
             }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
         }.background(ScribeTheme.background)
     }

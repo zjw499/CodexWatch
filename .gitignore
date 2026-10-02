@@ -21,3 +21,4 @@ macos/CodexWatch/Config/Local.xcconfig
 native-results.xcresult/
 native-screenshots/
 native-build.log
+.workspace-test/

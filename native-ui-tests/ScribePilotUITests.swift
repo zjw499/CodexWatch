@@ -28,11 +28,11 @@ final class ScribePilotUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Weekly review"].exists)
         app.swipeDown()
         app.buttons["Open settings"].tap()
-        XCTAssertTrue(app.secureTextFields.firstMatch.waitForExistence(timeout: 5))
-        screenshot("phone-openai-settings")
+        XCTAssertTrue(app.staticTexts["Your AI workspace"].waitForExistence(timeout: 5))
+        screenshot("phone-workspace-settings")
         app.swipeUp()
         screenshot("phone-privacy-workflow")
-        app.buttons["Cancel"].tap()
+        app.buttons["Done"].tap()
         app.segmentedControls.buttons["Library · 1"].tap()
         app.swipeUp()
         app.buttons["Project kickoff"].tap()
@@ -44,6 +44,29 @@ final class ScribePilotUITests: XCTestCase {
         app.buttons["Remove 1 recording"].tap()
         XCTAssertTrue(app.staticTexts["Your recordings"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["Project kickoff"].exists)
+    }
+    func testInvitationAndAssistantInterfaces() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-scribe-ui-preview", "-scribe-login-preview"]
+        app.launch()
+        app.buttons["Open settings"].tap()
+        XCTAssertTrue(app.secureTextFields["Password"].waitForExistence(timeout: 10))
+        app.segmentedControls.buttons["Accept invitation"].tap()
+        XCTAssertTrue(app.textFields["Invitation code"].exists)
+        XCTAssertTrue(app.secureTextFields["Repeat password"].exists)
+        screenshot("phone-invitation-login")
+        app.terminate()
+        app.launchArguments = ["-scribe-ui-preview"]
+        app.launch()
+        app.buttons["Open settings"].tap()
+        app.swipeUp()
+        let create = app.buttons["Create assistant"]
+        XCTAssertTrue(create.waitForExistence(timeout: 10))
+        create.tap()
+        XCTAssertTrue(app.textFields["Name"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textViews.firstMatch.exists)
+        screenshot("phone-assistant-editor")
     }
     private func screenshot(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())

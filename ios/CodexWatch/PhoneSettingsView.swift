@@ -1,187 +1,207 @@
 import SwiftUI
 
 struct PhoneSettingsView: View {
-    @EnvironmentObject private var settings: PhoneOpenAISettings
+    @ObservedObject private var workspace = PhoneWorkspace.shared
+    @EnvironmentObject private var recorder: PhoneRecorderService
     @Environment(\.dismiss) private var dismiss
-    @State private var draft = OpenAIConfiguration()
-    @State private var key = ""
+    @State private var server = PhoneWorkspace.defaultServer
+    @State private var invitation = false
+    @State private var username = ""
+    @State private var password = ""
+    @State private var repeatedPassword = ""
+    @State private var working = false
     @State private var errorMessage: String?
-    @State private var testing = false
-    @State private var accessResult: String?
-    @State private var confirmingKeyRemoval = false
-    @State private var loaded = false
+    @State private var editingAssistant: WorkspaceAssistant?
+    @State private var signingOut = false
 
     var body: some View {
-        settingsForm
-            .scrollContentBackground(.hidden).background(ScribeTheme.background).tint(ScribeTheme.red)
-            .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("Cancel") { key = ""; dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Save", action: save).fontWeight(.semibold).disabled(testing)
-                }
-            }
-            .task { draft = settings.configuration; loaded = true }
-            .onChange(of: key) { _, _ in if loaded { resetConfirmations() } }
-            .onChange(of: draft.projectID) { _, value in
-                if loaded && value != settings.configuration.projectID { resetConfirmations() }
-            }
-            .onChange(of: draft.organizationID) { _, value in
-                if loaded && value != settings.configuration.organizationID { resetConfirmations() }
-            }
-            .onChange(of: draft.retention) { _, value in
-                if loaded && value != settings.configuration.retention { draft.retentionConfirmed = false }
-            }
-            .confirmationDialog("Remove your saved key?", isPresented: $confirmingKeyRemoval, titleVisibility: .visible) {
-                Button("Remove key", role: .destructive, action: removeKey)
-            } message: { Text("Saved recordings are kept. Processing will pause until a key is configured.") }
-            .alert("OpenAI settings", isPresented: errorPresented) {
-                Button("OK") { errorMessage = nil }
-            } message: { Text(errorMessage ?? "Please try again.") }
-            .onDisappear { key = "" }
-    }
-
-    private var settingsForm: some View {
         Form {
-            introduction
-            connection
-            privacy
-            workflow
-            previousWorkspace
-            if settings.hasKey {
-                Section { Button("Remove saved OpenAI key", role: .destructive) { confirmingKeyRemoval = true } }
-            }
-        }
-    }
-    private var introduction: some View {
-        Section {
-            Label("OpenAI on your iPhone", systemImage: "waveform").font(.headline)
-            Text("Your Watch sends audio to this iPhone. Recordings are processed directly with OpenAI and saved here.")
-                .font(.footnote).foregroundStyle(ScribeTheme.muted)
-        }
-    }
-    private var connection: some View {
-        Section {
-            SecureField(settings.hasKey ? "Replace saved API key" : "OpenAI API key", text: $key)
-                .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
-            if settings.hasKey {
-                Label("Key saved in this iPhone's Keychain", systemImage: "key.fill")
-                    .font(.footnote).foregroundStyle(ScribeTheme.muted)
-            }
-            Picker("Transcription model", selection: $draft.model) {
-                Text("Mini · efficient").tag("gpt-4o-mini-transcribe")
-                Text("Full · higher accuracy").tag("gpt-4o-transcribe")
-                Text("GPT Transcribe").tag("gpt-transcribe")
-            }
-            TextField("Project ID (optional)", text: $draft.projectID)
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-            TextField("Organization ID (optional)", text: $draft.organizationID)
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-            Button(action: testConnection) {
-                HStack {
-                    Label("Test connection", systemImage: "antenna.radiowaves.left.and.right")
-                    Spacer()
-                    if testing { ProgressView() }
-                }
-            }.disabled(testing || (!settings.hasKey && key.isEmpty))
-            if let accessResult { Text(accessResult).font(.footnote).foregroundStyle(ScribeTheme.muted) }
-        } header: { Text("OpenAI connection") } footer: {
-            Text("Keys are never embedded in the app, sent to the Watch, or included in backups. A connection test sends no recording or transcript.")
-        }
-    }
-    private var privacy: some View {
-        Section {
-            Toggle("Protected workflow", isOn: $draft.protectedMode)
-            if draft.protectedMode {
-                Toggle("My organization has a signed OpenAI BAA", isOn: $draft.baaConfirmed)
-                Picker("Approved account retention", selection: $draft.retention) {
-                    Text("Modified Retention").tag("Modified Retention")
-                    Text("Zero Data Retention").tag("Zero Data Retention")
-                }
-                Toggle("Retention is approved for this project", isOn: $draft.retentionConfirmed)
-                Toggle("Device and access safeguards are approved", isOn: $draft.safeguardsConfirmed)
-                Text("Processing stays blocked until all three confirmations are provided. This app cannot verify agreements or OpenAI account retention; these confirmations must match your organization's actual approval.")
-                    .font(.footnote).foregroundStyle(ScribeTheme.muted)
-            } else {
-                Text("Use this setting only for recordings that do not contain protected health information.")
-                    .font(.footnote).foregroundStyle(ScribeTheme.muted)
-            }
-            Link("OpenAI HIPAA requirements", destination: URL(string: "https://help.openai.com/en/articles/20001069-hipaa-eligible-products-and-functionality")!)
-        } header: { Label("Privacy & safeguards", systemImage: "lock.shield") }
-    }
-    private var workflow: some View {
-        Section("Recording workflow") {
-            Toggle("Process automatically after recording", isOn: $draft.automaticProcessing)
-            Toggle("Create meeting notes", isOn: $draft.createNotes)
-            Toggle("Delete audio after processing", isOn: $draft.deleteAudioAfterProcessing)
-            Text(draft.automaticProcessing
-                 ? "Complete recordings process when OpenAI setup is ready. Keep the app open for long recordings."
-                 : "Review, rename, or remove a recording in your queue before tapping Process.")
-                .font(.footnote).foregroundStyle(ScribeTheme.muted)
-            Text("Meeting notes use OpenAI with response storage disabled. Transcripts stay on this device. Audio cleanup also removes the saved Watch copy after it reconnects.")
-                .font(.footnote).foregroundStyle(ScribeTheme.muted)
-        }
-    }
-    private var previousWorkspace: some View {
-        Section("Previous workspace") {
-            NavigationLink { PhoneArchiveView() } label: { Label("Open previous PC meetings", systemImage: "archivebox") }
-            Text("Older PC, email, and Notion copies remain in their original destinations. New recordings use the OpenAI workflow above.")
-                .font(.footnote).foregroundStyle(ScribeTheme.muted)
-        }
-    }
-    private var errorPresented: Binding<Bool> {
-        Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })
-    }
-    private func save() {
-        do { try settings.save(draft, newKey: key); key = ""; dismiss() }
-        catch { errorMessage = error.localizedDescription }
-    }
-    private func removeKey() {
-        do { try settings.removeKey(); key = ""; draft = settings.configuration }
-        catch { errorMessage = error.localizedDescription }
-    }
-    private func testConnection() {
-        testing = true; accessResult = nil
-        Task {
-            defer { testing = false }
-            do {
-                let supplied = key.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard let credential = supplied.isEmpty ? OpenAIKeychain.read() : supplied, !credential.isEmpty else {
-                    throw OpenAIError.invalidKey
-                }
-                try await PhoneOpenAIClient().testAccess(key: credential, configuration: draft)
-                accessResult = "Connection works. This check does not verify your BAA or retention settings."
-            } catch { errorMessage = error.localizedDescription }
-        }
-    }
-    private func resetConfirmations() {
-        draft.baaConfirmed = false; draft.retentionConfirmed = false; draft.safeguardsConfirmed = false
-        accessResult = nil
-    }
-}
-
-struct PhoneArchiveView: View {
-    @EnvironmentObject private var memoService: PhoneMemoService
-    var body: some View {
-        List {
             Section {
-                Text("These are your earlier PC recordings. Their original delivery and privacy settings apply.")
+                Label("Your AI workspace", systemImage: "waveform").font(.headline)
+                Text("Your organization provides the OpenAI connection. Choose how your recordings become useful results.")
                     .font(.footnote).foregroundStyle(ScribeTheme.muted)
             }
-            ForEach(memoService.memos) { memo in
-                NavigationLink { PhoneMemoDetailView(memo: memo) } label: {
+            if let user = workspace.user {
+                account(user)
+                models
+                assistants
+                Section("Recording workflow") {
+                    Label("Review, then tap Process", systemImage: "checkmark.circle")
+                    Label("Audio and results kept until deleted", systemImage: "tray.full")
+                    Text("Record offline on your phone or Watch. Connect to the private network to upload and process on your PC.")
+                        .font(.footnote).foregroundStyle(ScribeTheme.muted)
+                }
+                if !RecordingQueueStore.shared.unassigned.isEmpty {
+                    Section("Existing recordings") {
+                        NavigationLink("Assign earlier recordings to my account") { PhoneRecordingImportView() }
+                        Text("Earlier recordings stay unassigned until you choose to import them.")
+                            .font(.footnote).foregroundStyle(ScribeTheme.muted)
+                    }
+                }
+                if user.isAdmin {
+                    Section("Organization") {
+                        NavigationLink { PhoneWorkspaceAdminView() } label: { Label("Administrator workspace", systemImage: "person.badge.key") }
+                    }
+                }
+            } else { login }
+        }
+        .scrollContentBackground(.hidden).background(ScribeTheme.background).tint(ScribeTheme.red)
+        .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Done") { clearPasswords(); workspace.savePreferences(); dismiss() } } }
+        .task { server = workspace.credential?.server ?? PhoneWorkspace.defaultServer; await workspace.refresh() }
+        .sheet(item: $editingAssistant) { assistant in NavigationStack { PhoneAssistantEditor(assistant: assistant) } }
+        .confirmationDialog("Sign out of this workspace?", isPresented: $signingOut, titleVisibility: .visible) {
+            Button("Sign out", role: .destructive) { run { try await workspace.signOut() } }
+        } message: { Text("Your recordings stay protected under their original account. Offline server-session revocation retries when the PC is reachable.") }
+        .alert("Scribe Pilot", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+            Button("OK") { errorMessage = nil }
+        } message: { Text(errorMessage ?? "Please try again.") }
+        .onDisappear { clearPasswords() }
+    }
+    private func account(_ user: WorkspaceUser) -> some View {
+        Section("Account") {
+            Label(user.username, systemImage: "person.crop.circle")
+            Text(user.isAdmin ? "Administrator · organization review enabled" : "Private recording workspace")
+                .font(.footnote).foregroundStyle(ScribeTheme.muted)
+            Label(workspace.processingEnabled ? "Organization connection ready" : "Organization approval pending",
+                  systemImage: workspace.processingEnabled ? "lock.shield" : "clock")
+                .font(.footnote)
+            if let message = workspace.connectionMessage { Text(message).font(.footnote).foregroundStyle(ScribeTheme.muted) }
+            Button("Refresh connection") { run { await workspace.refresh() } }.disabled(working)
+            Button("Sign out", role: .destructive) { signingOut = true }.disabled(recorder.isRecording || working)
+        }
+    }
+    private var login: some View {
+        Section("Account") {
+            Picker("Access", selection: $invitation) { Text("Sign in").tag(false); Text("Accept invitation").tag(true) }.pickerStyle(.segmented)
+            TextField("Private workspace address", text: $server).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+            TextField(invitation ? "Invitation code" : "Username", text: $username)
+                .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+            SecureField(invitation ? "Choose password (12+ characters)" : "Password", text: $password)
+                .textContentType(invitation ? .newPassword : .password)
+            if invitation { SecureField("Repeat password", text: $repeatedPassword).textContentType(.newPassword) }
+            Button {
+                if invitation && password != repeatedPassword { errorMessage = "The passwords don't match."; return }
+                run {
+                    try await workspace.signIn(server: server, username: username, password: password, invitation: invitation)
+                    clearPasswords(); username = ""
+                }
+            } label: {
+                HStack { Text(invitation ? "Create my account" : "Sign in"); Spacer(); if working { ProgressView() } }
+            }.disabled(working || recorder.isRecording || username.isEmpty || password.isEmpty)
+            Text("Connect to your organization's private network first. Your administrator provides the invitation and access.")
+                .font(.footnote).foregroundStyle(ScribeTheme.muted)
+        }
+    }
+    private var models: some View {
+        Section("Models") {
+            Picker("Transcription", selection: $workspace.transcriptionModel) {
+                ForEach(workspace.transcriptionModels, id: \.self) { Text($0).tag($0) }
+            }
+            Picker("Default assistant", selection: $workspace.selectedAssistantID) {
+                ForEach(workspace.assistants) { Text($0.name).tag($0.id) }
+            }
+            if let assistant = workspace.selectedAssistant { Text("Results model: \(assistant.model)").font(.footnote).foregroundStyle(ScribeTheme.muted) }
+        }
+    }
+    private var assistants: some View {
+        Section("Assistants & instructions") {
+            ForEach(workspace.assistants) { assistant in
+                Button { editingAssistant = assistant } label: {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(memo.title).fontWeight(.semibold)
-                        Text(memo.status.replacingOccurrences(of: "_", with: " "))
-                            .font(.caption).foregroundStyle(ScribeTheme.muted)
+                        Text(assistant.name).foregroundStyle(.white)
+                        Text(assistant.model).font(.caption).foregroundStyle(ScribeTheme.muted)
                     }
                 }
             }
-            if memoService.memos.isEmpty {
-                Text(memoService.errorMessage ?? "No previous meetings found.").foregroundStyle(ScribeTheme.muted)
+            Button { editingAssistant = WorkspaceAssistant(id: UUID().uuidString, name: "", instructions: "", model: workspace.generationModels.first ?? "gpt-4.1-mini") } label: {
+                Label("Create assistant", systemImage: "plus.circle")
+            }
+            Text("Give each assistant a purpose, model, and custom instructions. Choose it before processing a recording or regenerating results.")
+                .font(.footnote).foregroundStyle(ScribeTheme.muted)
+        }
+    }
+    private func clearPasswords() { password = ""; repeatedPassword = "" }
+    private func run(_ operation: @escaping @MainActor () async throws -> Void) {
+        working = true
+        Task { defer { working = false }; do { try await operation() } catch { errorMessage = error.localizedDescription } }
+    }
+}
+
+struct PhoneAssistantEditor: View {
+    @ObservedObject private var workspace = PhoneWorkspace.shared
+    @Environment(\.dismiss) private var dismiss
+    @State var assistant: WorkspaceAssistant
+    @State private var working = false
+    @State private var errorMessage: String?
+    @State private var deleting = false
+    var body: some View {
+        Form {
+            Section("Assistant") {
+                TextField("Name", text: $assistant.name)
+                Picker("Results model", selection: $assistant.model) {
+                    ForEach(workspace.generationModels, id: \.self) { Text($0).tag($0) }
+                }
+            }
+            Section("Custom instructions") {
+                TextEditor(text: $assistant.instructions).frame(minHeight: 240).privacySensitive()
+                Text("Describe the output, tone, structure, and facts this assistant should focus on. It works from your recording and follow-up messages.")
+                    .font(.footnote).foregroundStyle(ScribeTheme.muted)
+            }
+            if workspace.assistants.contains(where: { $0.id == assistant.id }) {
+                Section { Button("Delete assistant", role: .destructive) { deleting = true } }
+            }
+            if let errorMessage { Text(errorMessage).font(.footnote).foregroundStyle(ScribeTheme.muted) }
+        }
+        .scrollContentBackground(.hidden).background(ScribeTheme.background).tint(ScribeTheme.red)
+        .navigationTitle(assistant.name.isEmpty ? "New assistant" : assistant.name).navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Save") { run { try await workspace.saveAssistant(assistant) } }
+                    .disabled(working || assistant.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || assistant.instructions.isEmpty)
             }
         }
-        .scrollContentBackground(.hidden).background(ScribeTheme.background).navigationTitle("Previous meetings")
-        .task { await memoService.refresh() }.refreshable { await memoService.refresh() }
+        .confirmationDialog("Delete this assistant?", isPresented: $deleting, titleVisibility: .visible) {
+            Button("Delete assistant", role: .destructive) { run { try await workspace.deleteAssistant(assistant.id) } }
+        } message: { Text("Existing results remain available.") }
+    }
+    private func run(_ operation: @escaping @MainActor () async throws -> Void) {
+        working = true
+        Task { defer { working = false }; do { try await operation(); dismiss() } catch { errorMessage = error.localizedDescription } }
+    }
+}
+
+struct PhoneRecordingImportView: View {
+    @ObservedObject private var queue = RecordingQueueStore.shared
+    @ObservedObject private var workspace = PhoneWorkspace.shared
+    @State private var selected: Set<String> = []
+    @State private var confirming = false
+    @State private var message: String?
+    var body: some View {
+        List {
+            Section {
+                Text("Select only recordings that belong in your account. Imported audio and results will sync to your organization's PC; existing external copies keep their original settings.")
+                    .font(.footnote).foregroundStyle(ScribeTheme.muted)
+            }
+            ForEach(queue.unassigned) { item in
+                Button {
+                    if selected.contains(item.id) { selected.remove(item.id) } else { selected.insert(item.id) }
+                } label: { Label(item.title, systemImage: selected.contains(item.id) ? "checkmark.circle.fill" : "circle") }
+            }
+            Button("Import \(selected.count) recordings") { confirming = true }.disabled(selected.isEmpty || workspace.user == nil)
+            if let message { Text(message).font(.footnote) }
+        }
+        .scrollContentBackground(.hidden).background(ScribeTheme.background).tint(ScribeTheme.red).navigationTitle("Import recordings")
+        .confirmationDialog("Assign selected recordings to \(workspace.user?.username ?? "your account")?", isPresented: $confirming, titleVisibility: .visible) {
+            Button("Import recordings") {
+                guard let owner = workspace.user?.id else { return }
+                do {
+                    for id in selected { try queue.assign(id, owner: owner) }
+                    let imported = selected; selected = []
+                    Task { for id in imported { await PhoneOpenAIService.shared.importRecording(id) } }
+                } catch { message = error.localizedDescription }
+            }
+        }
     }
 }

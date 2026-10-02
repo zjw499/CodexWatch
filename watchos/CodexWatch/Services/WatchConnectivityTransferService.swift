@@ -9,6 +9,7 @@ private struct ImmediateWatchChunkEnvelope: Codable {
     let chunkIndex: Int
     let isFinal: Bool
     let audioData: Data
+    let ownerID: String?
 }
 
 final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSessionDelegate {
@@ -73,6 +74,9 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func beginRecording(recordingID: String) {
+        var owners = UserDefaults.standard.dictionary(forKey: "ScribePilot.WatchOwners") as? [String: String] ?? [:]
+        owners[recordingID] = UserDefaults.standard.string(forKey: "ScribePilot.WorkspaceOwner") ?? "unassigned"
+        UserDefaults.standard.set(owners, forKey: "ScribePilot.WatchOwners")
         lastRecordingID = recordingID
         counterRecordingID = recordingID
         UserDefaults.standard.set(recordingID, forKey: lastRecordingIDKey)
@@ -183,7 +187,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         Task { @MainActor in
             do {
                 try RecordingQueueStore.shared.accept(fileURL: fileURL, id: recordingID, index: chunkIndex,
-                    isFinal: isFinal, source: "Apple Watch")
+                    isFinal: isFinal, source: "Apple Watch", ownerID: self.owner(for: recordingID))
             } catch { RecordingQueueStore.shared.errorMessage = error.localizedDescription }
         }
         let metadata: [String: Any] = [
@@ -192,6 +196,7 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
             "recording_id": recordingID,
             "chunk_index": chunkIndex,
             "is_final": isFinal,
+            "owner_id": owner(for: recordingID) ?? "",
         ]
         pendingFiles.append(PendingFile(
             url: fileURL,
@@ -217,12 +222,13 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         fileQueue.async { [weak self] in
             do {
                 let envelope = ImmediateWatchChunkEnvelope(
-                    version: 1,
+                    version: 2,
                     filename: fileURL.lastPathComponent,
                     recordingID: recordingID,
                     chunkIndex: chunkIndex,
                     isFinal: isFinal,
-                    audioData: try Data(contentsOf: fileURL, options: .mappedIfSafe)
+                    audioData: try Data(contentsOf: fileURL, options: .mappedIfSafe),
+                    ownerID: metadata["owner_id"] as? String
                 )
                 let encoder = PropertyListEncoder()
                 encoder.outputFormat = .binary
@@ -353,6 +359,20 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        if applicationContext["command"] as? String == "workspace-account" {
+            Task { @MainActor in
+                let raw = applicationContext["owner_id"] as? String ?? ""
+                let owner = RecordingQueueStore.validID(raw) ? raw : nil
+                if RecordingQueueStore.shared.accountID != owner {
+                    self.meetingStatus = nil
+                    self.lastRecordingID = nil
+                }
+                RecordingQueueStore.shared.setAccount(owner)
+                UserDefaults.standard.set(applicationContext["username"] as? String ?? "", forKey: "ScribePilot.WorkspaceUsername")
+                self.openAIReady = applicationContext["ready"] as? Bool ?? false
+            }
+            return
+        }
         guard applicationContext["command"] as? String == "meeting-status",
               let recordingID = applicationContext["recording_id"] as? String,
               let message = applicationContext["status"] as? String else { return }
@@ -489,9 +509,16 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                 "recording_id": String(parts[1]),
                 "chunk_index": index,
                 "is_final": finalFlag == 1,
+                "owner_id": owner(for: String(parts[1])) ?? "",
             ]
         }
         return ["kind": "audio-recording", "filename": fileURL.lastPathComponent]
+    }
+
+    private func owner(for id: String) -> String? {
+        let owners = UserDefaults.standard.dictionary(forKey: "ScribePilot.WatchOwners") as? [String: String] ?? [:]
+        guard let value = owners[id], value != "unassigned", RecordingQueueStore.validID(value) else { return nil }
+        return value
     }
 
     private func recordingsDirectory() -> URL {

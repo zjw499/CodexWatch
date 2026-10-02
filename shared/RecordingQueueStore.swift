@@ -48,6 +48,17 @@ struct QueuedRecording: Identifiable, Codable {
     var error: String?
     var progress = 0.0
     var protectedWorkflow = true
+    // Optional fields preserve snapshots created before account-based workspaces.
+    var ownerID: String?
+    var serverUploaded: Bool?
+    var remotePartCount: Int?
+    var serverUpdated: Double?
+    var processingRequested: Bool?
+    var requestedAssistantID: String?
+    var requestedTranscriptionModel: String?
+    var pendingTitle: String?
+    var pendingSummary: String?
+    var importRequested: Bool?
 
     var isComplete: Bool {
         guard let finalIndex, finalIndex >= 0 else { return false }
@@ -55,7 +66,7 @@ struct QueuedRecording: Identifiable, Codable {
         return indexes.count == finalIndex + 1 && (0...finalIndex).allSatisfy { indexes.contains($0) }
     }
     var isWatch: Bool { source == "Apple Watch" }
-    var canProcess: Bool { isComplete && [.queued, .failed].contains(state) }
+    var canProcess: Bool { (isComplete || serverUploaded == true) && [.queued, .failed].contains(state) }
 }
 
 enum RecordingQueueError: LocalizedError {
@@ -83,7 +94,10 @@ final class RecordingQueueStore: ObservableObject {
     private struct Snapshot: Codable {
         var recordings: [QueuedRecording]
         var removedIDs: Set<String>
+        var removedOwners: [String: String]?
     }
+    private(set) var removedOwners: [String: String] = [:]
+    @Published private(set) var accountID: String? = UserDefaults.standard.string(forKey: "ScribePilot.WorkspaceOwner")
 
     init(root: URL? = nil) {
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -95,6 +109,7 @@ final class RecordingQueueStore: ObservableObject {
                 let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: snapshotURL))
                 recordings = snapshot.recordings
                 removedIDs = snapshot.removedIDs
+                removedOwners = snapshot.removedOwners ?? [:]
                 for index in recordings.indices where recordings[index].state == .processing {
                     recordings[index].state = .queued
                     recordings[index].error = "Processing was interrupted. Tap Process to continue."
@@ -116,10 +131,33 @@ final class RecordingQueueStore: ObservableObject {
         }
     }
 
-    var pending: [QueuedRecording] { recordings.filter { $0.state != .ready }.sorted { $0.createdAt > $1.createdAt } }
-    var completed: [QueuedRecording] { recordings.filter { $0.state == .ready }.sorted { $0.createdAt > $1.createdAt } }
+    var visibleRecordings: [QueuedRecording] {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-scribe-ui-preview") { return recordings }
+        #endif
+        guard let accountID else { return [] }
+        return recordings.filter { $0.ownerID == accountID }
+    }
+    var unassigned: [QueuedRecording] { recordings.filter { $0.ownerID == nil } }
+    var pending: [QueuedRecording] { visibleRecordings.filter { $0.state != .ready }.sorted { $0.createdAt > $1.createdAt } }
+    var completed: [QueuedRecording] { visibleRecordings.filter { $0.state == .ready }.sorted { $0.createdAt > $1.createdAt } }
     func recording(_ id: String) -> QueuedRecording? { recordings.first { $0.id == id } }
     func isRemoved(_ id: String) -> Bool { removedIDs.contains(id) }
+
+    func setAccount(_ id: String?) {
+        accountID = id
+        UserDefaults.standard.set(id, forKey: "ScribePilot.WorkspaceOwner")
+    }
+    func assign(_ id: String, owner: String) throws {
+        guard Self.validID(owner), recording(id)?.ownerID == nil else { throw RecordingQueueError.invalidRecording }
+        try update(id) { $0.ownerID = owner }
+    }
+    func acknowledgeDeletion(_ id: String) throws {
+        let previous = removedOwners
+        removedOwners.removeValue(forKey: id)
+        do { try commit(recordings, removed: removedIDs) }
+        catch { removedOwners = previous; throw error }
+    }
 
     nonisolated static func validID(_ id: String) -> Bool {
         !id.isEmpty && id.count <= 140 && id.unicodeScalars.allSatisfy {
@@ -131,19 +169,27 @@ final class RecordingQueueStore: ObservableObject {
         guard Self.validID(id), !storageUnavailable else { throw RecordingQueueError.persistence }
         guard !isRemoved(id), recording(id) == nil else { return }
         var item = newRecording(id: id, source: source)
+        item.ownerID = accountID
         item.state = .recording
         try commit(recordings + [item], removed: removedIDs)
     }
 
     @discardableResult
-    func accept(fileURL: URL, id: String, index: Int, isFinal: Bool, source: String, duration: TimeInterval? = nil) throws -> Bool {
+    func accept(fileURL: URL, id: String, index: Int, isFinal: Bool, source: String, duration: TimeInterval? = nil, ownerID: String? = nil) throws -> Bool {
         guard Self.validID(id), index >= 0, index < 100_000 else { throw RecordingQueueError.invalidRecording }
         guard !storageUnavailable else { throw RecordingQueueError.persistence }
         guard !isRemoved(id) else { return false }
         var items = recordings
         let position: Int
         if let existing = items.firstIndex(where: { $0.id == id }) { position = existing }
-        else { items.append(newRecording(id: id, source: source)); position = items.count - 1 }
+        else {
+            var item = newRecording(id: id, source: source)
+            item.ownerID = ownerID
+            items.append(item); position = items.count - 1
+        }
+        if let ownerID, let originalOwner = items[position].ownerID, ownerID != originalOwner {
+            throw RecordingQueueError.invalidRecording
+        }
         // Duplicate file and immediate deliveries are acknowledgements, never reprocessing.
         if items[position].parts.contains(where: { $0.index == index }) {
             if isFinal && items[position].finalIndex == nil {
@@ -195,7 +241,12 @@ final class RecordingQueueStore: ObservableObject {
             throw RecordingQueueError.stillRecording
         }
         guard ids.allSatisfy(Self.validID) else { throw RecordingQueueError.invalidRecording }
-        try commit(recordings.filter { !ids.contains($0.id) }, removed: removedIDs.union(ids))
+        let previous = removedOwners
+        for item in recordings where ids.contains(item.id) {
+            if let owner = item.ownerID { removedOwners[item.id] = owner }
+        }
+        do { try commit(recordings.filter { !ids.contains($0.id) }, removed: removedIDs.union(ids)) }
+        catch { removedOwners = previous; throw error }
         for id in ids { try purgeAudio(id) }
     }
 
@@ -207,6 +258,30 @@ final class RecordingQueueStore: ObservableObject {
 
     func audioURL(_ id: String, part: RecordingPart) -> URL {
         audioDirectory(id).appendingPathComponent(part.filename)
+    }
+
+    func mergeRemote(id: String, owner: String, title: String, source: String, created: Date,
+                     state: RecordingState, transcript: String, summary: String, error: String?,
+                     partCount: Int, duration: Double?, updated: Double) throws {
+        guard Self.validID(id), Self.validID(owner), !isRemoved(id) else { return }
+        var items = recordings
+        let position: Int
+        if let index = items.firstIndex(where: { $0.id == id }) {
+            guard items[index].ownerID == owner else { return }
+            // Local unsynced rename/result edits are reconciled before fetching the library.
+            if let previous = items[index].serverUpdated, previous > updated { return }
+            position = index
+        } else {
+            items.append(QueuedRecording(id: id, title: title, source: source, createdAt: created, state: state))
+            position = items.count - 1
+        }
+        items[position].ownerID = owner; items[position].title = title; items[position].state = state
+        items[position].transcript = transcript; items[position].summary = summary; items[position].error = error
+        if state != .queued || items[position].serverUploaded == true { items[position].serverUploaded = true }
+        items[position].remotePartCount = partCount
+        items[position].duration = duration; items[position].serverUpdated = updated
+        if state == .ready { items[position].progress = 1 }
+        try commit(items, removed: removedIDs)
     }
 
     private func audioDirectory(_ id: String) -> URL {
@@ -223,7 +298,7 @@ final class RecordingQueueStore: ObservableObject {
     private func commit(_ items: [QueuedRecording], removed: Set<String>) throws {
         guard !storageUnavailable else { throw RecordingQueueError.persistence }
         do {
-            let data = try JSONEncoder().encode(Snapshot(recordings: items, removedIDs: removed))
+            let data = try JSONEncoder().encode(Snapshot(recordings: items, removedIDs: removed, removedOwners: removedOwners))
             let url = root.appendingPathComponent("queue.json")
             try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
             try Self.protectFile(url)

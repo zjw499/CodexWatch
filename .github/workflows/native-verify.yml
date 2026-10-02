@@ -2,7 +2,7 @@ name: Verify Scribe Pilot phone and Watch
 on:
   workflow_dispatch:
   push:
-    branches: [feature/gunmetal-red-openai]
+    branches: [feature/gunmetal-red-openai, feature/shared-ai-workspace]
 jobs:
   native:
     runs-on: macos-26-intel
@@ -13,6 +13,11 @@ jobs:
       HOMEBREW_NO_AUTO_UPDATE: "1"
     steps:
       - uses: actions/checkout@v4
+      - name: Verify workspace isolation and durable jobs
+        run: |
+          python3 -m venv .workspace-test
+          .workspace-test/bin/pip install -r server_workspace/requirements.txt pytest
+          .workspace-test/bin/python -m pytest server_workspace/tests -q
       - name: Generate native project
         run: |
           command -v xcodegen || brew install xcodegen

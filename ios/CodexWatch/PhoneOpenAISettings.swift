@@ -68,11 +68,11 @@ final class PhoneOpenAISettings: ObservableObject {
         hasKey = !(OpenAIKeychain.read() ?? "").isEmpty
     }
 
-    var ready: Bool { hasKey && configuration.safeguardsReady }
+    var ready: Bool { PhoneWorkspace.shared.ready }
     var readinessLabel: String {
-        if !hasKey { return "Add your OpenAI key" }
-        if !configuration.safeguardsReady { return "Complete protected setup" }
-        return configuration.protectedMode ? "Protected workflow configured" : "OpenAI configured"
+        if !PhoneWorkspace.shared.signedIn { return "Sign in to your workspace" }
+        if !PhoneWorkspace.shared.processingEnabled { return "Organization approval pending" }
+        return "Shared OpenAI connection"
     }
 
     func refreshKeyAvailability() {
