@@ -61,6 +61,11 @@ struct QueuedRecording: Identifiable, Codable {
     var pendingTitle: String?
     var pendingSummary: String?
     var importRequested: Bool?
+    var retryAfter: Date?
+    var retryAttempts: Int?
+    var requestedProcessingID: String?
+
+    var awaitingConnection: Bool { retryAfter != nil && (processingRequested == true || importRequested == true) }
 
     var isComplete: Bool {
         guard let finalIndex, finalIndex >= 0 else { return false }
@@ -119,6 +124,18 @@ final class RecordingQueueStore: ObservableObject {
                 for index in recordings.indices where recordings[index].state == .recording {
                     recordings[index].state = .receiving
                     recordings[index].error = "Recording was interrupted. Retry the transfer or remove the saved audio."
+                }
+                // Older builds discarded durable requests on a temporary HTTP gateway failure.
+                for index in recordings.indices where recordings[index].state == .failed {
+                    if recordings[index].error == "The PC could not complete this request. Try again.",
+                       recordings[index].requestedAssistantID != nil,
+                       recordings[index].isComplete || recordings[index].serverUploaded == true {
+                        recordings[index].processingRequested = true
+                        recordings[index].requestedProcessingID = UUID().uuidString
+                        recordings[index].retryAfter = Date()
+                        recordings[index].state = .queued
+                        recordings[index].error = "Waiting for the PC connection. Your saved audio will resume automatically."
+                    }
                 }
                 // A saved deletion marker remains authoritative if cleanup was interrupted.
                 for id in removedIDs {
@@ -312,7 +329,15 @@ final class RecordingQueueStore: ObservableObject {
         if state != .queued || items[position].serverUploaded == true { items[position].serverUploaded = true }
         items[position].remotePartCount = partCount
         items[position].duration = duration; items[position].serverUpdated = updated
-        if state == .ready { items[position].progress = 1 }
+        if state == .ready {
+            items[position].progress = 1
+            if items[position].awaitingConnection && items[position].requestedRetranscription != true {
+                items[position].processingRequested = false
+                items[position].importRequested = false
+                items[position].retryAfter = nil
+                items[position].retryAttempts = nil
+            }
+        }
         try commit(items, removed: removedIDs)
     }
 

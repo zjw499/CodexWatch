@@ -95,6 +95,16 @@ struct WorkspaceAuditEvent: Codable, Identifiable {
 
 enum WorkspaceError: LocalizedError {
     case signIn, server, status(Int, String), ownership, missingAssistant
+    static func retryable(_ error: Error) -> Bool {
+        if let error = error as? URLError {
+            return [.timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,
+                    .dnsLookupFailed, .notConnectedToInternet, .dataNotAllowed, .cancelled].contains(error.code)
+        }
+        if case let WorkspaceError.status(code, _) = error {
+            return [408, 425, 429].contains(code) || (500...599).contains(code)
+        }
+        return false
+    }
     var errorDescription: String? {
         switch self {
         case .signIn: return "Sign in to your Scribe Pilot account."
@@ -188,6 +198,12 @@ final class PhoneWorkspace: ObservableObject {
         loadPreferences()
         loadAssistantCache()
     }
+    #if DEBUG
+    init(session: URLSession, credential: WorkspaceCredential, assistants: [WorkspaceAssistant]) {
+        self.session = session; self.credential = credential; self.assistants = assistants
+        processingEnabled = true; selectedAssistantID = assistants.first?.id ?? ""
+    }
+    #endif
     var user: WorkspaceUser? { credential?.user }
     var signedIn: Bool { credential != nil }
     var ready: Bool { signedIn && processingEnabled && assistants.contains { $0.id == selectedAssistantID } }

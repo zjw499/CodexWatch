@@ -68,43 +68,7 @@ $pointer = Join-Path $privateRoot "active-source.txt"
 if (Test-Path -LiteralPath $pointer) { Copy-Item -LiteralPath $pointer -Destination (Join-Path $privateRoot 'previous-source.txt') -Force }
 Set-Content -LiteralPath $pointer -Value $releaseRoot -NoNewline
 
-$supervisor = Join-Path $privateRoot "supervise.ps1"
-$template = @'
-$ErrorActionPreference = 'Stop'
-$privateRoot = '__PRIVATE_ROOT__'
-$python = '__PYTHON__'
-$lock = $null
-try {
-    $lock = [System.IO.File]::Open((Join-Path $privateRoot 'supervisor.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
-} catch { exit 0 }
-try {
-    while ($true) {
-        $selected = (Get-Content -LiteralPath (Join-Path $privateRoot 'active-source.txt') -Raw).Trim()
-        $env:PYTHONPATH = $selected
-        $configuration = Join-Path $privateRoot 'workspace-config.json'
-        $process = Start-Process -FilePath $python -ArgumentList @('-m','server_workspace.run','--config',('"' + $configuration + '"'),'serve') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $privateRoot 'service.stdout.log') -RedirectStandardError (Join-Path $privateRoot 'service.stderr.log')
-        Set-Content -LiteralPath (Join-Path $privateRoot 'service.pid') -Value $process.Id
-        $process.WaitForExit()
-        Start-Sleep -Seconds 5
-    }
-} finally { if ($lock) { $lock.Dispose() } }
-'@
-$template.Replace('__PRIVATE_ROOT__', $privateRoot.Replace("'","''")).Replace('__PYTHON__', $python.Replace("'","''")) | Set-Content -LiteralPath $supervisor -Encoding utf8
-$launcher = Join-Path $privateRoot 'launch.vbs'
-('CreateObject("WScript.Shell").Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""' + $supervisor + '""", 0, False') | Set-Content -LiteralPath $launcher -Encoding ascii
-$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\wscript.exe" -Argument ('"' + $launcher + '"')
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
-$principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
-Register-ScheduledTask -TaskName 'Scribe Pilot Workspace' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-$pidFile = Join-Path $privateRoot 'service.pid'
-if (Test-Path -LiteralPath $pidFile) {
-    $serviceProcess = Get-CimInstance Win32_Process -Filter ('ProcessId=' + [int](Get-Content -LiteralPath $pidFile -Raw))
-    if ($serviceProcess -and $serviceProcess.CommandLine -like '*server_workspace.run*' -and $serviceProcess.CommandLine.Contains($configuration)) {
-        Stop-Process -Id $serviceProcess.ProcessId
-    }
-}
-Start-Process -FilePath "$env:SystemRoot\System32\wscript.exe" -ArgumentList ('"' + $launcher + '"') -WindowStyle Hidden
+& (Join-Path $PSScriptRoot 'install_workspace_supervisor.ps1') -PrivateRoot $privateRoot -PythonPath $python
 & $tailscale serve --bg --yes --set-path=/workspace http://127.0.0.1:8790
 if ($LASTEXITCODE -ne 0) { throw "Workspace started locally, but private HTTPS routing failed" }
 Write-Output "Workspace release installed: $Version"

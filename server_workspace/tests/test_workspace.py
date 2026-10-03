@@ -77,6 +77,34 @@ def process_body(client, headers):
     return {"assistant_id": assistant["id"], "transcription_model": "gpt-4o-mini-transcribe"}
 
 
+def test_lost_processing_acknowledgment_does_not_generate_again(setup):
+    w, c, p, _, (_, a), (_, b) = setup
+    upload(c, a)
+    body = {**process_body(c, a), "request_id": "stable-request"}
+    assert c.post("/api/recordings/recording-1/process", headers=a, json=body).status_code == 200
+    asyncio.run(w.run_next())
+    calls = len(p.calls)
+    assert c.post("/api/recordings/recording-1/process", headers=a, json=body).status_code == 200
+    assert c.get("/api/recordings/recording-1", headers=a).json()["state"] == "ready"
+    assert asyncio.run(w.run_next()) is False
+    assert len(p.calls) == calls
+    assert c.post("/api/recordings/recording-1/process", headers=b, json=body).status_code == 404
+    assert c.post("/api/recordings/recording-1/process", headers=a, json={**body, "request_id": "explicit-new-request"}).status_code == 200
+    assert asyncio.run(w.run_next()) is True
+
+
+def test_health_detects_stopped_processing_worker(setup):
+    w, _, _, _, _, _ = setup
+    app = create_app(w)
+    with TestClient(app) as client:
+        assert client.get("/api/health").status_code == 200
+        async def stop_worker():
+            app.state.worker.cancel()
+            await asyncio.sleep(0)
+        client.portal.call(stop_worker)
+        assert client.get("/api/health").status_code == 503
+
+
 def test_cross_user_read_write_delete_and_admin_review(setup):
     w, c, p, (_, ah), (_, a), (_, b) = setup
     upload(c, a)
