@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from pathlib import Path
 import uuid
 
@@ -6,6 +7,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from server_workspace.workspace import Workspace, WorkspaceConfig, WindowsCipher, create_app
+from server_workspace.audio import AudioSegment
 
 
 class TestCipher:
@@ -21,7 +23,7 @@ class Provider:
     def __init__(self):
         self.calls = []
         self.before_response = None
-    async def transcribe(self, audio, model):
+    async def transcribe(self, audio, model, prompt=""):
         self.calls.append(("transcribe", model, audio))
         if getattr(self, "during_transcription", None):
             self.during_transcription()
@@ -33,12 +35,20 @@ class Provider:
         return "Follow-up: Alex sends the agenda Friday."
 
 
+class FixtureAudioPreparer:
+    async def segments(self, parts):
+        index = 0
+        async for audio in parts:
+            yield AudioSegment(index, index * 30, (index + 1) * 30, audio)
+            index += 1
+
+
 @pytest.fixture
 def setup(tmp_path):
     provider = Provider()
     config = WorkspaceConfig(tmp_path, Path("unused-key"), "org-test", "proj-test", baa_verified=True,
                              retention_verified=True, safeguards_verified=True, approval_evidence="Synthetic fixture only")
-    workspace = Workspace(config, TestCipher(), provider)
+    workspace = Workspace(config, TestCipher(), provider, FixtureAudioPreparer())
     client = TestClient(create_app(workspace, run_worker=False))
     def user(username, role="user"):
         invitation = workspace.invite(username, role)
@@ -169,8 +179,9 @@ def test_restart_resumes_checkpoints_and_policy_bound_to_project(setup):
         row = db.execute("SELECT * FROM recordings").fetchone()
         data = w.decode(row["content"])
         data["checkpoints"] = {"0": "Saved first part"}
+        data["checkpoint_audio_hashes"] = {"0": hashlib.sha256(b"audio0").hexdigest()}
         db.execute("UPDATE recordings SET state='processing',content=?", (w.encode(data),))
-    restarted = Workspace(w.config, TestCipher(), p)
+    restarted = Workspace(w.config, TestCipher(), p, FixtureAudioPreparer())
     asyncio.run(restarted.run_next())
     assert len([call for call in p.calls if call[0] == "transcribe"]) == 1
     c.put("/api/admin/policy", headers=ah, json={"baa_verified": True, "retention_verified": True, "safeguards_verified": True, "approval_evidence": "approved"})

@@ -101,6 +101,28 @@ Python environment with `-m server_workspace.run --config <private config path>
 reset-password --username <username>`. Password entry is hidden and existing
 sessions are revoked. Never place a password or key in command arguments.
 
+## Complete recordings and transcription
+
+The PC decodes every uploaded audio part, joins Watch parts in order, and creates
+continuous mono WAV segments of at most two minutes. It prefers quiet boundaries
+and retains every decoded sample. This also bounds long compressed phone files
+that fit the upload size limit but could exceed the transcription output limit.
+Recognition receives the previous segment's text as context and optional names,
+acronyms, and vocabulary configured in Settings. A capped response is discarded
+and both halves are retried. Checkpoints are tied to the transcription version,
+settings, and exact segment bytes. Original source files stay encrypted.
+
+FFmpeg is required on the PC for compressed audio. Deployment records its absolute
+path in the restricted `audio-decoder.txt` file; decoding and intermediate WAV
+creation use memory and pipes. No plaintext media is written to temporary files.
+
+The recording screen plays all source parts consecutively, displays duration and
+the processed audio coverage, and offers **Transcribe again from saved audio**.
+**Regenerate** can reuse the transcript while replacing assistant results. A
+transcription remains available when later result generation fails. Audio coverage
+confirms that every source part was processed; it cannot confirm that every spoken
+word was intelligible. Sparse recognition produces a visible quality warning.
+
 Deletion persists a tombstone before discarding audio/content, cancels future
 processing, and ignores late uploads/results. An already submitted OpenAI request
 cannot be recalled. Offline device deletions and session revocations retry when

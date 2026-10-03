@@ -33,7 +33,7 @@ foreach ($sid in @($identity.User, (New-Object System.Security.Principal.Securit
 New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 $moduleDestination = Join-Path $releaseRoot "server_workspace"
 New-Item -ItemType Directory -Path $moduleDestination -Force | Out-Null
-$files = @('__init__.py', 'workspace.py', 'run.py', 'requirements.txt')
+$files = @('__init__.py', 'workspace.py', 'audio.py', 'run.py', 'requirements.txt')
 $manifest = @()
 foreach ($name in $files) {
     $source = Join-Path $sourceRoot "server_workspace\$name"
@@ -55,6 +55,8 @@ if (-not (Test-Path -LiteralPath $configuration)) {
         approval_evidence='Signed Sky Data Services OpenAI BAA verified October 2, 2026. Project retention and full PC safeguards remain unverified.'
     } | ConvertTo-Json | Set-Content -LiteralPath $configuration -Encoding utf8
 }
+$decoder = (Get-Command ffmpeg -ErrorAction Stop).Source
+Set-Content -LiteralPath (Join-Path $privateRoot 'audio-decoder.txt') -Value $decoder -Encoding utf8 -NoNewline
 $env:PYTHONPATH = $releaseRoot
 & $python -m compileall -q $moduleDestination
 if ($LASTEXITCODE -ne 0) { throw "Workspace source validation failed" }

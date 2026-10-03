@@ -15,8 +15,9 @@ struct PhoneRemoteRecordingView: View {
     @State private var choosingMail = false
     @State private var editingResult = false
     @State private var resultDraft = ""
-    @State private var player: AVAudioPlayer?
+    @StateObject private var playback = PhoneRecordingPlayer()
     @State private var regenerating = false
+    @State private var retranscribing = false
     private var title: String { remote?.title ?? (review ? nil : queue.recording(recordingID)?.title) ?? "Recording" }
     private var transcript: String { review ? remote?.transcript ?? "" : queue.recording(recordingID)?.transcript ?? remote?.transcript ?? "" }
     private var summary: String { review ? remote?.summary ?? "" : queue.recording(recordingID)?.summary ?? remote?.summary ?? "" }
@@ -28,9 +29,7 @@ struct PhoneRemoteRecordingView: View {
                 if let model = remote?.result_model {
                     Text("\(remote?.assistant_name ?? "Assistant") · \(model)").font(.caption).foregroundStyle(ScribeTheme.muted)
                 }
-                if let count = remote?.expected_parts ?? queue.recording(recordingID)?.remotePartCount, count > 0 {
-                    audioControls(count)
-                } else if let local = queue.recording(recordingID), !local.parts.isEmpty { audioControls(local.parts.count) }
+                if audioPartCount > 0 { audioControls(audioPartCount) }
                 contentPanel("Results", icon: "text.alignleft", text: summary.isEmpty ? "Results will appear after processing." : summary)
                 if !review {
                     HStack {
@@ -41,6 +40,17 @@ struct PhoneRemoteRecordingView: View {
                     }.font(.subheadline)
                 }
                 contentPanel("Full transcript", icon: "text.quote", text: transcript.isEmpty ? "No transcript is available yet." : transcript)
+                if let warning = remote?.quality_warning {
+                    Label(warning, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(ScribeTheme.red)
+                }
+                if let seconds = remote?.transcribed_seconds, remote?.transcription_complete == true {
+                    Text("All source audio processed · \(Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond))) · \(transcript.split(whereSeparator: \.isWhitespace).count) words")
+                        .font(.caption).foregroundStyle(ScribeTheme.muted)
+                }
+                if !review && audioPartCount > 0 {
+                    Button("Transcribe again from saved audio") { retranscribing = true }
+                        .disabled(!workspace.ready || busy || queue.recording(recordingID)?.state == .processing)
+                }
                 Button { choosingMail = true } label: {
                     Label("Email reviewed results", systemImage: "envelope").frame(maxWidth: .infinity).padding(.vertical, 8)
                 }.buttonStyle(.bordered).disabled(summary.isEmpty && transcript.isEmpty)
@@ -67,7 +77,8 @@ struct PhoneRemoteRecordingView: View {
         .background(ScribeTheme.background.ignoresSafeArea()).foregroundStyle(.white).privacySensitive()
         .navigationTitle(review ? "Organization review" : "Recording").navigationBarTitleDisplayMode(.inline)
         .task { await load() }.refreshable { await load() }
-        .onDisappear { player?.stop(); player = nil }
+        .onDisappear { playback.stop() }
+        .onChange(of: workspace.user?.id) { _, _ in playback.stop() }
         .sheet(isPresented: Binding(get: { mailText != nil }, set: { if !$0 { mailText = nil } })) {
             PhoneMailComposer(subject: title, bodyText: mailText ?? "") { message = $0; mailText = nil }
         }
@@ -98,6 +109,9 @@ struct PhoneRemoteRecordingView: View {
                 }
             }
         } message: { Text("This replaces the results and starts a fresh conversation. Source audio remains saved.") }
+        .confirmationDialog("Transcribe the complete recording again?", isPresented: $retranscribing, titleVisibility: .visible) {
+            Button("Transcribe again") { PhoneOpenAIService.shared.process([recordingID], retranscribe: true) }
+        } message: { Text("Uses the transcription model and vocabulary in Settings. The new transcript and assistant results will replace the current versions after processing.") }
     }
     private func contentPanel(_ label: String, icon: String, text: String) -> some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -108,28 +122,46 @@ struct PhoneRemoteRecordingView: View {
     private func audioControls(_ count: Int) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("Source audio", systemImage: "waveform").font(.headline)
-            if player?.isPlaying == true { Button("Stop playback") { player?.stop(); player = nil } }
-            Menu("Play audio") {
-                ForEach(0..<count, id: \.self) { index in Button(count == 1 ? "Play recording" : "Part \(index + 1)") { play(index) } }
-            }.disabled(busy)
+            if let duration = remote?.duration ?? queue.recording(recordingID)?.duration {
+                Text("\(Duration.seconds(duration).formatted(.time(pattern: .minuteSecond))) · \(count) audio \(count == 1 ? "part" : "parts")")
+                    .font(.caption).foregroundStyle(ScribeTheme.muted)
+            }
+            if playback.isLoading { ProgressView("Loading part \(playback.partIndex + 1) of \(count)") }
+            if playback.isPlaying || playback.isPaused {
+                Text("Part \(playback.partIndex + 1) of \(count)").font(.caption).foregroundStyle(ScribeTheme.muted)
+                HStack {
+                    Button(playback.isPaused ? "Resume" : "Pause") { if playback.isPaused { playback.resume() } else { playback.pause() } }
+                    Button("Stop") { playback.stop() }
+                }
+            } else if !playback.isLoading {
+                Button("Play full recording") { play(0) }.accessibilityIdentifier("play-full-recording")
+            }
+            if count > 1 {
+                Menu("Start from a part") {
+                    ForEach(0..<count, id: \.self) { index in Button("Part \(index + 1)") { play(index) } }
+                }.disabled(busy || playback.isLoading)
+            }
+            if let error = playback.error { Text(error).font(.footnote).foregroundStyle(ScribeTheme.red) }
         }.frame(maxWidth: .infinity, alignment: .leading).scribePanel()
     }
+    private var localAudio: QueuedRecording? {
+        guard !review, let local = queue.recording(recordingID), local.isComplete,
+              local.parts.allSatisfy({ FileManager.default.fileExists(atPath: queue.audioURL(recordingID, part: $0).path) }) else { return nil }
+        return local
+    }
+    private var audioPartCount: Int { localAudio?.parts.count ?? remote?.expected_parts ?? queue.recording(recordingID)?.remotePartCount ?? 0 }
     private func play(_ index: Int) {
-        busy = true; message = nil
-        Task {
-            defer { busy = false }
-            do {
-                guard !PhoneRecorderService.shared.isRecording else { message = "Finish the active recording before playing audio."; return }
-                let data: Data
-                if !review, let local = queue.recording(recordingID), remote == nil, index < local.parts.count {
-                    data = try Data(contentsOf: queue.audioURL(recordingID, part: local.parts.sorted { $0.index < $1.index }[index]))
-                } else {
-                    data = try await workspace.rawRequest("recordings/\(recordingID)/parts/\(index)\(review ? "?review=true" : "")")
-                }
-                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
-                try AVAudioSession.sharedInstance().setActive(true)
-                player?.stop(); player = try AVAudioPlayer(data: data); player?.play()
-            } catch { message = error.localizedDescription }
+        guard !PhoneRecorderService.shared.isRecording else { message = "Finish the active recording before playing audio."; return }
+        let local = localAudio
+        let parts = local?.parts.sorted { $0.index < $1.index } ?? []
+        let token = workspace.credential?.token
+        playback.play(start: index, count: audioPartCount) { partIndex in
+            guard workspace.credential?.token == token, !queue.isRemoved(recordingID), !PhoneRecorderService.shared.isRecording else { throw CancellationError() }
+            let data: Data
+            if let local { data = try Data(contentsOf: queue.audioURL(recordingID, part: parts[partIndex])) }
+            else { data = try await workspace.rawRequest("recordings/\(recordingID)/parts/\(partIndex)\(review ? "?review=true" : "")") }
+            guard workspace.credential?.token == token, !queue.isRemoved(recordingID) else { throw CancellationError() }
+            return data
         }
     }
     private func prepareMail(_ content: String) {
@@ -137,6 +169,16 @@ struct PhoneRemoteRecordingView: View {
         mailText = content
     }
     private func load() async {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-scribe-full-recording-preview"), let local = queue.recording(recordingID) {
+            remote = WorkspaceRecording(id: local.id, owner: "preview-user", title: local.title, source: local.source,
+                state: "ready", created: local.createdAt.timeIntervalSince1970, updated: local.createdAt.timeIntervalSince1970,
+                expected_parts: local.parts.count, duration: local.duration, transcript: local.transcript,
+                summary: local.summary ?? "", chat: [], error: nil, assistant_name: "Meeting notes", result_model: "gpt-4.1-mini",
+                transcribed_seconds: local.duration, transcription_complete: true, quality_warning: nil)
+            return
+        }
+        #endif
         do {
             remote = try await workspace.request("recordings/\(recordingID)\(review ? "?review=true" : "")")
             if !review { await PhoneOpenAIService.shared.reconcile() }
