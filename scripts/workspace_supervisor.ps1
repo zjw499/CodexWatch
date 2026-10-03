@@ -19,10 +19,30 @@ function Write-ServiceEvent([string] $Event) {
     Add-Content -LiteralPath $log -Value ((Get-Date).ToUniversalTime().ToString('o') + ' ' + $Event)
 }
 
+function Stop-OrphanedWorkspace {
+    $candidates = @()
+    $pidFile = Join-Path $PrivateRoot 'service.pid'
+    if (Test-Path -LiteralPath $pidFile) {
+        $savedID = 0
+        if ([int]::TryParse((Get-Content -LiteralPath $pidFile -Raw).Trim(), [ref] $savedID)) { $candidates += $savedID }
+    }
+    $candidates += @(Get-NetTCPConnection -LocalPort 8790 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess)
+    foreach ($candidate in @($candidates | Sort-Object -Unique)) {
+        if ($candidate -le 0) { continue }
+        $orphan = Get-CimInstance Win32_Process -Filter "ProcessId=$candidate"
+        if ($orphan -and $orphan.Name -match '^python' -and $orphan.CommandLine -like '*server_workspace.run*' -and $orphan.CommandLine.Contains($configuration)) {
+            Write-ServiceEvent "orphan-reaped pid=$candidate"
+            & "$env:SystemRoot\System32\taskkill.exe" /PID $candidate /T /F | Out-Null
+        }
+    }
+}
+
 try {
     while ($true) {
         $service = $null
         try {
+            # The venv launcher and Python child can outlive a failed supervisor independently.
+            Stop-OrphanedWorkspace
             $selected = (Get-Content -LiteralPath (Join-Path $PrivateRoot 'active-source.txt') -Raw).Trim()
             $env:PYTHONPATH = $selected
             foreach ($stream in @('stdout', 'stderr')) {
