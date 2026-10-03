@@ -484,6 +484,7 @@ class ProcessBody(BaseModel):
     transcription_model: str = Field(max_length=80)
     transcription_context: str = Field(default="", max_length=2000)
     retranscribe: bool = False
+    request_id: str | None = Field(default=None, min_length=1, max_length=140, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 class ChatBody(BaseModel):
@@ -509,6 +510,7 @@ def create_app(workspace: Workspace, run_worker: bool = True):
     @asynccontextmanager
     async def lifespan(app):
         task = asyncio.create_task(worker()) if run_worker else None
+        app.state.worker = task
         yield
         if task:
             task.cancel()
@@ -538,7 +540,10 @@ def create_app(workspace: Workspace, run_worker: bool = True):
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "api_version": "2"}
+        task = getattr(app.state, "worker", None)
+        if run_worker and task is not None and task.done():
+            fail(503, "Processing worker is unavailable")
+        return {"status": "ok", "ok": True, "api_version": "2"}
 
     @app.post("/api/register")
     def register(body: RegisterBody, request: Request):
@@ -732,6 +737,9 @@ def create_app(workspace: Workspace, run_worker: bool = True):
             fail(422, "Choose an approved transcription model")
         with workspace.db() as db:
             row = workspace.recording(db, record_id, user)
+            data = workspace.decode(row["content"])
+            if body.request_id and data.get("processing_request_id") == body.request_id:
+                return {"ok": True}
             if row["state"] in {"queued", "processing"}:
                 return {"ok": True}
             assistant = db.execute("SELECT content FROM assistants WHERE id=? AND owner=?", (body.assistant_id, user["id"])).fetchone()
@@ -750,7 +758,8 @@ def create_app(workspace: Workspace, run_worker: bool = True):
                 data["transcription_complete"] = False
                 data["transcribed_seconds"] = None
             data.update({"transcription_model": body.transcription_model, "transcription_version": TRANSCRIPTION_VERSION,
-                         "transcription_context": body.transcription_context, "run_assistant": workspace.decode(assistant[0]), "error": None})
+                         "transcription_context": body.transcription_context, "run_assistant": workspace.decode(assistant[0]),
+                         "processing_request_id": body.request_id, "error": None})
             db.execute("UPDATE recordings SET state='queued',generation=generation+1,content=?,updated=? WHERE id=?", (workspace.encode(data), time.time(), record_id))
             workspace.audit(db, user["id"], "processing-requested", record_id)
         return {"ok": True}

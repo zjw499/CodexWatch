@@ -2,7 +2,8 @@ name: Verify Scribe Pilot phone and Watch
 on:
   workflow_dispatch:
   push:
-    branches: [feature/gunmetal-red-openai, feature/shared-ai-workspace, feature/complete-recordings]
+    branches: [feature/gunmetal-red-openai, feature/shared-ai-workspace, feature/complete-recordings, fix/workspace-recovery]
+    paths: ['ios/**', 'watchos/**', 'shared/**', 'native-tests/**', 'native-ui-tests/**', 'server_workspace/**', 'project.yml']
 jobs:
   native:
     runs-on: macos-26-intel

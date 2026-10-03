@@ -9,7 +9,13 @@ import WatchConnectivity
 final class PhoneOpenAIService: ObservableObject {
     static let shared = PhoneOpenAIService()
     @Published private(set) var activeID: String?
-    private let queue = RecordingQueueStore.shared
+    private let queue: RecordingQueueStore
+    private let configuredWorkspace: PhoneWorkspace?
+    private var workspace: PhoneWorkspace { configuredWorkspace ?? .shared }
+
+    init(queue: RecordingQueueStore? = nil, workspace: PhoneWorkspace? = nil) {
+        self.queue = queue ?? .shared; configuredWorkspace = workspace
+    }
     private var task: Task<Void, Never>?
     private var requestedIDs: [String] = []
     private var reconciling = false
@@ -21,17 +27,17 @@ final class PhoneOpenAIService: ObservableObject {
             let owner: String?
             if source == "Apple Watch" { owner = ownerID }
             else if let existing = queue.recording(id) { owner = existing.ownerID }
-            else { owner = PhoneWorkspace.shared.user?.id }
+            else { owner = workspace.user?.id }
             try queue.accept(fileURL: fileURL, id: id, index: index, isFinal: isFinal, source: source,
                              duration: duration, ownerID: owner)
             if FileManager.default.fileExists(atPath: fileURL.path) { try FileManager.default.removeItem(at: fileURL) }
             if queue.isRemoved(id) { return }
-            notifyWatch(id: id, status: queue.recording(id)?.isComplete == true ? "Saved · review on iPhone" : "Receiving audio")
+            notifyWatch(id: id, status: queue.recording(id)?.isComplete == true ? "Saved Â· review on iPhone" : "Receiving audio")
         } catch { queue.errorMessage = "Audio could not be saved to the queue. The original file has been kept." }
     }
 
     func process(_ ids: [String], retranscribe: Bool = false) {
-        let workspace = PhoneWorkspace.shared
+        let workspace = self.workspace
         guard let owner = workspace.user?.id, workspace.ready, !workspace.selectedAssistantID.isEmpty else {
             queue.errorMessage = workspace.signedIn ? "Organization processing approval is pending, or no assistant is selected." : WorkspaceError.signIn.localizedDescription
             return
@@ -45,6 +51,8 @@ final class PhoneOpenAIService: ObservableObject {
                     $0.requestedTranscriptionModel = workspace.transcriptionModel
                     $0.requestedTranscriptionContext = workspace.transcriptionContext
                     $0.requestedRetranscription = retranscribe
+                    $0.requestedProcessingID = UUID().uuidString
+                    $0.retryAfter = nil; $0.retryAttempts = nil; $0.error = nil; $0.state = .queued
                 }
             } catch { queue.errorMessage = error.localizedDescription; continue }
             if id != activeID && !requestedIDs.contains(id) { requestedIDs.append(id) }
@@ -62,15 +70,15 @@ final class PhoneOpenAIService: ObservableObject {
         }
     }
     func importRecording(_ id: String) async {
-        guard queue.recording(id)?.ownerID == PhoneWorkspace.shared.user?.id else { return }
-        sendWatchCommand(["command": "assign-recording", "recording_id": id, "owner_id": PhoneWorkspace.shared.user?.id ?? ""])
+        guard queue.recording(id)?.ownerID == workspace.user?.id else { return }
+        sendWatchCommand(["command": "assign-recording", "recording_id": id, "owner_id": workspace.user?.id ?? ""])
         do { try queue.update(id) { $0.importRequested = true; $0.processingRequested = false } }
         catch { queue.errorMessage = error.localizedDescription; return }
         if id != activeID && !requestedIDs.contains(id) { requestedIDs.append(id) }
         startRequests()
     }
     func remove(_ ids: Set<String>, notify: Bool = true) throws {
-        guard ids.allSatisfy({ queue.recording($0)?.ownerID == PhoneWorkspace.shared.user?.id || queue.recording($0)?.ownerID == nil }) else { throw WorkspaceError.ownership }
+        guard ids.allSatisfy({ queue.recording($0)?.ownerID == workspace.user?.id || queue.recording($0)?.ownerID == nil }) else { throw WorkspaceError.ownership }
         if let activeID, ids.contains(activeID) { task?.cancel() }
         requestedIDs.removeAll { ids.contains($0) }
         defer {
@@ -82,20 +90,20 @@ final class PhoneOpenAIService: ObservableObject {
         try queue.remove(ids)
     }
     func rename(_ id: String, title: String) throws {
-        guard let item = queue.recording(id), item.ownerID == PhoneWorkspace.shared.user?.id || item.ownerID == nil else { throw WorkspaceError.ownership }
+        guard let item = queue.recording(id), item.ownerID == workspace.user?.id || item.ownerID == nil else { throw WorkspaceError.ownership }
         try queue.rename(id, title: title)
         if item.ownerID != nil { try queue.update(id) { $0.pendingTitle = title } }
         sendWatchCommand(["command": "rename-recording", "recording_id": id, "title": title])
         Task { await reconcile() }
     }
     func saveResult(_ id: String, summary: String) throws {
-        guard queue.recording(id)?.ownerID == PhoneWorkspace.shared.user?.id else { throw WorkspaceError.ownership }
+        guard queue.recording(id)?.ownerID == workspace.user?.id else { throw WorkspaceError.ownership }
         try queue.update(id) { $0.summary = summary; $0.pendingSummary = summary }
         Task { await reconcile() }
     }
     func configurationChanged() { task?.cancel(); requestedIDs.removeAll(); syncConfiguration() }
     func syncConfiguration() {
-        let workspace = PhoneWorkspace.shared
+        let workspace = self.workspace
         sendWatchCommand(["command": "processing-settings", "ready": workspace.ready, "protected": true,
                           "model": workspace.transcriptionModel, "owner_id": workspace.user?.id ?? ""])
     }
@@ -111,25 +119,29 @@ final class PhoneOpenAIService: ObservableObject {
         try queue.applyCompanionChange(id, owner: owner, title: title, removing: removing)
     }
     func reconcile() async {
-        let workspace = PhoneWorkspace.shared
+        let workspace = self.workspace
         guard !reconciling, let owner = workspace.user?.id, let token = workspace.credential?.token else { return }
         reconciling = true
         defer { reconciling = false }
         do {
             for (id, deletedOwner) in queue.removedOwners where deletedOwner == owner {
-                let _: PhoneWorkspace.OK = try await workspace.request("recordings/\(id)", method: "DELETE")
-                try checkSession(token); try queue.acknowledgeDeletion(id)
+                do {
+                    let _: PhoneWorkspace.OK = try await workspace.request("recordings/\(id)", method: "DELETE")
+                    try checkSession(token); try queue.acknowledgeDeletion(id)
+                } catch { try checkEditFailure(error, token: token) }
             }
             for item in queue.visibleRecordings where item.serverUploaded == true && (item.pendingTitle != nil || item.pendingSummary != nil) {
-                var fields: [String: String] = [:]
-                if let title = item.pendingTitle { fields["title"] = title }
-                if let summary = item.pendingSummary { fields["summary"] = summary }
-                let _: PhoneWorkspace.OK = try await workspace.request("recordings/\(item.id)", method: "PATCH", body: JSONEncoder().encode(fields))
-                try checkSession(token)
-                try queue.update(item.id) {
-                    if $0.pendingTitle == item.pendingTitle { $0.pendingTitle = nil }
-                    if $0.pendingSummary == item.pendingSummary { $0.pendingSummary = nil }
-                }
+                do {
+                    var fields: [String: String] = [:]
+                    if let title = item.pendingTitle { fields["title"] = title }
+                    if let summary = item.pendingSummary { fields["summary"] = summary }
+                    let _: PhoneWorkspace.OK = try await workspace.request("recordings/\(item.id)", method: "PATCH", body: JSONEncoder().encode(fields))
+                    try checkSession(token)
+                    try queue.update(item.id) {
+                        if $0.pendingTitle == item.pendingTitle { $0.pendingTitle = nil }
+                        if $0.pendingSummary == item.pendingSummary { $0.pendingSummary = nil }
+                    }
+                } catch { try checkEditFailure(error, token: token) }
             }
             let remote = try await workspace.remoteRecordings()
             try checkSession(token)
@@ -151,20 +163,24 @@ final class PhoneOpenAIService: ObservableObject {
                 }
             }
             if workspace.signedIn {
-                for item in queue.visibleRecordings where (item.importRequested == true || (workspace.ready && item.processingRequested == true)) && item.id != activeID && !requestedIDs.contains(item.id) {
+                for item in queue.visibleRecordings where (item.importRequested == true || (workspace.ready && item.processingRequested == true)) && item.id != activeID && !requestedIDs.contains(item.id) && (item.retryAfter ?? .distantPast) <= Date() {
                     requestedIDs.append(item.id)
                 }
                 if !requestedIDs.isEmpty { startRequests() }
             }
         } catch { /* Offline edits and tombstones retry on the next foreground sync. */ }
     }
+    private func checkEditFailure(_ error: Error, token: String) throws {
+        try checkSession(token)
+        if case WorkspaceError.status(401, _) = error { throw error }
+    }
     private func checkSession(_ token: String) throws {
         try Task.checkCancellation()
-        guard PhoneWorkspace.shared.credential?.token == token else { throw CancellationError() }
+        guard workspace.credential?.token == token else { throw CancellationError() }
     }
     private func check(_ id: String, token: String) throws {
         try checkSession(token)
-        guard !queue.isRemoved(id), queue.recording(id)?.ownerID == PhoneWorkspace.shared.user?.id else { throw CancellationError() }
+        guard !queue.isRemoved(id), queue.recording(id)?.ownerID == workspace.user?.id else { throw CancellationError() }
     }
     private struct CreateRecording: Encodable {
         let title: String; let source: String; let expected_parts: Int; let duration: Double?
@@ -172,21 +188,22 @@ final class PhoneOpenAIService: ObservableObject {
     }
     private struct ProcessRecording: Encodable {
         let assistant_id: String; let transcription_model: String
-        let transcription_context: String; let retranscribe: Bool
+        let transcription_context: String; let retranscribe: Bool; let request_id: String
     }
-    private func processOne(_ id: String) async {
-        let workspace = PhoneWorkspace.shared
+    func processOne(_ id: String) async {
+        let workspace = self.workspace
         guard let item = queue.recording(id), item.ownerID == workspace.user?.id, let token = workspace.credential?.token else { return }
         let isImport = item.importRequested == true && item.processingRequested != true
         let assistant = item.requestedAssistantID ?? workspace.selectedAssistantID
         let model = item.requestedTranscriptionModel ?? workspace.transcriptionModel
+        let requestID = item.requestedProcessingID ?? UUID().uuidString
         let background = UIApplication.shared.beginBackgroundTask(withName: "ScribePilot workspace upload") { [weak self] in
             Task { @MainActor in self?.task?.cancel() }
         }
         defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background) } }
         do {
             try check(id, token: token)
-            try queue.update(id) { $0.state = .processing; $0.error = nil; $0.protectedWorkflow = true }
+            try queue.update(id) { $0.state = .processing; $0.error = nil; $0.protectedWorkflow = true; $0.retryAfter = nil; $0.requestedProcessingID = requestID }
             if item.serverUploaded != true {
                 var slices: [URL] = []
                 for part in item.parts.sorted(by: { $0.index < $1.index }) {
@@ -214,18 +231,29 @@ final class PhoneOpenAIService: ObservableObject {
             let _: PhoneWorkspace.OK = try await workspace.request("recordings/\(id)/process", method: "POST", body: JSONEncoder().encode(
                 ProcessRecording(assistant_id: assistant, transcription_model: model,
                     transcription_context: item.requestedTranscriptionContext ?? workspace.transcriptionContext,
-                    retranscribe: item.requestedRetranscription ?? false)))
+                    retranscribe: item.requestedRetranscription ?? false, request_id: requestID)))
             try check(id, token: token)
-            try queue.update(id) { $0.processingRequested = false; $0.state = .processing; $0.error = nil }
+            try queue.update(id) { $0.processingRequested = false; $0.state = .processing; $0.error = nil; $0.retryAfter = nil; $0.retryAttempts = nil }
             notifyWatch(id: id, status: "Processing on PC")
         } catch is CancellationError {
             try? queue.update(id) { $0.state = .queued; $0.error = "Upload paused. Reconnect to resume." }
         } catch {
-            try? queue.update(id) {
-                $0.state = .failed; $0.error = error.localizedDescription
-                if !(error is URLError) { $0.processingRequested = false; $0.importRequested = false }
+            if WorkspaceError.retryable(error) {
+                try? queue.update(id) {
+                    let attempt = min(($0.retryAttempts ?? 0) + 1, 6)
+                    $0.retryAttempts = attempt
+                    $0.retryAfter = Date().addingTimeInterval(min(120, 5 * pow(2, Double(attempt - 1))))
+                    $0.state = .queued
+                    $0.error = "Waiting for the PC connection. Your saved audio will resume automatically."
+                }
+                notifyWatch(id: id, status: "Waiting for PC connection")
+            } else {
+                try? queue.update(id) {
+                    $0.state = .failed; $0.error = error.localizedDescription
+                    $0.processingRequested = false; $0.importRequested = false; $0.retryAfter = nil
+                }
+                notifyWatch(id: id, status: "Needs attention on iPhone")
             }
-            notifyWatch(id: id, status: "Needs attention on iPhone")
         }
     }
     private func prepareSlices(_ url: URL, index: Int) async throws -> [URL] {

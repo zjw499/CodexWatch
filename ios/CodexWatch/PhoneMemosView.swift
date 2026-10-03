@@ -234,7 +234,9 @@ struct PhoneMemosView: View {
                     Text(item.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
                     if let seconds = item.duration { Text("·"); Text(duration(seconds)).monospacedDigit() }
                 }.font(.caption2).foregroundStyle(ScribeTheme.muted)
-                ScribeStateLabel(state: item.state)
+                if item.awaitingConnection {
+                    Label("Waiting for PC", systemImage: "network").font(.caption.weight(.semibold)).foregroundStyle(ScribeTheme.muted)
+                } else { ScribeStateLabel(state: item.state) }
                 if item.state == .processing { ProgressView(value: item.progress).tint(ScribeTheme.red) }
                 if let error = item.error { Text(error).font(.caption).foregroundStyle(ScribeTheme.muted) }
                 if item.state == .receiving, let final = item.finalIndex {
@@ -245,7 +247,7 @@ struct PhoneMemosView: View {
                 }
                 if item.canProcess && !editing {
                     Button { processingIDs = [item.id] } label: {
-                        Label(item.state == .failed ? "Retry" : "Process", systemImage: "play.fill")
+                        Label(item.awaitingConnection ? "Retry now" : (item.state == .failed ? "Retry" : "Process"), systemImage: "play.fill")
                             .font(.caption.weight(.bold)).padding(.horizontal, 13).padding(.vertical, 8)
                     }.buttonStyle(.borderedProminent).tint(ScribeTheme.red).disabled(!settings.ready)
                 }

@@ -127,3 +127,8 @@ Deletion persists a tombstone before discarding audio/content, cancels future
 processing, and ignores late uploads/results. An already submitted OpenAI request
 cannot be recalled. Offline device deletions and session revocations retry when
 the PC becomes reachable. The phone hides other accounts' caches immediately.
+# Connection recovery
+
+Windows Task Scheduler runs the workspace supervisor directly under the same Windows user as the encrypted storage. A logon trigger, a repeating one-minute watchdog, and restart-on-failure settings recover the supervisor if it exits. The supervisor restarts a stopped child and checks the local health route, which also verifies that the processing worker is alive. The PC must be awake and the storage owner signed in. The legacy pipeline tasks are separate.
+
+Temporary phone connection failures retain the original audio, assistant/model selection, and a stable processing request ID. The queue displays Waiting for PC and resumes with bounded backoff when foreground sync reconnects. A repeated processing POST with the same ID returns the existing job, including after the response was lost; explicitly requesting a new run creates a new ID. Unsent edits remain queued independently of result synchronization.
