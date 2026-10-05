@@ -24,7 +24,9 @@ iPhone Settings. Audio is never written by the voice gateway or Watch voice flow
 Interrupted replies are labelled; unheard replies are excluded from resumed context.
 Incomplete input transcription may remain labelled as an incomplete turn.
 
-Voice ends on app backgrounding, explicit exit, audio interruption, disconnection,
+Capture starts only after the voice screen is visible, active, and the provider is
+ready. Voice ends on wrist-down screen dimming, leaving the active voice screen,
+app backgrounding, explicit exit, audio interruption, disconnection,
 credential revocation, assistant deletion/disablement, or configured limits. Wrist
 lowering and actual Watch lifecycle behavior must be tested on the physical device.
 

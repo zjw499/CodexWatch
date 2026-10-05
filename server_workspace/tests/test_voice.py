@@ -134,6 +134,39 @@ def test_device_hash_storage_and_parent_revocation(voice):
     assert public.app.state.voice.sessions[s["id"]].state == "ended"
 
 
+@pytest.mark.parametrize("cause", ["device-expiry", "administrator-revocation", "assistant-deletion", "session-limit", "idle-limit"])
+def test_access_changes_and_limits_terminate_active_conversations(voice, cause):
+    w, private, public, people, assistant, _, vh, _ = voice
+    s = start(voice)
+    session = public.app.state.voice.sessions[s["id"]]
+    if cause == "device-expiry":
+        with w.db() as db: db.execute("UPDATE voice_devices SET expires=0")
+        assert public.get("/voice/v1/config", headers=vh).status_code == 401
+    elif cause == "administrator-revocation":
+        owner = people["alice"][0]["user"]["id"]
+        assert private.delete(f"/api/admin/users/{owner}/sessions", headers=people["admin"][1]).status_code == 200
+        assert public.get("/voice/v1/config", headers=vh).status_code == 401
+    elif cause == "assistant-deletion":
+        assert private.delete("/api/assistants/"+assistant["id"], headers=people["alice"][1]).status_code == 200
+    elif cause == "session-limit":
+        session.started = time.monotonic() - 601
+    else:
+        session.activity = time.monotonic() - 121
+    public.portal.call(asyncio.sleep, 1.1)
+    assert session.state == "ended" and voice[7][-1].closed
+
+
+def test_public_history_and_controls_are_isolated_by_owner(voice):
+    s = start(voice)
+    device = voice[1].post("/api/voice/devices", headers=voice[3]["bobby"][1], json={"device_id": "watch-bobby"}).json()
+    headers = {"Authorization": "Bearer " + device["token"]}
+    assert voice[2].get("/voice/v1/conversations/"+s["conversation_id"], headers=headers).status_code == 404
+    assert voice[2].delete("/voice/v1/conversations/"+s["conversation_id"], headers=headers).status_code == 404
+    assert voice[2].post(f"/voice/v1/sessions/{s['id']}/control", headers=headers, json={"action": "end"}).status_code == 404
+    assert voice[2].get("/voice/v1/conversations", headers=headers).json()["conversations"] == []
+    assert voice[2].app.state.voice.sessions[s["id"]].state != "ended"
+
+
 def test_create_idempotent_one_active_and_named_assistant_validation(voice):
     s = start(voice)
     assert start(voice)["id"] == s["id"]

@@ -28,6 +28,8 @@ struct WatchVoiceHomeView: View {
 
 struct WatchVoiceView: View {
     @ObservedObject private var voice = WatchVoiceService.shared
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
@@ -54,7 +56,10 @@ struct WatchVoiceView: View {
         }
         .background(ScribeTheme.background).tint(ScribeTheme.red)
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { voice.end(); voice.isPresented = false } } }
-        .onDisappear { voice.end() }
+        .onAppear { voice.setVoiceScreenReady(scenePhase == .active && !isLuminanceReduced) }
+        .onChange(of: scenePhase) { _, phase in voice.setVoiceScreenReady(phase == .active && !isLuminanceReduced) }
+        .onChange(of: isLuminanceReduced) { _, reduced in voice.setVoiceScreenReady(scenePhase == .active && !reduced) }
+        .onDisappear { voice.setVoiceScreenReady(false); voice.end() }
     }
 }
 

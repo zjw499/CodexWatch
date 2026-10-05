@@ -28,6 +28,9 @@ final class WatchVoiceService: ObservableObject {
     private var observers: [NSObjectProtocol] = []
     private var desiredState = "listening"
     private var lastAssistantID: String?
+    private var voiceScreenReady = false
+    private var providerReady = false
+    private var captureStarted = false
 
     private init() {
         if let cache = VoiceDescriptorCache.read(), cache.owner == RecordingQueueStore.shared.accountID {
@@ -102,6 +105,7 @@ final class WatchVoiceService: ObservableObject {
         guard !isActive else { return }
         guard !AudioRecorderService.shared.isRecording else { message = VoiceError.audioBusy.localizedDescription; return }
         isActive = true; state = "connecting"; muted = false; message = nil; turns = []
+        providerReady = false; captureStarted = false
         generation = UUID()
         let run = generation
         do {
@@ -158,20 +162,33 @@ final class WatchVoiceService: ObservableObject {
     }
     func newConversation() async { await open(assistantID: lastAssistantID) }
 
+    func setVoiceScreenReady(_ ready: Bool) {
+        voiceScreenReady = ready
+        if !ready, captureStarted { end(message: "Conversation ended when the Watch screen became inactive."); return }
+        do { try beginCaptureIfReady() }
+        catch { end(message: error.localizedDescription) }
+    }
+
+    private func beginCaptureIfReady() throws {
+        guard voiceScreenReady, providerReady, isActive, !captureStarted else { return }
+        let run = generation
+        try audio.start { [weak self] packet in
+            Task { @MainActor in
+                guard let self, self.generation == run, self.isActive else { return }
+                guard let packet else { self.end(message: VoiceError.audioRoute.localizedDescription); return }
+                self.enqueueAudio(packet)
+            }
+        }
+        captureStarted = true
+        state = muted ? "muted" : desiredState
+    }
+
     private func receive(_ event: VoiceEvent, run: UUID) async throws {
         switch event.type {
         case "state":
             desiredState = event.state ?? "listening"
-            if state == "connecting", desiredState == "listening" {
-                try audio.start { [weak self] packet in
-                    Task { @MainActor in
-                        guard let self, self.generation == run, self.isActive else { return }
-                        guard let packet else { self.end(message: VoiceError.audioRoute.localizedDescription); return }
-                        self.enqueueAudio(packet)
-                    }
-                }
-            }
-            state = muted ? "muted" : (audio.hasPendingPlayback ? "speaking" : desiredState)
+            if desiredState == "listening" { providerReady = true; try beginCaptureIfReady() }
+            state = captureStarted ? (muted ? "muted" : (audio.hasPendingPlayback ? "speaking" : desiredState)) : "connecting"
             if desiredState == "listening", !audio.hasPendingPlayback { acknowledgePlayback() }
         case "audio":
             guard let encoded = event.audio, let item = event.item_id, let data = Data(base64Encoded: encoded) else { throw VoiceError.connection }
@@ -239,6 +256,7 @@ final class WatchVoiceService: ObservableObject {
         let item = audio.hasPendingPlayback ? audio.outputItem : nil
         let milliseconds = item.map { audio.playedMilliseconds(item: $0) }
         isActive = false; generation = UUID(); state = "ended"; muted = false; self.message = message
+        providerReady = false; captureStarted = false
         audio.stop(); pendingAudio = []
         streamTask?.cancel(); uploadTask?.cancel(); heartbeatTask?.cancel()
         streamTask = nil; uploadTask = nil; heartbeatTask = nil; current = nil; credential = nil

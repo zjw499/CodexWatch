@@ -236,6 +236,12 @@ final class PhoneWorkspace: ObservableObject {
         var result: WorkspaceCredential = try await request(invitation ? "register" : "login", method: "POST",
             body: JSONEncoder().encode(body), base: base.absoluteString, authenticated: false)
         result.server = base.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        // A replacement sign-in must retire the old parent session and its Watch access.
+        if let old = credential, old.token != result.token {
+            var pending = WorkspaceKeychain.read([WorkspaceCredential].self, account: "revocations") ?? []
+            if !pending.contains(where: { $0.token == old.token }) { pending.append(old) }
+            try WorkspaceKeychain.save(pending, account: "revocations")
+        }
         try WorkspaceKeychain.save(result)
         PhoneOpenAIService.shared.configurationChanged()
         credential = result
