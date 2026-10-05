@@ -422,7 +422,8 @@ class VoiceSession:
                 elif kind == "input_audio_buffer.speech_started":
                     self.activity = time.monotonic()
                     if item:
-                        self.save(item, "user")
+                        turn = self.save(item, "user")
+                        await self.emit("turn", turn=turn)
                     if self.last_output_item:
                         self.blocked_output.add(self.last_output_item)
                         await self.emit("interrupt", item_id=self.last_output_item)
@@ -435,7 +436,7 @@ class VoiceSession:
                     turn = self.save(item, "user", event.get("transcript", ""), final=True)
                     await self.emit("turn", turn=turn)
                 elif kind == "conversation.item.input_audio_transcription.failed" and item:
-                    turn = self.save(item, "user", "[Speech could not be transcribed]", final=True)
+                    turn = self.save(item, "user", "[Speech could not be transcribed]", final=False)
                     await self.emit("turn", turn=turn)
                 elif kind == "response.output_audio.delta" and item:
                     if item in self.blocked_output:

@@ -18,7 +18,7 @@ struct PhoneSettingsView: View {
         Form {
             Section {
                 Label("Your AI workspace", systemImage: "waveform").font(.headline)
-                Text("Your organization provides the OpenAI connection. Choose how your recordings become useful results.")
+                Text("Your organization provides the OpenAI connection. Configure assistants for recordings and Watch conversations.")
                     .font(.footnote).foregroundStyle(ScribeTheme.muted)
             }
             if let user = workspace.user {

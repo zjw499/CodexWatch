@@ -27,6 +27,7 @@ final class WatchVoiceService: ObservableObject {
     private var generation = UUID()
     private var observers: [NSObjectProtocol] = []
     private var desiredState = "listening"
+    private var lastAssistantID: String?
 
     private init() {
         if let cache = VoiceDescriptorCache.read(), cache.owner == RecordingQueueStore.shared.accountID {
@@ -59,6 +60,7 @@ final class WatchVoiceService: ObservableObject {
         if owner == nil || oldOwner != owner {
             end(message: "Your account changed.")
             VoiceKeychain.clear(); VoiceDescriptorCache.clear(); configuration = nil; turns = []; isPresented = false
+            lastAssistantID = nil
             WatchShortcutCommandRouter.clearPendingVoiceCommand()
         }
         guard let owner else { refreshLaunchers(); return }
@@ -124,7 +126,7 @@ final class WatchVoiceService: ObservableObject {
                 try? await client.control(VoiceControl(action: "end"), sessionID: info.id, credential: saved); return
             }
             guard info.version == 1, info.state != "ended", VoiceWire.validID(info.id) else { throw VoiceError.connection }
-            current = info; assistantName = info.assistant_name; sequence = 0
+            current = info; assistantName = info.assistant_name; lastAssistantID = info.assistant_id; sequence = 0
             streamTask = Task { [weak self] in
                 guard let self else { return }
                 do {
@@ -148,6 +150,13 @@ final class WatchVoiceService: ObservableObject {
             }
         } catch { if generation == run { end(message: error.localizedDescription) } }
     }
+
+    func showLaunchError(_ message: String) {
+        isPresented = true
+        guard !isActive else { return }
+        self.message = message; state = "ready"; turns = []
+    }
+    func newConversation() async { await open(assistantID: lastAssistantID) }
 
     private func receive(_ event: VoiceEvent, run: UUID) async throws {
         switch event.type {

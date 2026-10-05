@@ -228,6 +228,33 @@ def test_fully_played_answers_are_kept_when_the_user_speaks_again(voice):
     assert detail["turns"][0]["interrupted"] is False
 
 
+def test_delayed_input_transcription_preserves_turn_order(voice):
+    s = start(voice)
+    push(voice, {"type": "input_audio_buffer.speech_started", "item_id": "u1"})
+    push(voice, {"type": "response.output_audio_transcript.done", "item_id": "a1", "transcript": "Answer"})
+    push(voice, {"type": "conversation.item.input_audio_transcription.completed", "item_id": "u1", "transcript": "Question"})
+    session = voice[2].app.state.voice.sessions[s["id"]]
+    async def drain():
+        events = []
+        while not session.events.empty(): events.append(session.events.get_nowait())
+        return [e["turn"]["role"] for e in events if e["type"] == "turn"]
+    assert voice[2].portal.call(drain) == ["user", "assistant", "user"]
+    detail = VoiceStore(voice[0]).conversation(s["conversation_id"], voice[3]["alice"][0]["user"]["id"])
+    assert [t["text"] for t in detail["turns"]] == ["Question", "Answer"]
+
+
+def test_failed_transcription_is_visible_but_not_seeded_as_user_speech(voice):
+    s = start(voice)
+    push(voice, {"type": "input_audio_buffer.speech_started", "item_id": "u1"})
+    push(voice, {"type": "conversation.item.input_audio_transcription.failed", "item_id": "u1"})
+    detail = VoiceStore(voice[0]).conversation(s["conversation_id"], voice[3]["alice"][0]["user"]["id"])
+    assert detail["turns"][0]["text"] == "[Speech could not be transcribed]"
+    assert detail["turns"][0]["final"] is False
+    voice[2].post(f"/voice/v1/sessions/{s['id']}/control", headers=voice[6], json={"action": "end"})
+    start(voice, "resume-failed", conversation_id=s["conversation_id"])
+    assert not any(e["type"] == "conversation.item.create" for e in voice[7][-1].sent)
+
+
 def test_gateway_init_and_recovery_never_reset_recording_jobs(voice):
     w = voice[0]
     with w.db() as db:

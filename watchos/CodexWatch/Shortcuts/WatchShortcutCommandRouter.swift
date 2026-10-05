@@ -54,7 +54,11 @@ enum WatchShortcutCommandRouter {
 
         switch pending.command {
         case .talkToAssistant:
-            guard let launch = pending.launch, launch.valid(owner: RecordingQueueStore.shared.accountID) else { return }
+            guard let launch = pending.launch, launch.valid(owner: RecordingQueueStore.shared.accountID) else {
+                WatchVoiceService.shared.showLaunchError(RecordingQueueStore.shared.accountID == nil
+                    ? VoiceError.setup.localizedDescription : "This shortcut expired or belongs to another account. Choose a current assistant.")
+                return
+            }
             await WatchVoiceService.shared.open(assistantID: launch.assistantID, requestID: launch.requestID)
         case .endVoice:
             WatchVoiceService.shared.end()
