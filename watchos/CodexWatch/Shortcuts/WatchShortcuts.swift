@@ -113,7 +113,7 @@ struct CodexWatchWatchShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: TalkWatchAssistantIntent(),
-            phrases: ["Talk to an assistant with \(.applicationName)", "Talk to \(.$assistant) with \(.applicationName)"],
+            phrases: ["Talk to an assistant with \(.applicationName)", "Talk to \(\.$assistant) with \(.applicationName)"],
             shortTitle: "Talk to Assistant",
             systemImageName: "waveform"
         )
