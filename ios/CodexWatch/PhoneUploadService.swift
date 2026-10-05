@@ -982,11 +982,16 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         DispatchQueue.main.async {
             let session = WCSession.default
             guard session.activationState == .activated else { return }
-            let context: [String: Any] = [
+            var context: [String: Any] = [
                 "command": "meeting-status", "recording_id": recordingID, "status": message,
             ]
             let previous = session.applicationContext
             guard previous["recording_id"] as? String != recordingID || previous["status"] as? String != message else { return }
+            // A meeting update must not replace undelivered account/voice provisioning.
+            if previous["command"] as? String == "workspace-account" {
+                context = previous
+                context["meeting_status"] = ["recording_id": recordingID, "status": message]
+            }
             try? session.updateApplicationContext(context)
         }
     }

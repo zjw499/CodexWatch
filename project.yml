@@ -28,7 +28,7 @@ targets:
         CODEX_WATCH_AUDIO_UPLOAD_URL: $(CODEX_WATCH_AUDIO_UPLOAD_URL)
         CODEX_WATCH_AUDIO_UPLOAD_USERNAME: $(CODEX_WATCH_AUDIO_UPLOAD_USERNAME)
         ITSAppUsesNonExemptEncryption: false
-        NSMicrophoneUsageDescription: Scribe Pilot records meetings for transcription and delivery to your configured meeting workspace.
+        NSMicrophoneUsageDescription: Scribe Pilot uses your microphone for meeting recordings and voice conversations with your assistants.
         NSFaceIDUsageDescription: Unlock your protected Scribe Pilot recordings and OpenAI settings.
         UIBackgroundModes:
           - audio
@@ -128,7 +128,7 @@ targets:
           NSExtensionPointIdentifier: com.apple.watchkit
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-        NSMicrophoneUsageDescription: Scribe Pilot records meetings for transcription and delivery to your configured meeting workspace.
+        NSMicrophoneUsageDescription: Scribe Pilot uses your microphone for meeting recordings and voice conversations with your assistants.
         UIBackgroundModes:
           - audio
     settings:

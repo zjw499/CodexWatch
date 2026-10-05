@@ -100,6 +100,10 @@ class WorkspaceConfig:
     approval_evidence: str = ""
     session_seconds: int = 7 * 24 * 3600
     config_file: Path | None = None
+    voice_enabled: bool = False
+    voice_gateway_url: str = "https://zwyattpc.tail488e93.ts.net:8443/voice/v1"
+    voice_models: tuple[str, ...] = ("gpt-realtime-2.1",)
+    voice_voices: tuple[str, ...] = ("marin", "cedar")
 
 
 DEFAULT_INSTRUCTIONS = (
@@ -114,7 +118,7 @@ class RecordingSuperseded(Exception):
 
 
 class Workspace:
-    def __init__(self, config: WorkspaceConfig, cipher=None, provider=None, audio_preparer=None):
+    def __init__(self, config: WorkspaceConfig, cipher=None, provider=None, audio_preparer=None, *, recover_jobs=True):
         self.config = config
         self.cipher = cipher or WindowsCipher()
         self.lock = threading.RLock()
@@ -143,6 +147,18 @@ class Workspace:
                 CREATE TABLE IF NOT EXISTS login_limits (key TEXT PRIMARY KEY, attempts INTEGER NOT NULL,
                   until REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS policy (id INTEGER PRIMARY KEY CHECK(id=1), content BLOB NOT NULL);
+                CREATE TABLE IF NOT EXISTS voice_devices (hash TEXT PRIMARY KEY, owner TEXT NOT NULL,
+                  parent_session TEXT NOT NULL, device_id TEXT NOT NULL, expires REAL NOT NULL,
+                  UNIQUE(owner,device_id));
+                CREATE TABLE IF NOT EXISTS voice_preferences (owner TEXT PRIMARY KEY, content BLOB NOT NULL);
+                CREATE TABLE IF NOT EXISTS voice_policy (id INTEGER PRIMARY KEY CHECK(id=1), content BLOB NOT NULL);
+                CREATE TABLE IF NOT EXISTS voice_conversations (id TEXT PRIMARY KEY, owner TEXT NOT NULL,
+                  assistant_id TEXT NOT NULL, state TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
+                  created REAL NOT NULL, updated REAL NOT NULL, content BLOB NOT NULL);
+                CREATE INDEX IF NOT EXISTS voice_conversation_owner ON voice_conversations(owner,updated);
+                CREATE TABLE IF NOT EXISTS voice_sessions (id TEXT PRIMARY KEY, owner TEXT NOT NULL,
+                  device_hash TEXT NOT NULL, conversation_id TEXT NOT NULL, request_id TEXT NOT NULL,
+                  state TEXT NOT NULL, created REAL NOT NULL, UNIQUE(owner,request_id));
             """)
             row = db.execute("SELECT content FROM policy WHERE id=1").fetchone()
             if row:
@@ -151,7 +167,8 @@ class Workspace:
                 if saved.get("organization_id") == config.organization_id and saved.get("project_id") == config.project_id:
                     for field in ("baa_verified", "retention_verified", "safeguards_verified", "approval_evidence"):
                         setattr(config, field, saved.get(field, getattr(config, field)))
-            db.execute("UPDATE recordings SET state='queued' WHERE state='processing' AND deleted=0")
+            if recover_jobs:
+                db.execute("UPDATE recordings SET state='queued' WHERE state='processing' AND deleted=0")
 
     @contextmanager
     def db(self):
@@ -459,10 +476,17 @@ class InviteBody(BaseModel):
     role: str = "user"
 
 
+class VoiceAssistantBody(BaseModel):
+    enabled: bool = False
+    model: str = Field(default="gpt-realtime-2.1", max_length=80)
+    voice: str = Field(default="marin", max_length=40)
+
+
 class AssistantBody(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     instructions: str = Field(min_length=1, max_length=12000)
     model: str = Field(max_length=80)
+    voice: VoiceAssistantBody | None = None
 
 
 class RecordingBody(BaseModel):
@@ -625,17 +649,32 @@ def create_app(workspace: Workspace, run_worker: bool = True):
         if body.model not in workspace.config.generation_models or not body.name.strip() or not body.instructions.strip():
             fail(422, "Choose an approved model and provide a name and instructions")
         with workspace.db() as db:
-            row = db.execute("SELECT owner FROM assistants WHERE id=?", (assistant_id,)).fetchone()
+            row = db.execute("SELECT owner,content FROM assistants WHERE id=?", (assistant_id,)).fetchone()
             if row and row[0] != user["id"]:
                 fail(404, "Assistant not found")
-            db.execute("INSERT OR REPLACE INTO assistants VALUES(?,?,?)", (assistant_id, user["id"], workspace.encode(body.model_dump())))
+            value = body.model_dump(exclude={"voice"})
+            # An older client's PUT must never erase the new voice configuration.
+            if "voice" in body.model_fields_set:
+                voice = body.voice or VoiceAssistantBody()
+                if voice.model not in workspace.config.voice_models or voice.voice not in workspace.config.voice_voices:
+                    fail(422, "Choose an approved voice and voice model")
+                value["voice"] = voice.model_dump()
+            elif row:
+                value["voice"] = workspace.decode(row["content"]).get("voice", VoiceAssistantBody().model_dump())
+            else:
+                value["voice"] = VoiceAssistantBody().model_dump()
+            db.execute("INSERT OR REPLACE INTO assistants VALUES(?,?,?)", (assistant_id, user["id"], workspace.encode(value)))
             workspace.audit(db, user["id"], "assistant-saved", assistant_id)
-        return {"id": assistant_id, **body.model_dump()}
+        from .voice import VoiceStore
+        VoiceStore(workspace).repair_default(user["id"])
+        return {"id": assistant_id, **value}
 
     @app.delete("/api/assistants/{assistant_id}")
     def delete_assistant(assistant_id: str, user=Depends(account)):
         with workspace.db() as db:
             db.execute("DELETE FROM assistants WHERE id=? AND owner=?", (assistant_id, user["id"]))
+        from .voice import VoiceStore
+        VoiceStore(workspace).repair_default(user["id"])
         return {"ok": True}
 
     @app.get("/api/recordings")
@@ -823,4 +862,6 @@ def create_app(workspace: Workspace, run_worker: bool = True):
             workspace.audit(db, user["id"], "chat-completed", record_id)
             return workspace.public_record(workspace.recording(db, record_id, user))
 
+    from .voice import install_private_routes
+    install_private_routes(app, workspace, account, admin)
     return app

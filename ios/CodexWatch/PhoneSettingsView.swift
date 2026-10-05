@@ -25,6 +25,7 @@ struct PhoneSettingsView: View {
                 account(user)
                 models
                 assistants
+                watchVoice
                 Section("Recording workflow") {
                     Label("Review, then tap Process", systemImage: "checkmark.circle")
                     Label("Audio and results kept until deleted", systemImage: "tray.full")
@@ -130,6 +131,24 @@ struct PhoneSettingsView: View {
                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
         }
     }
+    private var watchVoice: some View {
+        Section("Watch voice") {
+            if let config = workspace.voiceConfiguration {
+                Picker("Default Watch assistant", selection: Binding(get: { config.default_assistant_id }, set: { id in
+                    run { try await workspace.setDefaultVoiceAssistant(id) }
+                })) {
+                    if config.assistants.isEmpty { Text("Enable voice on an assistant").tag("") }
+                    ForEach(config.assistants) { Text($0.name).tag($0.id) }
+                }
+                Button("Set up Watch voice") { run { try await workspace.provisionWatchVoice() } }
+                    .disabled(working || !config.enabled || config.assistants.isEmpty)
+            }
+            NavigationLink("Voice conversation history") { PhoneVoiceHistoryView() }
+            if let message = workspace.voiceMessage { Text(message).font(.footnote).foregroundStyle(ScribeTheme.muted) }
+            Text("Talk through your Watch using its shortcut or complication. Your Watch needs internet and the PC must be online. Text is saved; audio is not retained.")
+                .font(.footnote).foregroundStyle(ScribeTheme.muted)
+        }
+    }
     private func clearPasswords() { password = ""; repeatedPassword = "" }
     private func run(_ operation: @escaping @MainActor () async throws -> Void) {
         working = true
@@ -154,8 +173,23 @@ struct PhoneAssistantEditor: View {
             }
             Section("Custom instructions") {
                 TextEditor(text: $assistant.instructions).frame(minHeight: 240).privacySensitive()
-                Text("Describe the output, tone, structure, and facts this assistant should focus on. It works from your recording and follow-up messages.")
+                Text("Describe this assistant's purpose, tone, and instructions. These also apply when you enable Watch voice conversations.")
                     .font(.footnote).foregroundStyle(ScribeTheme.muted)
+            }
+            Section("Watch voice") {
+                Toggle("Enable voice conversations", isOn: $assistant.voiceSettings.enabled)
+                if assistant.voiceSettings.enabled {
+                    Picker("Voice", selection: $assistant.voiceSettings.voice) {
+                        ForEach(workspace.voiceConfiguration?.voices ?? ["marin", "cedar"], id: \.self) { Text($0.capitalized).tag($0) }
+                    }
+                    if let models = workspace.voiceConfiguration?.models, models.count > 1 {
+                        Picker("Voice model", selection: $assistant.voiceSettings.model) {
+                            ForEach(models, id: \.self) { Text($0).tag($0) }
+                        }
+                    }
+                    Text("Quick launches start a fresh conversation. Resume a saved conversation from History.")
+                        .font(.footnote).foregroundStyle(ScribeTheme.muted)
+                }
             }
             if workspace.assistants.contains(where: { $0.id == assistant.id }) {
                 Section { Button("Delete assistant", role: .destructive) { deleting = true } }

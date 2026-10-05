@@ -12,10 +12,14 @@ struct CodexWatchApp: App {
     )
     @StateObject private var recorder = AudioRecorderService.shared
     @StateObject private var queue = RecordingQueueStore.shared
+    @StateObject private var voice = WatchVoiceService.shared
 
     init() {
         CodexWatchWatchShortcuts.updateAppShortcutParameters()
         ScribePreviewFixtures.loadIfRequested()
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-scribe-watch-voice") { WatchVoiceService.shared.loadPreview() }
+        #endif
     }
 
     var body: some Scene {
@@ -34,10 +38,14 @@ struct CodexWatchApp: App {
             .environmentObject(store)
             .environmentObject(recorder)
             .environmentObject(queue)
+            .sheet(isPresented: $voice.isPresented) {
+                NavigationStack { WatchVoiceView() }
+            }
             .tint(ScribeTheme.red)
             .background(ScribeTheme.background)
             .preferredColorScheme(.dark)
             .onChange(of: scenePhase) { _, phase in
+                if phase == .background { voice.end(message: "Conversation ended when Scribe Pilot left the foreground.") }
                 guard phase == .active else { return }
                 Task {
                     await WatchShortcutCommandRouter.consumePendingCommand(using: recorder)
@@ -55,6 +63,9 @@ struct CodexWatchApp: App {
                         using: recorder
                     )
                 }
+            }
+            .onContinueUserActivity(ScribePilotComplication.voiceActivityType) { activity in
+                Task { await WatchShortcutCommandRouter.handleComplicationActivity(activity, using: recorder) }
             }
             .onOpenURL { url in
                 Task {

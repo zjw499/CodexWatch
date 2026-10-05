@@ -1,11 +1,20 @@
 param(
     [Parameter(Mandatory=$true)][string] $Version,
     [string] $PipelineRoot = "D:\watch-audio-pipeline",
-    [string] $KeyFile = "C:\Users\zjw49\Desktop\OPENAI_API_KEY.txt"
+    [string] $KeyFile = "C:\Users\zjw49\Desktop\OPENAI_API_KEY.txt",
+    [switch] $InstallVoiceGateway,
+    [switch] $ExposeVoiceGateway
 )
 $ErrorActionPreference = "Stop"
 if ($Version -notmatch '^[a-f0-9]{40}$') { throw "Use the verified source commit SHA" }
+if ($ExposeVoiceGateway -and -not $InstallVoiceGateway) { throw "Install the scoped voice gateway before exposing it" }
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$sourceCommit = (& git -C $sourceRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $sourceCommit -ne $Version) { throw 'Deploy only the selected checkout commit' }
+& git -C $sourceRoot diff --quiet HEAD -- server_workspace scripts/deploy_workspace.ps1 scripts/workspace_supervisor.ps1 scripts/install_workspace_supervisor.ps1
+if ($LASTEXITCODE -ne 0) { throw 'Commit and verify the scoped workspace deployment files first' }
+& git -C $sourceRoot ls-files --error-unmatch server_workspace/voice.py | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'The voice module must be included in the verified source commit' }
 $pipeline = (Resolve-Path -LiteralPath $PipelineRoot).Path
 $runtimeRoot = Join-Path $pipeline ".runtime"
 $privateRoot = Join-Path $runtimeRoot "scribe-workspace"
@@ -33,7 +42,7 @@ foreach ($sid in @($identity.User, (New-Object System.Security.Principal.Securit
 New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 $moduleDestination = Join-Path $releaseRoot "server_workspace"
 New-Item -ItemType Directory -Path $moduleDestination -Force | Out-Null
-$files = @('__init__.py', 'workspace.py', 'audio.py', 'run.py', 'requirements.txt')
+$files = @('__init__.py', 'workspace.py', 'audio.py', 'voice.py', 'run.py', 'requirements.txt')
 $manifest = @()
 foreach ($name in $files) {
     $source = Join-Path $sourceRoot "server_workspace\$name"
@@ -58,6 +67,8 @@ if (-not (Test-Path -LiteralPath $configuration)) {
 $decoder = (Get-Command ffmpeg -ErrorAction Stop).Source
 Set-Content -LiteralPath (Join-Path $privateRoot 'audio-decoder.txt') -Value $decoder -Encoding utf8 -NoNewline
 $env:PYTHONPATH = $releaseRoot
+& $python -m pip install -r (Join-Path $moduleDestination 'requirements.txt') --quiet
+if ($LASTEXITCODE -ne 0) { throw "Workspace dependency installation failed" }
 & $python -m compileall -q $moduleDestination
 if ($LASTEXITCODE -ne 0) { throw "Workspace source validation failed" }
 if (-not (Test-Path -LiteralPath (Join-Path $privateRoot 'workspace.sqlite3'))) {
@@ -71,6 +82,14 @@ Set-Content -LiteralPath $pointer -Value $releaseRoot -NoNewline
 & (Join-Path $PSScriptRoot 'install_workspace_supervisor.ps1') -PrivateRoot $privateRoot -PythonPath $python
 & $tailscale serve --bg --yes --set-path=/workspace http://127.0.0.1:8790
 if ($LASTEXITCODE -ne 0) { throw "Workspace started locally, but private HTTPS routing failed" }
+if ($InstallVoiceGateway) {
+    & (Join-Path $PSScriptRoot 'install_workspace_supervisor.ps1') -PrivateRoot $privateRoot -PythonPath $python -ServiceMode 'voice-serve'
+}
+if ($ExposeVoiceGateway) {
+    # A separate HTTPS port leaves the private 443 workspace/legacy routes intact.
+    & $tailscale funnel --bg --https=8443 http://127.0.0.1:8791
+    if ($LASTEXITCODE -ne 0) { throw "Voice is installed locally; the node still needs Tailscale Funnel authorization" }
+}
 Write-Output "Workspace release installed: $Version"
 Write-Output "Private HTTPS: https://zwyattpc.tail488e93.ts.net/workspace"
 Write-Output "Administrator invitation: $(Join-Path $privateRoot 'administrator-invitation.txt')"

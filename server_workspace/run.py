@@ -15,7 +15,7 @@ def load(path: Path) -> WorkspaceConfig:
     values = json.loads(path.read_text(encoding="utf-8-sig"))
     values["root"] = Path(values["root"])
     values["key_file"] = Path(values["key_file"])
-    for key in ("transcription_models", "generation_models"):
+    for key in ("transcription_models", "generation_models", "voice_models", "voice_voices"):
         if key in values:
             values[key] = tuple(values[key])
     return WorkspaceConfig(**values, config_file=path)
@@ -24,11 +24,11 @@ def load(path: Path) -> WorkspaceConfig:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("command", choices=["serve", "bootstrap", "reset-password"])
+    parser.add_argument("command", choices=["serve", "voice-serve", "bootstrap", "reset-password"])
     parser.add_argument("--username", default="admin")
-    parser.add_argument("--port", type=int, default=8790)
+    parser.add_argument("--port", type=int)
     args = parser.parse_args()
-    workspace = Workspace(load(args.config))
+    workspace = Workspace(load(args.config), recover_jobs=args.command == "serve")
     if args.command == "bootstrap":
         with workspace.db() as db:
             if db.execute("SELECT 1 FROM users WHERE role='admin' AND active=1").fetchone():
@@ -54,8 +54,11 @@ def main():
             db.execute("DELETE FROM sessions WHERE user_id=?", (user[0],))
             workspace.audit(db, "local-recovery", "password-reset", user[0])
         print("Password updated; existing sessions revoked")
+    elif args.command == "voice-serve":
+        from server_workspace.voice import create_voice_app
+        uvicorn.run(create_voice_app(workspace), host="127.0.0.1", port=args.port or 8791, access_log=False, log_level="critical")
     else:
-        uvicorn.run(create_app(workspace), host="127.0.0.1", port=args.port, access_log=False, log_level="warning")
+        uvicorn.run(create_app(workspace), host="127.0.0.1", port=args.port or 8790, access_log=False, log_level="warning")
 
 
 if __name__ == "__main__":

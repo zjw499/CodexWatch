@@ -372,8 +372,13 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
                     self.lastRecordingID = nil
                 }
                 RecordingQueueStore.shared.setAccount(owner)
+                WatchVoiceService.shared.applyAccount(owner: owner,
+                    configurationData: applicationContext["voice_config"] as? Data,
+                    credentialData: applicationContext["voice_credential"] as? Data)
                 UserDefaults.standard.set(applicationContext["username"] as? String ?? "", forKey: "ScribePilot.WorkspaceUsername")
                 self.openAIReady = applicationContext["ready"] as? Bool ?? false
+                if let status = applicationContext["meeting_status"] as? [String: String],
+                   status["recording_id"] == self.lastRecordingID { self.meetingStatus = status["status"] }
             }
             return
         }

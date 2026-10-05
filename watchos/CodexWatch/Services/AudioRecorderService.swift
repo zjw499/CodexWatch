@@ -225,6 +225,10 @@ final class AudioRecorderService: NSObject, ObservableObject {
     }
 
     func startRecording() async {
+        guard !WatchVoiceService.shared.isActive else {
+            errorMessage = "End your voice conversation before starting a meeting recording."
+            return
+        }
         guard !isRecording else {
             statusMessage = "Already recording"
             return
@@ -239,6 +243,11 @@ final class AudioRecorderService: NSObject, ObservableObject {
 
         guard await requestMicrophonePermission() else {
             statusMessage = "Allow microphone access in Watch Settings"
+            return
+        }
+
+        guard !WatchVoiceService.shared.isActive else {
+            errorMessage = "End your voice conversation before starting a meeting recording."
             return
         }
 
