@@ -45,7 +45,7 @@ struct WatchVoiceView: View {
                         Button("End", role: .destructive) { voice.end() }.tint(ScribeTheme.red)
                     }
                 } else { Button("New conversation") { Task { await voice.newConversation() } } }
-                ForEach(Array(voice.turns.suffix(4))) { turn in
+                ForEach(Array(voice.turns.suffix(4).reversed())) { turn in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(turn.role == "user" ? "You" : "Assistant").font(.caption2.bold()).foregroundStyle(ScribeTheme.muted)
                         Text(turn.text).font(.caption).privacySensitive().lineLimit(6)

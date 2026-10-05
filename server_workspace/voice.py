@@ -557,6 +557,12 @@ class VoiceSession:
             return
         self.state = "ended"
         self.ended_at = time.monotonic()
+        # A completed provider transcript does not prove the Watch heard its audio.
+        unheard = {item for item, turn in self.turns.items() if turn["role"] == "assistant" and not turn["final"]}
+        if self.last_output_item:
+            unheard.add(self.last_output_item)
+        for item in unheard:
+            self.save(item, "assistant", interrupted=True)
         for task in (self.reader, self.monitor):
             if task and task is not asyncio.current_task():
                 task.cancel()

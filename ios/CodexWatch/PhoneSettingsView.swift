@@ -182,6 +182,7 @@ struct PhoneAssistantEditor: View {
                     Picker("Voice", selection: $assistant.voiceSettings.voice) {
                         ForEach(workspace.voiceConfiguration?.voices ?? ["marin", "cedar"], id: \.self) { Text($0.capitalized).tag($0) }
                     }
+                    .accessibilityIdentifier("assistant-voice-picker")
                     if let models = workspace.voiceConfiguration?.models, models.count > 1 {
                         Picker("Voice model", selection: $assistant.voiceSettings.model) {
                             ForEach(models, id: \.self) { Text($0).tag($0) }

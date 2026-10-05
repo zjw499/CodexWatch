@@ -75,7 +75,7 @@ final class ScribePilotUITests: XCTestCase {
         XCTAssertTrue(voice.waitForExistence(timeout: 15))
         voice.tap()
         app.swipeUp()
-        XCTAssertTrue(app.staticTexts["Voice"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["assistant-voice-picker"].firstMatch.waitForExistence(timeout: 15))
         screenshot("phone-assistant-voice-editor")
     }
     func testFullRecordingReplayCoverageAndRetranscriptionControls() {

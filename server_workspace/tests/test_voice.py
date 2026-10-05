@@ -304,6 +304,20 @@ def test_fully_played_answers_are_kept_when_the_user_speaks_again(voice):
     assert detail["turns"][0]["interrupted"] is False
 
 
+def test_connection_loss_labels_unconfirmed_audio_and_excludes_it_from_resume(voice):
+    s = start(voice)
+    push(voice, {"type": "conversation.item.input_audio_transcription.completed", "item_id": "u1", "transcript": "Question"})
+    push(voice, {"type": "response.output_audio.delta", "item_id": "a1", "delta": base64.b64encode(bytes(9600)).decode()})
+    push(voice, {"type": "response.output_audio_transcript.done", "item_id": "a1", "transcript": "Playback was not confirmed"})
+    session = voice[2].app.state.voice.sessions[s["id"]]
+    voice[2].portal.call(session.end, "The Watch disconnected.")
+    detail = VoiceStore(voice[0]).conversation(s["conversation_id"], voice[3]["alice"][0]["user"]["id"])
+    assert detail["turns"][1]["interrupted"] is True
+    start(voice, "resume-disconnected", conversation_id=s["conversation_id"])
+    seeds = [e["item"]["content"][0]["text"] for e in voice[7][-1].sent if e["type"] == "conversation.item.create"]
+    assert seeds == ["Question"]
+
+
 def test_delayed_input_transcription_preserves_turn_order(voice):
     s = start(voice)
     push(voice, {"type": "input_audio_buffer.speech_started", "item_id": "u1"})
