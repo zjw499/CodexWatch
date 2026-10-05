@@ -31,11 +31,13 @@ class Peer:
 
 
 @pytest.fixture
-def voice(tmp_path):
+def voice(tmp_path, request):
     w = Workspace(WorkspaceConfig(tmp_path, Path("unused-key"), "org-test", "proj-test", baa_verified=True,
                                  retention_verified=True, safeguards_verified=True, approval_evidence="Synthetic fixture"),
                   TestCipher(), Provider(), FixtureAudioPreparer())
     private = TestClient(create_app(w, run_worker=False))
+    private.__enter__()
+    request.addfinalizer(lambda: private.__exit__(None, None, None))
     people = {}
     for name, role in (("admin", "admin"), ("alice", "user"), ("bobby", "user")):
         invite = w.invite(name, role)

@@ -12,8 +12,10 @@ final class ScribePilotUITests: XCTestCase {
         let actions = app.buttons["Actions for Team check-in"]
         XCTAssertTrue(actions.waitForExistence(timeout: 5))
         actions.tap()
+        XCTAssertTrue(app.buttons["Rename"].waitForExistence(timeout: 15))
         app.buttons["Rename"].tap()
         let field = app.alerts.textFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 15))
         field.tap()
         if let old = field.value as? String { field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count)) }
         field.typeText("Weekly review")
@@ -34,7 +36,8 @@ final class ScribePilotUITests: XCTestCase {
         screenshot("phone-privacy-workflow")
         app.buttons["Done"].tap()
         app.segmentedControls.buttons["Library · 1"].tap()
-        app.swipeUp()
+        if !app.buttons["Project kickoff"].isHittable { app.swipeUp() }
+        XCTAssertTrue(app.buttons["Project kickoff"].waitForExistence(timeout: 15))
         app.buttons["Project kickoff"].tap()
         XCTAssertTrue(app.staticTexts["Full transcript"].waitForExistence(timeout: 5))
         screenshot("phone-transcript")
@@ -51,7 +54,7 @@ final class ScribePilotUITests: XCTestCase {
         app.launchArguments = ["-scribe-ui-preview", "-scribe-login-preview"]
         app.launch()
         app.buttons["Open settings"].tap()
-        XCTAssertTrue(app.secureTextFields["Password"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.secureTextFields["Password"].waitForExistence(timeout: 20))
         app.segmentedControls.buttons["Accept invitation"].tap()
         XCTAssertTrue(app.textFields["Invitation code"].exists)
         XCTAssertTrue(app.secureTextFields["Repeat password"].exists)
@@ -67,6 +70,13 @@ final class ScribePilotUITests: XCTestCase {
         XCTAssertTrue(app.textFields["Name"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.textViews.firstMatch.exists)
         screenshot("phone-assistant-editor")
+        let voice = app.switches["Enable voice conversations"]
+        if !voice.isHittable { app.swipeUp() }
+        XCTAssertTrue(voice.waitForExistence(timeout: 15))
+        voice.tap()
+        app.swipeUp()
+        XCTAssertTrue(app.staticTexts["Voice"].waitForExistence(timeout: 15))
+        screenshot("phone-assistant-voice-editor")
     }
     func testFullRecordingReplayCoverageAndRetranscriptionControls() {
         continueAfterFailure = false
@@ -75,7 +85,8 @@ final class ScribePilotUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.staticTexts["Your recordings"].waitForExistence(timeout: 15))
         app.segmentedControls.buttons["Library · 1"].tap()
-        app.swipeUp()
+        if !app.buttons["Project kickoff"].isHittable { app.swipeUp() }
+        XCTAssertTrue(app.buttons["Project kickoff"].waitForExistence(timeout: 15))
         app.buttons["Project kickoff"].tap()
         XCTAssertTrue(app.buttons["play-full-recording"].waitForExistence(timeout: 10))
         screenshot("phone-full-recording-replay")

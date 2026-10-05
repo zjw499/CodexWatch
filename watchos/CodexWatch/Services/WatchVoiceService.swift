@@ -292,7 +292,7 @@ final class WatchVoiceService: ObservableObject {
         assistantName = "Everyday assistant"; state = "speaking"; message = nil
         turns = [VoiceTurn(id: "preview-user", role: "user", text: "Help me plan my afternoon.", final: true, interrupted: false),
                  VoiceTurn(id: "preview-assistant", role: "assistant", text: "Start with your most important task, then leave time for a walk. What needs to be finished today?", final: true, interrupted: false)]
-        isPresented = true
+        isActive = true; isPresented = true
     }
     #endif
 }
