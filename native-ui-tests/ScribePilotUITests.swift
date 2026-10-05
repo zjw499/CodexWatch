@@ -73,7 +73,11 @@ final class ScribePilotUITests: XCTestCase {
         let voice = app.switches["Enable voice conversations"]
         if !voice.isHittable { app.swipeUp() }
         XCTAssertTrue(voice.waitForExistence(timeout: 15))
-        voice.tap()
+        let voiceControl = voice.descendants(matching: .switch).firstMatch
+        XCTAssertTrue(voiceControl.waitForExistence(timeout: 15))
+        voiceControl.tap()
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "1"), object: voiceControl)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed)
         app.swipeUp()
         XCTAssertTrue(app.descendants(matching: .any)["assistant-voice-picker"].firstMatch.waitForExistence(timeout: 15))
         screenshot("phone-assistant-voice-editor")
