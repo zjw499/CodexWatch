@@ -88,6 +88,10 @@ Funnel may require the owner to authorize the PC node in Tailscale; do not broad
 tailnet permissions automatically. Separate Windows scheduled tasks supervise
 workspace and voice processes, with separate locks, PID files, health checks and
 logs. Install the backend before the new app so new clients receive additive APIs.
+Run `python scripts/verify_voice_gateway.py` from an external connection to check
+public TLS, authentication and route isolation without credentials or provider
+requests. The **Verify public voice gateway** workflow can run the same check from
+a hosted runner; the PC and Funnel must be online.
 
 Physical acceptance: test Watch mic and speaker with no headphones; repeat using
 headphones; verify echo does not trigger self-responses; interrupt an answer and
