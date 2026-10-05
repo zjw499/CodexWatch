@@ -19,7 +19,9 @@ struct PhoneVoicePolicyView: View {
             Section("Conversation limits") {
                 Stepper("Session: \(policy.session_seconds / 60) minutes", value: $policy.session_seconds, in: 60...3600, step: 60)
                 Stepper("Inactivity: \(policy.idle_seconds) seconds", value: $policy.idle_seconds, in: 30...600, step: 30)
-                Text("One active conversation per account.").font(.footnote).foregroundStyle(ScribeTheme.muted)
+                Stepper("Active conversations: \(policy.max_active_sessions ?? 1)", value: Binding(
+                    get: { policy.max_active_sessions ?? 1 }, set: { policy.max_active_sessions = $0 }), in: 1...16)
+                Text("Each Watch runs one conversation at a time.").font(.footnote).foregroundStyle(ScribeTheme.muted)
             }
             Button("Save voice policy") {
                 busy = true

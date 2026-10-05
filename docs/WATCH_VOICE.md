@@ -69,7 +69,9 @@ logs. Gateway startup recovers voice sessions only, never recording jobs.
 Voice is disabled by default. Organization administration includes a voice policy
 bound to the configured organization/project: Realtime Modified Retention evidence,
 physical Watch acceptance, and limits (600 seconds per session, 120 seconds idle,
-one live session per account). Start creation is limited to 60 requests per 15
+one live session per account by default). Administrators can adjust all three limits;
+an already-active conversation cannot be resumed on a second connection.
+Start creation is limited to 60 requests per 15
 minutes per account; PCM uploads are limited to real-time rate and body size.
 
 An administrator-only pilot permits physical-device testing once Realtime retention

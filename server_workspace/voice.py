@@ -26,6 +26,7 @@ class VoicePolicy(BaseModel):
     approval_evidence: str = Field(default="", max_length=4000)
     session_seconds: int = Field(default=600, ge=60, le=3600)
     idle_seconds: int = Field(default=120, ge=30, le=600)
+    max_active_sessions: int = Field(default=1, ge=1, le=16)
     organization_id: str = ""
     project_id: str = ""
 
@@ -603,9 +604,12 @@ class VoiceGateway:
                     if old["id"] in self.sessions:
                         return self.sessions[old["id"]].info()
                     fail(410, "That connection ended. Start a new conversation")
-                if db.execute("SELECT 1 FROM voice_sessions WHERE owner=? AND state='active'", (user["id"],)).fetchone():
-                    fail(409, "End your current voice conversation first")
+                active = db.execute("SELECT COUNT(*) FROM voice_sessions WHERE owner=? AND state='active'", (user["id"],)).fetchone()[0]
+                if active >= self.store.policy().max_active_sessions:
+                    fail(409, "End a current conversation before starting another")
                 previous = self.store.conversation(body.conversation_id, user["id"]) if body.conversation_id else None
+                if previous and db.execute("SELECT 1 FROM voice_sessions WHERE conversation_id=? AND state='active'", (previous["id"],)).fetchone():
+                    fail(409, "End this conversation's current connection before resuming it")
                 aid = body.assistant_id or (previous["assistant_id"] if previous else default_assistant)
                 row = db.execute("SELECT content FROM assistants WHERE id=? AND owner=?", (aid, user["id"])).fetchone()
                 if not row or not any(p["id"] == aid for p in self.store.profiles(user["id"])):
@@ -627,8 +631,9 @@ class VoiceGateway:
                 self.store.w.audit(db, user["id"], "voice-session-started", sid)
             session = VoiceSession(self, sid, user, conversation, profile)
             self.sessions[sid] = session
-            await session.start()
-            return session.info()
+        # Provider setup for one user must not hold every user's creation lock.
+        await session.start()
+        return session.info()
 
     def session(self, sid, user):
         session = self.sessions.get(identifier(sid))

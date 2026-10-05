@@ -7,8 +7,8 @@ import time
 from fastapi.testclient import TestClient
 import pytest
 
-from server_workspace.workspace import Workspace, WorkspaceConfig, create_app
-from server_workspace.voice import VoiceStore, create_voice_app
+from server_workspace.workspace import Workspace, WorkspaceConfig, create_app, digest
+from server_workspace.voice import VoiceStore, SessionBody, create_voice_app
 from server_workspace.tests.test_workspace import TestCipher, Provider, FixtureAudioPreparer
 
 
@@ -176,6 +176,47 @@ def test_create_idempotent_one_active_and_named_assistant_validation(voice):
     assert voice[2].post("/voice/v1/sessions", headers=voice[6], json={"request_id": "another"}).status_code == 409
     voice[2].post(f"/voice/v1/sessions/{s['id']}/control", headers=voice[6], json={"action": "end"})
     assert voice[2].post("/voice/v1/sessions", headers=voice[6], json={"request_id": "missing", "assistant_id": "missing"}).status_code == 404
+
+
+def test_administrator_can_adjust_active_limit_without_duplicate_resume(voice):
+    private, public, ah, h = voice[1], voice[2], voice[3]["admin"][1], voice[6]
+    policy = private.get("/api/admin/voice/policy", headers=ah).json()
+    assert policy["max_active_sessions"] == 1
+    policy["max_active_sessions"] = 2
+    assert private.put("/api/admin/voice/policy", headers=ah, json=policy).status_code == 200
+    first, second = start(voice), start(voice, "parallel")
+    assert first["id"] != second["id"]
+    assert public.post("/voice/v1/sessions", headers=h, json={"request_id": "over-limit"}).status_code == 409
+    public.post(f"/voice/v1/sessions/{second['id']}/control", headers=h, json={"action": "end"})
+    assert public.post("/voice/v1/sessions", headers=h,
+                       json={"request_id": "duplicate-resume", "conversation_id": first["conversation_id"]}).status_code == 409
+
+
+def test_slow_provider_setup_does_not_block_another_user(voice):
+    w, private, public, people, _, device, _, peers = voice
+    bh = people["bobby"][1]
+    assistant = private.get("/api/assistants", headers=bh).json()["assistants"][0]
+    assistant["voice"] = {"enabled": True, "model": "gpt-realtime-2.1", "voice": "cedar"}
+    assert private.put("/api/assistants/"+assistant["id"], headers=bh, json=assistant).status_code == 200
+    other = private.post("/api/voice/devices", headers=bh, json={"device_id": "watch-bobby"}).json()
+    store = VoiceStore(w)
+    alice, bob = store.authenticate_hash(digest(device["token"])), store.authenticate_hash(digest(other["token"]))
+    gateway = public.app.state.voice
+    async def prove():
+        started, release = asyncio.Event(), asyncio.Event()
+        async def factory(_, __, owner):
+            if owner == alice["id"]:
+                started.set(); await release.wait()
+            peer = Peer(); peers.append(peer); return peer
+        gateway.peer_factory = factory
+        pending = asyncio.create_task(gateway.create(alice, SessionBody(request_id="slow-alice")))
+        await started.wait()
+        try:
+            info = await asyncio.wait_for(gateway.create(bob, SessionBody(request_id="ready-bob")), 1)
+            assert info["state"] != "ended"
+        finally:
+            release.set(); await pending
+    public.portal.call(prove)
 
 
 def test_audio_retries_mute_sequence_and_size_validation(voice):

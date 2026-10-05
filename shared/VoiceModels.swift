@@ -102,6 +102,7 @@ struct VoicePolicy: Codable {
     var approval_evidence = ""
     var session_seconds = 600
     var idle_seconds = 120
+    var max_active_sessions: Int? = 1
     var organization_id = ""
     var project_id = ""
 }
