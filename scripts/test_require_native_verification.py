@@ -11,11 +11,15 @@ import require_native_verification as gate
 
 
 class NativeReleaseGateTests(unittest.TestCase):
-    def run_gate(self, *, changed_watch=False, conclusion="success", workflow="Verify Scribe Pilot phone and Watch"):
+    def run_gate(self, *, changed_watch=False, conclusion="success", workflow="Verify Scribe Pilot phone and Watch", pilot=False, required_conclusion="success"):
         def response(request, timeout):
             path = request.full_url.split("/repos/example/app/", 1)[1]
             if path == "actions/runs/123":
                 value = {"name": workflow, "head_sha": "tested", "status": "completed", "conclusion": conclusion}
+            elif path == "actions/runs/123/jobs":
+                value = {"jobs": [{"name": "native", "steps": [
+                    {"name": name, "status": "completed", "conclusion": required_conclusion} for name in gate.REQUIRED_STEPS] + [
+                    {"name": "Capture Watch preview", "status": "completed", "conclusion": conclusion}]}]}
             elif path.startswith("commits/"):
                 value = {"commit": {"tree": {"sha": path.split("/")[-1]}}}
             elif path.startswith("git/trees/"):
@@ -29,7 +33,7 @@ class NativeReleaseGateTests(unittest.TestCase):
             return io.BytesIO(json.dumps(value).encode())
 
         env = {"GITHUB_REPOSITORY": "example/app", "GITHUB_SHA": "release", "GH_TOKEN": "synthetic-secret",
-               "NATIVE_VERIFICATION_RUN": "Pilot release\nnative-verification-run=123"}
+               "NATIVE_VERIFICATION_RUN": "Pilot release\nnative-verification-run=123", "PILOT_RELEASE": "true" if pilot else "false"}
         output = io.StringIO()
         with patch.dict(os.environ, env), patch("urllib.request.urlopen", side_effect=response), contextlib.redirect_stdout(output):
             gate.main()
@@ -51,6 +55,16 @@ class NativeReleaseGateTests(unittest.TestCase):
     def test_another_workflow_cannot_stand_in_for_native_tests(self):
         with self.assertRaisesRegex(RuntimeError, "native verification workflow"):
             self.run_gate(workflow="Only package artifacts")
+
+    def test_pilot_accepts_completed_checks_when_only_preview_is_cancelled(self):
+        output = self.run_gate(pilot=True, conclusion="cancelled")
+        self.assertIn("tests passed for pilot distribution", output)
+        self.assertIn("preview/artifact completion is unverified", output)
+
+    def test_pilot_cannot_release_failed_or_skipped_required_checks(self):
+        for conclusion in ("failure", "cancelled", "timed_out", "skipped"):
+            with self.subTest(conclusion=conclusion), self.assertRaisesRegex(RuntimeError, "required native check"):
+                self.run_gate(pilot=True, required_conclusion=conclusion)
 
     def test_missing_native_source_is_rejected(self):
         def get(path):

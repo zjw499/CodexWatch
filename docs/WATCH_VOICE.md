@@ -138,9 +138,13 @@ authorized workflow commit marked `[watch-voice-pilot]` requests the pilot and
 records its retention confirmation in the commit body.
 Before distribution, supply **native_verification_run** (or record
 `native-verification-run=RUN_ID` in an authorized pilot commit). Signed archive
-preparation can run alongside native checks; upload waits for that successful run
-and verifies matching app, shared, backend, test and native-workflow source. A stale,
-failed or cancelled run cannot authorize distribution. Uploaded builds are checked
+preparation can run alongside native checks. The pilot requires completed successful
+backend, native build, unit and phone UI test steps with matching app, shared, backend,
+test and native-workflow source; signed archive checks separately validate Watch
+intents and complications. A cancelled simulator preview/export does not invalidate
+completed test results for a pilot. Missing, skipped, failed or cancelled required
+tests block upload, as does different app source. Production distribution also
+requires overall native workflow success. Uploaded builds are checked
 for valid processing, export compliance, and internal-test access automatically.
 These inputs document the operator's attestation; the backend's encrypted policy
 remains the authority for enabling live voice. Archive creation does not establish

@@ -8,6 +8,7 @@ import urllib.request
 
 
 SOURCE_PATHS = {"ios", "watchos", "shared", "native-tests", "native-ui-tests", "server_workspace", "project.yml"}
+REQUIRED_STEPS = {"Verify workspace isolation and durable jobs", "Build phone and Watch and run queue tests"}
 
 
 def read_json(request, *, opener=None, sleep=None):
@@ -39,6 +40,19 @@ def source_fingerprint(get, sha):
     return source
 
 
+def required_checks_passed(get, run_id):
+    jobs = get(f"actions/runs/{run_id}/jobs")["jobs"]
+    native = [job for job in jobs if job["name"] == "native"]
+    if len(native) != 1:
+        return False
+    checks = {step["name"]: step for step in native[0]["steps"] if step["name"] in REQUIRED_STEPS}
+    for step in checks.values():
+        if step.get("conclusion") in {"failure", "cancelled", "timed_out", "skipped"}:
+            raise RuntimeError("A required native check did not pass; distribution stopped")
+    return checks.keys() == REQUIRED_STEPS and all(
+        step["status"] == "completed" and step.get("conclusion") == "success" for step in checks.values())
+
+
 def main():
     evidence = os.environ.get("NATIVE_VERIFICATION_RUN", "")
     match = re.search(r"native-verification-run=(\d+)", evidence)
@@ -66,8 +80,16 @@ def main():
         if status != last_status:
             print(f"Native verification {run_id}: {status[0]} / {status[1]}", flush=True)
             last_status = status
+        checks_passed = required_checks_passed(get, run_id)
+        # Signed archive validation separately proves Watch intents and complications.
+        # An authorized pilot needs build/tests; simulator preview/export is supplemental.
+        if os.environ.get("PILOT_RELEASE") == "true" and checks_passed:
+            print("Matching native build and backend/unit/UI tests passed for pilot distribution.", flush=True)
+            if run["status"] != "completed" or run["conclusion"] != "success":
+                print("Supplemental simulator preview/artifact completion is unverified; physical acceptance remains pending.", flush=True)
+            return
         if run["status"] == "completed":
-            if run["conclusion"] != "success":
+            if run["conclusion"] != "success" or not checks_passed:
                 raise RuntimeError("Native verification did not pass; distribution stopped")
             print("Matching iPhone, Watch, shared, backend and test source verified.", flush=True)
             return
