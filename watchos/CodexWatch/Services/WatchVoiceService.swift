@@ -224,7 +224,7 @@ final class WatchVoiceService: ObservableObject {
                 try await self.audio.start { [weak self] packet in
                     Task { @MainActor in
                         guard let self, self.generation == run, self.isActive else { return }
-                        guard let packet else { self.end(message: VoiceError.audioRoute.localizedDescription); return }
+                        guard let packet else { self.end(message: VoiceError.audioConversion.localizedDescription); return }
                         self.capturedBatches += 1
                         self.microphoneLevel = self.muted ? 0 : VoiceAudioStatus.microphoneLevel(packet)
                         self.enqueueAudio(packet)
@@ -236,7 +236,9 @@ final class WatchVoiceService: ObservableObject {
                 self.captureWatchdog = Task { [weak self] in
                     do { try await Task.sleep(for: .seconds(5)) } catch { return }
                     guard let self, self.generation == run, self.isActive, self.capturedBatches == 0 else { return }
-                    self.end(message: "No microphone audio reached the app. Check microphone permission in Watch Settings, then start a new conversation.")
+                    let failure = self.audio.captureStatistics.startupFailure
+                        ?? "Watch audio delivery did not start (PCM-02). Start a new conversation."
+                    self.end(message: failure)
                 }
             } catch is CancellationError { }
             catch { if self.generation == run { self.end(message: error.localizedDescription) } }

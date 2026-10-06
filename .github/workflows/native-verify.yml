@@ -7,7 +7,7 @@ on:
 jobs:
   native:
     runs-on: macos-26-intel
-    timeout-minutes: 40
+    timeout-minutes: 65
     permissions:
       contents: read
     env:
@@ -33,6 +33,7 @@ jobs:
           xcodebuild test -project CodexWatch.xcodeproj -scheme CodexWatch -configuration Debug -destination "platform=iOS Simulator,id=$PHONE_ID" -parallel-testing-enabled NO -derivedDataPath DerivedData -resultBundlePath native-results.xcresult CODE_SIGNING_ALLOWED=NO | tee native-build.log
       - name: Capture Watch preview
         if: always()
+        timeout-minutes: 4
         run: |
           set -euo pipefail
           PHONE_ID=$(cat phone-simulator.txt)

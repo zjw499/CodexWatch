@@ -1,6 +1,21 @@
 import AVFoundation
 import Foundation
 
+// Local counters distinguish an absent hardware callback from conversion or delivery failures.
+struct VoiceCaptureStatistics: Sendable {
+    var inputFrames: Int64 = 0
+    var outputFrames: Int64 = 0
+    var batches = 0
+
+    var startupFailure: String? {
+        guard batches == 0 else { return nil }
+        if inputFrames == 0 {
+            return "Watch audio capture did not start (MIC-01). Microphone permission is allowed. Start a new conversation."
+        }
+        return "Watch received microphone samples but could not send converted audio (PCM-01). Start a new conversation."
+    }
+}
+
 enum VoiceAudioStatus {
     static func interruptionBegan(_ rawType: UInt?) -> Bool {
         rawType == AVAudioSession.InterruptionType.began.rawValue

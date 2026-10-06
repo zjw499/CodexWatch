@@ -1,47 +1,12 @@
 import AVFoundation
 import Foundation
 
-// Runs on the audio callback thread. Only 200 ms PCM batches leave this object.
-private final class VoicePCMEncoder: @unchecked Sendable {
-    private let converter: AVAudioConverter
-    private let format: AVAudioFormat
-    private let lock = NSLock()
-    private var pending = Data()
-    private let deliver: @Sendable (Data?) -> Void
-    init(input: AVAudioFormat, deliver: @escaping @Sendable (Data?) -> Void) throws {
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1),
-              let converter = AVAudioConverter(from: input, to: format) else { throw VoiceError.audioRoute }
-        self.format = format; self.converter = converter; self.deliver = deliver
-    }
-    func consume(_ buffer: AVAudioPCMBuffer) {
-        lock.lock(); defer { lock.unlock() }
-        let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * 24000 / buffer.format.sampleRate)) + 32
-        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { deliver(nil); return }
-        var supplied = false
-        var error: NSError?
-        converter.convert(to: output, error: &error) { _, status in
-            if supplied { status.pointee = .noDataNow; return nil }
-            supplied = true; status.pointee = .haveData; return buffer
-        }
-        guard error == nil, let channel = output.floatChannelData?[0] else { deliver(nil); return }
-        var samples = [Int16](repeating: 0, count: Int(output.frameLength))
-        for i in samples.indices {
-            let value = channel[i].isFinite ? max(-1, min(1, channel[i])) : 0
-            samples[i] = Int16((value * 32767).rounded()).littleEndian
-        }
-        samples.withUnsafeBytes { pending.append(contentsOf: $0) }
-        while pending.count >= 9600 {
-            deliver(Data(pending.prefix(9600)))
-            pending.removeFirst(9600)
-        }
-    }
-}
-
 @MainActor
 final class WatchVoiceAudio {
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
     private var encoder: VoicePCMEncoder?
+    private var graph: VoiceAudioGraph?
     private var hasInputTap = false
     private var playback = VoicePlaybackLedger()
     private var playbackGeneration = UUID()
@@ -49,6 +14,7 @@ final class WatchVoiceAudio {
     var outputItem: String?
     var onPlaybackFinished: (() -> Void)?
     var hasPendingPlayback: Bool { !playback.pending.isEmpty }
+    var captureStatistics: VoiceCaptureStatistics { encoder?.statistics ?? VoiceCaptureStatistics() }
 
     func start(deliver: @escaping @Sendable (Data?) -> Void) async throws {
         try Task.checkCancellation()
@@ -73,16 +39,17 @@ final class WatchVoiceAudio {
         self.engine = engine
         // Voice I/O provides acoustic echo cancellation for speaker conversations.
         try engine.inputNode.setVoiceProcessingEnabled(true)
+        let hardwareInput = engine.inputNode.inputFormat(forBus: 0)
+        guard hardwareInput.sampleRate > 0, hardwareInput.channelCount > 0 else { throw VoiceError.audioRoute }
         let input = engine.inputNode.outputFormat(forBus: 0)
         guard input.sampleRate > 0, input.channelCount > 0 else { throw VoiceError.audioRoute }
-        let encoder = try VoicePCMEncoder(input: input, deliver: deliver)
+        let graph = try VoiceAudioGraph(engine: engine, microphone: engine.inputNode, inputFormat: input)
+        self.graph = graph
+        self.player = graph.player
+        // Read the format after all voice I/O connections have been established.
+        let encoder = try VoicePCMEncoder(input: engine.inputNode.outputFormat(forBus: 0), deliver: deliver)
         self.encoder = encoder
-        let player = AVAudioPlayerNode()
-        engine.attach(player)
-        guard let output = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1) else { throw VoiceError.audioRoute }
-        engine.connect(player, to: engine.mainMixerNode, format: output)
-        self.player = player
-        engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: input) { buffer, _ in encoder.consume(buffer) }
+        engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { buffer, _ in encoder.consume(buffer) }
         hasInputTap = true
         engine.prepare(); try engine.start()
     }
@@ -136,7 +103,7 @@ final class WatchVoiceAudio {
         playbackGeneration = UUID()
         if let engine { if hasInputTap { engine.inputNode.removeTap(onBus: 0) }; engine.stop() }
         hasInputTap = false
-        player?.stop(); encoder = nil; player = nil; engine = nil
+        player?.stop(); encoder = nil; graph = nil; player = nil; engine = nil
         playback.reset(); outputItem = nil
         try? AVAudioSession.sharedInstance().setActive(false)
     }
