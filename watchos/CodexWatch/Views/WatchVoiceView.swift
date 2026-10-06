@@ -23,6 +23,8 @@ struct WatchVoiceHomeView: View {
                 if voice.setupState != .ready { Text(voice.setupState.message).font(.caption) }
                 Button("Sync from iPhone") { WatchConnectivityTransferService.shared.requestVoiceSetup() }.font(.caption)
                 Button("Refresh voice settings") { Task { await voice.refresh() } }.font(.caption)
+                Text("Watch build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown")")
+                    .font(.caption2).foregroundStyle(ScribeTheme.muted)
             }.padding(.horizontal, 8)
         }.task { await voice.refresh() }
         .background(ScribeTheme.background).tint(ScribeTheme.red)
@@ -41,6 +43,13 @@ struct WatchVoiceView: View {
                     .font(.caption.bold()).foregroundStyle(ScribeTheme.red)
                     .accessibilityLabel("Voice status: \(voice.state)")
                 if let message = voice.message { Text(message).font(.caption).foregroundStyle(ScribeTheme.muted) }
+                if voice.isActive {
+                    HStack {
+                        Button { voice.toggleMute() } label: { Image(systemName: voice.muted ? "mic.fill" : "mic.slash.fill") }
+                            .accessibilityLabel(voice.muted ? "Unmute" : "Mute").disabled(voice.state == "connecting")
+                        Button("End", role: .destructive) { voice.end() }.tint(ScribeTheme.red)
+                    }
+                } else { Button("New conversation") { Task { await voice.newConversation() } } }
                 if voice.isActive || voice.capturedBatches > 0 {
                     VStack(spacing: 4) {
                         ProgressView(value: voice.microphoneLevel).tint(ScribeTheme.red)
@@ -50,13 +59,6 @@ struct WatchVoiceView: View {
                         Text(voice.receivedAudio ? "Assistant audio received" : "Waiting for assistant audio")
                     }.font(.caption2).foregroundStyle(ScribeTheme.muted)
                 }
-                if voice.isActive {
-                    HStack {
-                        Button { voice.toggleMute() } label: { Image(systemName: voice.muted ? "mic.fill" : "mic.slash.fill") }
-                            .accessibilityLabel(voice.muted ? "Unmute" : "Mute").disabled(voice.state == "connecting")
-                        Button("End", role: .destructive) { voice.end() }.tint(ScribeTheme.red)
-                    }
-                } else { Button("New conversation") { Task { await voice.newConversation() } } }
                 ForEach(Array(voice.turns.suffix(4).reversed())) { turn in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(turn.role == "user" ? "You" : "Assistant").font(.caption2.bold()).foregroundStyle(ScribeTheme.muted)
