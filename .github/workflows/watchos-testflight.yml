@@ -27,7 +27,11 @@ on:
         required: false
         default: false
       release_evidence:
-        description: Non-sensitive reference to the recorded retention and physical Watch acceptance evidence
+        description: Non-sensitive retention confirmation and pilot testing or physical Watch acceptance evidence
+        required: false
+        default: ""
+      native_verification_run:
+        description: Successful native verification run covering the app source to distribute
         required: false
         default: ""
       check_only:
@@ -37,7 +41,7 @@ on:
       build_number:
         description: Existing build number to check when check_only is true
         required: false
-        default: "49"
+        default: "138"
       diagnose_only:
         description: Print the App Store Connect app and latest visible builds without polling
         required: false
@@ -45,6 +49,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: watchos-testflight-intel
@@ -54,7 +59,7 @@ jobs:
   build-and-upload:
     if: ${{ inputs.check_only != 'true' }}
     runs-on: macos-26-intel
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       APP_BUNDLE_ID: com.zachwyatt.codexwatch
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -390,6 +395,14 @@ jobs:
           path: ${{ runner.temp }}/archive-deliverables/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Require matching native verification before distribution
+        if: ${{ env.ARCHIVE_ONLY == 'false' }}
+        timeout-minutes: 46
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_VERIFICATION_RUN: ${{ inputs.native_verification_run || github.event.head_commit.message }}
+        run: python3 scripts/require_native_verification.py
 
       - name: Upload archive to TestFlight
         if: ${{ env.ARCHIVE_ONLY == 'false' }}

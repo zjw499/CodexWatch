@@ -9,8 +9,12 @@ Old client saves preserve omitted voice settings. Old profiles default to voice 
 
 1. In iPhone Settings, edit an assistant, enable voice conversations, and choose
    Marin or Cedar. The first voice-enabled assistant becomes the Watch default.
-2. In Watch voice, choose the default and tap **Set up Watch voice**. The Watch
-   needs a passcode. Provisioning requires the private workspace connection.
+2. Keep Scribe Pilot open on your unlocked Watch. In iPhone Settings > Watch voice,
+   choose the default and tap **Connect Watch voice**. The Watch needs a passcode.
+   There is no setup code to receive or enter. The iPhone transfers access through
+   WatchConnectivity and shows confirmation only after the Watch stores it securely.
+   Provisioning requires the private workspace connection. If setup is waiting,
+   tap **Sync from iPhone** on the Watch while both apps are open and nearby.
 3. Open Talk to Assistant on Watch, use its App Shortcut (default or named
    assistant), or add a Talk to Assistant / named-assistant complication.
 4. Speak normally. Mute pauses microphone transmission; End closes the conversation.
@@ -24,11 +28,23 @@ iPhone Settings. Audio is never written by the voice gateway or Watch voice flow
 Interrupted replies are labelled; unheard replies are excluded from resumed context.
 Incomplete input transcription may remain labelled as an incomplete turn.
 
+The voice screen shows a local microphone activity meter, whether captured audio
+has reached the PC, and whether assistant audio has arrived. These indicators do
+not retain audio or prove that the physical speaker was audible. If capture starts
+without any microphone callbacks for five seconds, the session ends with a specific
+message. Setup receipts contain only account/device/request identifiers and status;
+they cannot confirm a different account or an earlier setup request.
+
 Capture starts only after the voice screen is visible, active, and the provider is
-ready. Voice ends on wrist-down screen dimming, leaving the active voice screen,
-app backgrounding, explicit exit, audio interruption, disconnection,
+ready. Audio startup waits for watchOS asynchronous session activation, following
+[Apple's Watch audio activation guidance](https://developer.apple.com/documentation/avfaudio/avaudiosession/activate%28options%3Acompletionhandler%3A%29).
+Leaving the screen cancels pending startup; a late activation cannot restart capture
+or stop a newer audio startup. Voice ends on wrist-down screen dimming, leaving the active voice screen,
+app backgrounding, explicit exit, a new audio interruption during capture, disconnection,
 credential revocation, assistant deletion/disablement, or configured limits. Wrist
 lowering and actual Watch lifecycle behavior must be tested on the physical device.
+An interruption-ended notification does not end a conversation; Siri handoff before
+capture is ready does not by itself terminate the launch.
 
 ## Runtime and API
 
@@ -119,7 +135,12 @@ disabled and a retention confirmation/evidence reference. An administrator pilot
 can be requested with **pilot_release** for physical-device testing; production
 distribution also requires device acceptance. On this feature branch, an explicitly
 authorized workflow commit marked `[watch-voice-pilot]` requests the pilot and
-records its retention confirmation in the commit body. Uploaded builds are checked
+records its retention confirmation in the commit body.
+Before distribution, supply **native_verification_run** (or record
+`native-verification-run=RUN_ID` in an authorized pilot commit). Signed archive
+preparation can run alongside native checks; upload waits for that successful run
+and verifies matching app, shared, backend, test and native-workflow source. A stale,
+failed or cancelled run cannot authorize distribution. Uploaded builds are checked
 for valid processing, export compliance, and internal-test access automatically.
 These inputs document the operator's attestation; the backend's encrypted policy
 remains the authority for enabling live voice. Archive creation does not establish
