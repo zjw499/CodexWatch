@@ -3,10 +3,30 @@ import json
 import os
 import re
 import time
+import urllib.error
 import urllib.request
 
 
 SOURCE_PATHS = {"ios", "watchos", "shared", "native-tests", "native-ui-tests", "server_workspace", "project.yml"}
+
+
+def read_json(request, *, opener=None, sleep=None):
+    opener = opener or urllib.request.urlopen
+    sleep = sleep or time.sleep
+    for attempt in range(5):
+        try:
+            with opener(request, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            if error.code != 429 and error.code < 500:
+                raise
+            if attempt == 4:
+                raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError, json.JSONDecodeError):
+            if attempt == 4:
+                raise
+        print(f"GitHub verification request temporarily unavailable; retrying ({attempt + 1}/5).", flush=True)
+        sleep(2 ** (attempt + 1))
 
 
 def source_fingerprint(get, sha):
@@ -32,8 +52,7 @@ def main():
         request = urllib.request.Request(f"https://api.github.com/repos/{repo}/{path}", headers={
             "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28"})
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return json.load(response)
+        return read_json(request)
 
     run = get(f"actions/runs/{run_id}")
     if run["name"] != "Verify Scribe Pilot phone and Watch":

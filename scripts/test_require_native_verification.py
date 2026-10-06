@@ -3,6 +3,8 @@ import io
 import json
 import os
 import unittest
+import urllib.error
+import urllib.request
 from unittest.mock import patch
 
 import require_native_verification as gate
@@ -56,6 +58,28 @@ class NativeReleaseGateTests(unittest.TestCase):
             return {"tree": [{"path": "watchos", "sha": "watch"}]}
         with self.assertRaisesRegex(RuntimeError, "source is incomplete"):
             gate.source_fingerprint(get, "test")
+
+    def test_transient_github_timeout_retries_the_same_read(self):
+        request = urllib.request.Request("https://api.github.com/repos/example/app/actions/runs/123")
+        outcomes = [urllib.error.URLError("timed out"), io.BytesIO(b'{"status":"completed"}')]
+        with patch("urllib.request.urlopen", side_effect=outcomes) as opener, patch("time.sleep") as sleep:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(gate.read_json(request), {"status": "completed"})
+        self.assertEqual(opener.call_count, 2)
+        sleep.assert_called_once_with(2)
+
+    def test_persistent_timeout_and_authorization_failure_still_block(self):
+        request = urllib.request.Request("https://api.github.com/repos/example/app/actions/runs/123")
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("timed out")) as opener, patch("time.sleep"):
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(urllib.error.URLError):
+                gate.read_json(request)
+        self.assertEqual(opener.call_count, 5)
+        denied = urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+        with patch("urllib.request.urlopen", side_effect=denied) as opener, patch("time.sleep") as sleep:
+            with self.assertRaises(urllib.error.HTTPError):
+                gate.read_json(request)
+        self.assertEqual(opener.call_count, 1)
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":
