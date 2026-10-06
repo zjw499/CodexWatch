@@ -45,13 +45,16 @@ session configuration (`SESSION-01`), activation (`SESSION-02`), voice processin
 (`ECHO-01`), input/output availability (`INPUT-01`/`OUTPUT-01`), conversion (`PCM-01`),
 or engine preparation/start (`START-01`), with the numeric Apple error when available.
 Underlying error descriptions, payloads and device names are never displayed or logged.
-`-308` is Apple's `MIG_SERVER_DIED` status, indicating the service connection died;
-it does not establish which startup operation failed or why the service stopped.
+Apple defines Mach status `-308` as `MIG_SERVER_DIED`, indicating the service connection
+died, in its [system error definitions](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/mach/mig_errors.h).
+The Watch audio error carries this code; it does not establish which startup operation
+failed or why the service stopped.
 Synthetic conversion and offline rendering tests cover different input/output rates
 and mono/stereo routes; physical microphone, echo cancellation and speaker acceptance
-remain required. Pilot 140 failed to deliver microphone batches with permissions
-allowed; pilot 141 then failed on physical Watch startup with audio error `-308`.
-Neither pilot establishes physical voice acceptance.
+remain required. The prior physical test failed to deliver microphone batches with
+permissions allowed. The latest screenshot, after pilot 141 became available, shows
+startup error `-308`; the installed Watch build is not visible and confirmation is
+pending. These failures do not establish physical voice acceptance.
 Setup receipts contain only account/device/request identifiers and status;
 they cannot confirm a different account or an earlier setup request.
 
