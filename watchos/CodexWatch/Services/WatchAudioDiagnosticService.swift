@@ -187,7 +187,9 @@ final class WatchAudioDiagnosticService: ObservableObject {
             }
             if let graph, phase == .activeOutput || speakerOnly {
                 stage = .speaker
-                graph.player.scheduleBuffer(try outputBuffer(tone: speakerOnly), at: nil, options: .loops)
+                // Select the non-suspending overload: awaiting a looping buffer's
+                // completion would never reach engine.start or the microphone checks.
+                graph.player.scheduleBuffer(try outputBuffer(tone: speakerOnly), at: nil, options: .loops, completionHandler: nil)
             }
             stage = .engine
             // The meeting probe matches the working recorder's explicit preparation.
