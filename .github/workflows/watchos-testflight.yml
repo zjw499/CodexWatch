@@ -16,6 +16,11 @@ on:
         type: boolean
         required: false
         default: false
+      pilot_release:
+        description: Distribute an administrator pilot for physical Watch testing before production acceptance
+        type: boolean
+        required: false
+        default: false
       device_acceptance_confirmed:
         description: Physical Watch voice acceptance has passed, including independent networking
         type: boolean
@@ -60,7 +65,10 @@ jobs:
       WATCH_AUDIO_UPLOAD_URL: https://zwyattpc.tail488e93.ts.net/upload
       WATCH_AUDIO_BASIC_AUTH_USERNAME: ""
       WATCH_AUDIO_BASIC_AUTH_PASSWORD: ""
-      ARCHIVE_ONLY: ${{ github.event_name != 'workflow_dispatch' || inputs.archive_only }}
+      # The explicit feature-branch marker requests an approved administrator pilot.
+      # Ordinary pushes retain archive-only behavior.
+      ARCHIVE_ONLY: ${{ inputs.archive_only || (github.event_name != 'workflow_dispatch' && !contains(github.event.head_commit.message, '[watch-voice-pilot]')) }}
+      PILOT_RELEASE: ${{ inputs.pilot_release || (github.event_name == 'push' && contains(github.event.head_commit.message, '[watch-voice-pilot]')) }}
 
     steps:
       - name: Check out source
@@ -69,17 +77,23 @@ jobs:
       - name: Validate release mode
         shell: bash
         env:
-          REALTIME_RETENTION_CONFIRMED: ${{ inputs.realtime_retention_confirmed }}
+          REALTIME_RETENTION_CONFIRMED: ${{ inputs.realtime_retention_confirmed || (github.event_name == 'push' && contains(github.event.head_commit.message, '[watch-voice-pilot]')) }}
           DEVICE_ACCEPTANCE_CONFIRMED: ${{ inputs.device_acceptance_confirmed }}
-          RELEASE_EVIDENCE: ${{ inputs.release_evidence }}
+          RELEASE_EVIDENCE: ${{ inputs.release_evidence || github.event.head_commit.message }}
         run: |
           set -euo pipefail
           if [[ "$ARCHIVE_ONLY" == "true" ]]; then
             echo "Preparing a signed archive for validation."
             exit 0
           fi
-          if [[ "$REALTIME_RETENTION_CONFIRMED" != "true" || "$DEVICE_ACCEPTANCE_CONFIRMED" != "true" || ! "$RELEASE_EVIDENCE" =~ [^[:space:]] ]]; then
-            echo "TestFlight upload requires recorded Realtime retention and physical Watch acceptance evidence." >&2
+          if [[ "$REALTIME_RETENTION_CONFIRMED" != "true" || ! "$RELEASE_EVIDENCE" =~ [^[:space:]] ]]; then
+            echo "TestFlight upload requires recorded Realtime retention evidence." >&2
+            exit 1
+          fi
+          if [[ "$PILOT_RELEASE" == "true" ]]; then
+            echo "Preparing the administrator pilot for physical Watch acceptance testing."
+          elif [[ "$DEVICE_ACCEPTANCE_CONFIRMED" != "true" ]]; then
+            echo "Production distribution requires physical Watch acceptance evidence." >&2
             exit 1
           fi
 
@@ -358,7 +372,8 @@ jobs:
               'workflow_run': os.environ['GITHUB_RUN_ID'], 'archive': archive.name,
               'sha256': digest, 'bundle_id': info['CFBundleIdentifier'],
               'version': info['CFBundleShortVersionString'], 'build_number': info['CFBundleVersion'],
-              'mode': 'archive_only' if os.environ['ARCHIVE_ONLY'] == 'true' else 'testflight_upload_requested',
+              'mode': ('archive_only' if os.environ['ARCHIVE_ONLY'] == 'true' else
+                       'administrator_pilot' if os.environ['PILOT_RELEASE'] == 'true' else 'production_release'),
               'watch_shortcuts_and_complications_verified': True,
           }
           (archive.parent / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
@@ -377,7 +392,7 @@ jobs:
           retention-days: 30
 
       - name: Upload archive to TestFlight
-        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.archive_only }}
+        if: ${{ env.ARCHIVE_ONLY == 'false' }}
         shell: bash
         env:
           APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
@@ -425,12 +440,13 @@ jobs:
             -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID"
 
   check-testflight-build:
-    if: ${{ inputs.check_only == 'true' }}
+    needs: build-and-upload
+    if: ${{ always() && (inputs.check_only == 'true' || (needs.build-and-upload.result == 'success' && ((github.event_name == 'workflow_dispatch' && !inputs.archive_only) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[watch-voice-pilot]'))))) }}
     runs-on: macos-26-intel
     timeout-minutes: 20
     env:
       APP_ID: "6789821399"
-      BUILD_NUMBER: ${{ inputs.build_number }}
+      BUILD_NUMBER: ${{ inputs.check_only == 'true' && inputs.build_number || github.run_number }}
       DIAGNOSE_ONLY: ${{ inputs.diagnose_only }}
       BETA_GROUP_NAME: Personal Internal Testing
       APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
@@ -478,6 +494,7 @@ jobs:
             app_json="$(curl -fsSL "${auth[@]}" "$api/apps/$APP_ID")"
             echo "$app_json" | jq -c '{id: .data.id, name: .data.attributes.name, bundleId: .data.attributes.bundleId}'
             all_builds="$(curl -fsSL "${auth[@]}" -G "$api/builds" \
+              --data-urlencode "filter[app]=$APP_ID" \
               --data-urlencode "sort=-uploadedDate" \
               --data-urlencode "limit=25")"
             echo "Latest visible builds:"
@@ -491,6 +508,7 @@ jobs:
           processing_state=""
           for attempt in $(seq 1 20); do
             build_json="$(curl -fsSL "${auth[@]}" -G "$api/builds" \
+              --data-urlencode "filter[app]=$APP_ID" \
               --data-urlencode "sort=-uploadedDate" \
               --data-urlencode "limit=50")"
             build_row="$(jq -r --arg build "$BUILD_NUMBER" '

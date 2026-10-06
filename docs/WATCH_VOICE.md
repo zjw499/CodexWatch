@@ -106,17 +106,24 @@ isolation and explicitly audited administrator review.
 The native verification workflow compiles iPhone and Watch, runs native and backend
 tests, and captures the Watch voice preview. The existing TestFlight workflow must
 verify TalkWatchAssistantIntent metadata and the four complication families before
-release. Production enablement and release follow physical acceptance.
+release. After Realtime retention confirmation, TestFlight can distribute an
+administrator-only pilot so the physical Watch can be tested. Production voice
+enablement and general release follow physical acceptance.
 
 Signed release preparation is available before these gates pass. In **Build watchOS
 and upload to TestFlight**, leave **archive_only** enabled to produce the signed
 iPhone/Watch archive and a source/build/SHA-256 manifest as a 30-day workflow artifact.
 Changes to that workflow on the Watch voice feature branch also prepare an archive.
-Push-triggered runs always use archive-only mode. Distribution requires a manual
-run with archive-only disabled, both retention and device-acceptance confirmations,
-and a non-sensitive reference to the recorded evidence. Those inputs document the
-operator's attestation; the backend's encrypted policy remains the authority for
-enabling live voice. Archive creation does not establish physical Watch acceptance.
+Ordinary push-triggered runs use archive-only mode. Distribution requires archive-only
+disabled and a retention confirmation/evidence reference. An administrator pilot
+can be requested with **pilot_release** for physical-device testing; production
+distribution also requires device acceptance. On this feature branch, an explicitly
+authorized workflow commit marked `[watch-voice-pilot]` requests the pilot and
+records its retention confirmation in the commit body. Uploaded builds are checked
+for valid processing, export compliance, and internal-test access automatically.
+These inputs document the operator's attestation; the backend's encrypted policy
+remains the authority for enabling live voice. Archive creation does not establish
+physical Watch acceptance.
 
 For rollback, first turn off both production and pilot voice in organization policy,
 then run `scripts/disable_watch_voice.ps1`. It disables the voice scheduled task,
