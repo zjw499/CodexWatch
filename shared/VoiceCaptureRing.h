@@ -1,7 +1,7 @@
 #ifndef SCRIBE_VOICE_CAPTURE_RING_H
 #define SCRIBE_VOICE_CAPTURE_RING_H
 
-#include <AudioToolbox/AudioToolbox.h>
+#include <CoreAudioTypes/CoreAudioTypes.h>
 #include <stdbool.h>
 #include <stdint.h>
 
