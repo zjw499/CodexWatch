@@ -741,7 +741,24 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         handleQueueCommand(message)
     }
 
+    func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+        if message["command"] as? String == "voice-setup-request" {
+            Task { @MainActor in replyHandler(PhoneWorkspace.shared.watchAccountContext()) }
+        } else {
+            handleQueueCommand(message)
+            replyHandler(["ok": true])
+        }
+    }
+
+    func sessionReachabilityDidChange(_ session: WCSession) {
+        if session.isReachable { Task { @MainActor in PhoneWorkspace.shared.syncWatchAccount() } }
+    }
+
     private func handleQueueCommand(_ message: [String: Any]) {
+        if message["command"] as? String == "voice-setup-receipt" {
+            Task { @MainActor in PhoneWorkspace.shared.receiveWatchVoiceReceipt(message) }
+            return
+        }
         guard let id = message["recording_id"] as? String, RecordingQueueStore.validID(id) else { return }
         Task { @MainActor in
             do {

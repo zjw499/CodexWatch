@@ -34,7 +34,7 @@ struct VoiceDeviceCredential: Codable {
     let gateway_url: String
     let device_id: String
     var valid: Bool {
-        version == 1 && expires > Date().timeIntervalSince1970 && VoiceWire.validID(owner_id)
+        version == 1 && expires > Date().timeIntervalSince1970 && VoiceWire.validID(owner_id) && VoiceWire.validID(device_id)
             && VoiceWire.gatewayURL(gateway_url) != nil && !token.isEmpty
     }
 }

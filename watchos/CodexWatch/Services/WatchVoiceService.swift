@@ -15,6 +15,11 @@ final class WatchVoiceService: ObservableObject {
     @Published private(set) var message: String?
     @Published private(set) var turns: [VoiceTurn] = []
     @Published private(set) var configuration: VoiceConfiguration?
+    @Published private(set) var setupState: VoiceSetupState = .needsSetup
+    @Published private(set) var microphoneLevel = 0.0
+    @Published private(set) var capturedBatches = 0
+    @Published private(set) var uploadedBatches = 0
+    @Published private(set) var receivedAudio = false
     private let client = WatchVoiceClient()
     private let audio = WatchVoiceAudio()
     private var current: VoiceSessionInfo?
@@ -22,6 +27,7 @@ final class WatchVoiceService: ObservableObject {
     private var streamTask: Task<Void, Never>?
     private var uploadTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
+    private var captureWatchdog: Task<Void, Never>?
     private var pendingAudio: [Data] = []
     private var sequence = 0
     private var generation = UUID()
@@ -35,6 +41,10 @@ final class WatchVoiceService: ObservableObject {
     private init() {
         if let cache = VoiceDescriptorCache.read(), cache.owner == RecordingQueueStore.shared.accountID {
             configuration = cache.configuration
+            if let saved = VoiceKeychain.read(), saved.valid, saved.owner_id == cache.owner,
+               saved.gateway_url == cache.configuration.gateway_url {
+                setupState = cache.configuration.enabled ? (cache.configuration.assistants.isEmpty ? .needsAssistant : .ready) : .disabled
+            }
         }
         audio.onPlaybackFinished = { [weak self] in
             guard let self, self.isActive else { return }
@@ -42,7 +52,13 @@ final class WatchVoiceService: ObservableObject {
             if self.desiredState == "listening" { self.acknowledgePlayback() }
         }
         observers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification,
-            object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.end(message: "Watch audio was interrupted. Completed text was saved.") } })
+            object: nil, queue: .main) { [weak self] note in
+                guard VoiceAudioStatus.interruptionBegan(note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) else { return }
+                Task { @MainActor in
+                    guard let self, self.captureStarted else { return }
+                    self.end(message: "Watch audio was interrupted. Completed text was saved.")
+                }
+            })
         observers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification,
             object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.end(message: "Watch audio restarted. Start a new conversation.") } })
         observers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification,
@@ -58,7 +74,8 @@ final class WatchVoiceService: ObservableObject {
         return saved
     }
 
-    func applyAccount(owner: String?, configurationData: Data?, credentialData: Data?) {
+    @discardableResult
+    func applyAccount(owner: String?, configurationData: Data?, credentialData: Data?) -> VoiceSetupState {
         let oldOwner = VoiceDescriptorCache.read()?.owner
         if owner == nil || oldOwner != owner {
             end(message: "Your account changed.")
@@ -66,17 +83,43 @@ final class WatchVoiceService: ObservableObject {
             lastAssistantID = nil
             WatchShortcutCommandRouter.clearPendingVoiceCommand()
         }
-        guard let owner else { refreshLaunchers(); return }
-        if let configurationData, let config = try? JSONDecoder().decode(VoiceConfiguration.self, from: configurationData), config.version == 1 {
-            configuration = config
-            VoiceDescriptorCache.save(owner: owner, configuration: config)
-            if !config.enabled { end(message: "Watch voice is currently disabled."); VoiceKeychain.clear() }
+        guard let owner else { return finishSetup(.needsSetup) }
+        if let configurationData {
+            guard let config = try? JSONDecoder().decode(VoiceConfiguration.self, from: configurationData),
+                  config.version == 1, VoiceWire.gatewayURL(config.gateway_url) != nil else { return finishSetup(.updateRequired) }
+            configuration = config; VoiceDescriptorCache.save(owner: owner, configuration: config)
         }
-        if let credentialData, let saved = try? JSONDecoder().decode(VoiceDeviceCredential.self, from: credentialData), saved.owner_id == owner {
+        guard let config = configuration else { return finishSetup(.needsSetup) }
+        guard config.enabled else {
+            end(message: "Watch voice is currently disabled."); VoiceKeychain.clear()
+            return finishSetup(.disabled)
+        }
+        if let credentialData {
+            guard let saved = try? JSONDecoder().decode(VoiceDeviceCredential.self, from: credentialData), saved.valid,
+                  saved.owner_id == owner, saved.gateway_url == config.gateway_url else { return finishSetup(.needsSetup) }
             if let current = credential, current.token != saved.token { end(message: "Watch voice access was updated.") }
-            do { try VoiceKeychain.save(saved) } catch { message = "Set a Watch passcode, then send Watch voice setup from your iPhone again." }
+            do {
+                try VoiceKeychain.save(saved)
+                guard VoiceKeychain.read()?.token == saved.token else { throw VoiceError.setup }
+            } catch { return finishSetup(.needsUnlock) }
+        }
+        guard let saved = try? access(), saved.gateway_url == config.gateway_url else { return finishSetup(.needsSetup) }
+        return finishSetup(config.assistants.isEmpty ? .needsAssistant : .ready)
+    }
+
+    private func finishSetup(_ result: VoiceSetupState) -> VoiceSetupState {
+        setupState = result
+        if !isActive, result != .ready { message = result.message }
+        else if result == .ready, message == VoiceSetupState.needsSetup.message || message == VoiceSetupState.needsUnlock.message || message?.hasPrefix("Checking voice setup") == true {
+            message = nil
         }
         refreshLaunchers()
+        return result
+    }
+
+    func showSetupMessage(_ text: String) {
+        guard !isActive else { return }
+        message = text
     }
 
     private func refreshLaunchers() {
@@ -96,7 +139,7 @@ final class WatchVoiceService: ObservableObject {
             configuration = config
             VoiceDescriptorCache.save(owner: saved.owner_id, configuration: config)
             if !config.enabled { end(message: "Watch voice is currently disabled.") }
-            refreshLaunchers()
+            _ = finishSetup(!config.enabled ? .disabled : (config.assistants.isEmpty ? .needsAssistant : .ready))
         } catch { message = error.localizedDescription }
     }
 
@@ -106,6 +149,7 @@ final class WatchVoiceService: ObservableObject {
         guard !AudioRecorderService.shared.isRecording else { message = VoiceError.audioBusy.localizedDescription; return }
         isActive = true; state = "connecting"; muted = false; message = nil; turns = []
         providerReady = false; captureStarted = false
+        microphoneLevel = 0; capturedBatches = 0; uploadedBatches = 0; receivedAudio = false
         generation = UUID()
         let run = generation
         do {
@@ -176,11 +220,18 @@ final class WatchVoiceService: ObservableObject {
             Task { @MainActor in
                 guard let self, self.generation == run, self.isActive else { return }
                 guard let packet else { self.end(message: VoiceError.audioRoute.localizedDescription); return }
+                self.capturedBatches += 1
+                self.microphoneLevel = self.muted ? 0 : VoiceAudioStatus.microphoneLevel(packet)
                 self.enqueueAudio(packet)
             }
         }
         captureStarted = true
         state = muted ? "muted" : desiredState
+        captureWatchdog = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            guard let self, self.generation == run, self.isActive, self.capturedBatches == 0 else { return }
+            self.end(message: "No microphone audio reached the app. Check microphone permission in Watch Settings, then start a new conversation.")
+        }
     }
 
     private func receive(_ event: VoiceEvent, run: UUID) async throws {
@@ -193,6 +244,7 @@ final class WatchVoiceService: ObservableObject {
         case "audio":
             guard let encoded = event.audio, let item = event.item_id, let data = Data(base64Encoded: encoded) else { throw VoiceError.connection }
             try audio.play(data, item: item)
+            receivedAudio = true
             state = "speaking"
         case "interrupt":
             guard let item = event.item_id, let current, let credential else { return }
@@ -225,6 +277,7 @@ final class WatchVoiceService: ObservableObject {
                     try await self.client.audio(batch, sequence: self.sequence, sessionID: current.id, credential: credential)
                     guard self.generation == run else { return }
                     self.sequence += 1
+                    self.uploadedBatches += 1
                 }
             } catch is CancellationError { }
             catch { if self.generation == run { self.end(message: error.localizedDescription) } }
@@ -242,7 +295,7 @@ final class WatchVoiceService: ObservableObject {
 
     func toggleMute() {
         guard isActive, let current, let credential else { return }
-        muted.toggle(); pendingAudio = []; state = muted ? "muted" : desiredState
+        muted.toggle(); pendingAudio = []; microphoneLevel = 0; state = muted ? "muted" : desiredState
         let value = muted, run = generation
         Task {
             do { try await client.control(VoiceControl(action: "mute", muted: value), sessionID: current.id, credential: credential) }
@@ -257,8 +310,9 @@ final class WatchVoiceService: ObservableObject {
         let milliseconds = item.map { audio.playedMilliseconds(item: $0) }
         isActive = false; generation = UUID(); state = "ended"; muted = false; self.message = message
         providerReady = false; captureStarted = false
+        microphoneLevel = 0
         audio.stop(); pendingAudio = []
-        streamTask?.cancel(); uploadTask?.cancel(); heartbeatTask?.cancel()
+        streamTask?.cancel(); uploadTask?.cancel(); heartbeatTask?.cancel(); captureWatchdog?.cancel(); captureWatchdog = nil
         streamTask = nil; uploadTask = nil; heartbeatTask = nil; current = nil; credential = nil
         if notifyServer, let previous, let saved {
             Task {
@@ -292,6 +346,7 @@ final class WatchVoiceService: ObservableObject {
         assistantName = "Everyday assistant"; state = "speaking"; message = nil
         turns = [VoiceTurn(id: "preview-user", role: "user", text: "Help me plan my afternoon.", final: true, interrupted: false),
                  VoiceTurn(id: "preview-assistant", role: "assistant", text: "Start with your most important task, then leave time for a walk. What needs to be finished today?", final: true, interrupted: false)]
+        capturedBatches = 20; uploadedBatches = 20; microphoneLevel = 0.45; receivedAudio = true
         isActive = true; isPresented = true
     }
     #endif

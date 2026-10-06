@@ -7,6 +7,8 @@ struct WatchVoiceHomeView: View {
         ScrollView {
             VStack(spacing: 10) {
                 Label("Talk to Assistant", systemImage: "waveform").font(.headline)
+                Label(voice.setupState == .ready ? "Watch connected" : "Setup needed", systemImage: voice.setupState == .ready ? "checkmark.circle" : "iphone")
+                    .font(.caption).foregroundStyle(ScribeTheme.muted)
                 if let config = voice.configuration {
                     Picker("Assistant", selection: $assistantID) {
                         Text("Default assistant").tag("")
@@ -14,11 +16,12 @@ struct WatchVoiceHomeView: View {
                     }
                     Button { Task { await voice.open(assistantID: assistantID.isEmpty ? nil : assistantID) } } label: {
                         Label(voice.isActive ? "Open conversation" : "Talk", systemImage: "mic.fill")
-                    }.tint(ScribeTheme.red).disabled(!config.enabled || config.assistants.isEmpty)
+                    }.tint(ScribeTheme.red).disabled(!config.enabled || config.assistants.isEmpty || voice.setupState != .ready)
                 }
                 NavigationLink("Voice history") { WatchVoiceHistoryView() }
                 if let message = voice.message { Text(message).font(.caption).foregroundStyle(ScribeTheme.muted) }
-                if voice.configuration == nil { Text("Set up Watch voice in iPhone Settings.").font(.caption) }
+                if voice.setupState != .ready { Text(voice.setupState.message).font(.caption) }
+                Button("Sync from iPhone") { WatchConnectivityTransferService.shared.requestVoiceSetup() }.font(.caption)
                 Button("Refresh voice settings") { Task { await voice.refresh() } }.font(.caption)
             }.padding(.horizontal, 8)
         }.task { await voice.refresh() }
@@ -38,6 +41,15 @@ struct WatchVoiceView: View {
                     .font(.caption.bold()).foregroundStyle(ScribeTheme.red)
                     .accessibilityLabel("Voice status: \(voice.state)")
                 if let message = voice.message { Text(message).font(.caption).foregroundStyle(ScribeTheme.muted) }
+                if voice.isActive || voice.capturedBatches > 0 {
+                    VStack(spacing: 4) {
+                        ProgressView(value: voice.microphoneLevel).tint(ScribeTheme.red)
+                            .accessibilityLabel("Microphone activity")
+                        Text(voice.muted ? "Microphone muted" : (voice.capturedBatches > 0 ? (voice.isActive ? "Microphone active" : "Microphone captured audio") : "Waiting for microphone"))
+                        Text(voice.uploadedBatches > 0 ? "Audio reached PC" : "Waiting to send audio")
+                        Text(voice.receivedAudio ? "Assistant audio received" : "Waiting for assistant audio")
+                    }.font(.caption2).foregroundStyle(ScribeTheme.muted)
+                }
                 if voice.isActive {
                     HStack {
                         Button { voice.toggleMute() } label: { Image(systemName: voice.muted ? "mic.fill" : "mic.slash.fill") }

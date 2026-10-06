@@ -176,10 +176,6 @@ final class PhoneWorkspace: ObservableObject {
     @Published var connectionMessage: String?
     @Published private(set) var voiceConfiguration: VoiceConfiguration?
     @Published private(set) var voiceMessage: String?
-    private struct WatchVoiceBinding: Codable {
-        let parentHash: String
-        let credential: VoiceDeviceCredential
-    }
     private let session: URLSession
     private let networkDelegate = WorkspaceNetworkDelegate()
     private struct Me: Decodable {
@@ -245,7 +241,7 @@ final class PhoneWorkspace: ObservableObject {
         try WorkspaceKeychain.save(result)
         PhoneOpenAIService.shared.configurationChanged()
         credential = result
-        voiceConfiguration = nil
+        voiceConfiguration = nil; voiceMessage = nil
         try? WorkspaceKeychain.remove(account: "watch-voice")
         processingEnabled = false; assistants = []
         RecordingQueueStore.shared.setAccount(result.user.id)
@@ -272,8 +268,7 @@ final class PhoneWorkspace: ObservableObject {
         await revokePendingSessions()
     }
 
-    func syncWatchAccount() {
-        guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
+    func watchAccountContext() -> [String: Any] {
         var context: [String: Any] = ["command": "workspace-account", "owner_id": user?.id ?? "",
                                     "username": user?.username ?? "", "ready": ready, "protected": true]
         if let config = voiceConfiguration, let saved = credential,
@@ -283,10 +278,40 @@ final class PhoneWorkspace: ObservableObject {
             if config.enabled, let binding = WorkspaceKeychain.read(WatchVoiceBinding.self, account: "watch-voice"),
                binding.parentHash == hash, binding.credential.valid, binding.credential.owner_id == saved.user.id {
                 context["voice_credential"] = try? JSONEncoder().encode(binding.credential)
+                if let requestID = binding.setupRequestID { context["voice_setup_request"] = requestID }
             }
         }
-        try? WCSession.default.updateApplicationContext(context)
+        return context
+    }
+
+    func syncWatchAccount() {
+        guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
+        let watch = WCSession.default, context = watchAccountContext()
+        do { try watch.updateApplicationContext(context) }
+        catch { if context["voice_setup_request"] != nil { voiceMessage = "Watch setup is waiting. Open Scribe Pilot on both devices, then connect Watch voice again." } }
+        if context["voice_setup_request"] != nil, watch.isReachable {
+            watch.sendMessage(context, replyHandler: { reply in
+                Task { @MainActor in self.receiveWatchVoiceReceipt(reply) }
+            }, errorHandler: { _ in
+                // The durable application context still delivers when the Watch reconnects.
+            })
+        }
         PhoneOpenAIService.shared.syncConfiguration()
+    }
+
+    func receiveWatchVoiceReceipt(_ reply: [String: Any]) {
+        guard let data = reply["voice_setup_receipt"] as? Data,
+              let receipt = try? JSONDecoder().decode(VoiceSetupReceipt.self, from: data),
+              let saved = credential,
+              var binding = WorkspaceKeychain.read(WatchVoiceBinding.self, account: "watch-voice"),
+              binding.accepts(receipt, owner: saved.user.id) else { return }
+        let hash = SHA256.hash(data: Data(saved.token.utf8)).map { String(format: "%02x", $0) }.joined()
+        guard binding.parentHash == hash else { return }
+        // A delayed failure cannot overwrite a later successful receipt for the same setup.
+        if binding.receipt?.state == .ready, receipt.state != .ready { return }
+        binding.receipt = receipt
+        try? WorkspaceKeychain.save(binding, account: "watch-voice")
+        voiceMessage = receipt.state == .ready ? "Your Watch confirmed voice setup. No code is needed. Open Talk to Assistant on your Watch." : receipt.state.message
     }
 
     func savePreferences() {
@@ -371,7 +396,12 @@ final class PhoneWorkspace: ObservableObject {
             guard config.version == 1, let url = VoiceWire.gatewayURL(config.gateway_url),
                   url.host == URL(string: captured.server)?.host else { throw VoiceError.version }
             voiceConfiguration = config
-            voiceMessage = config.enabled ? nil : "Watch voice is awaiting organization approval and device testing."
+            if !config.enabled { voiceMessage = "Watch voice is awaiting organization approval and device testing." }
+            else if let binding = WorkspaceKeychain.read(WatchVoiceBinding.self, account: "watch-voice"),
+                    binding.credential.valid, binding.credential.owner_id == captured.user.id {
+                voiceMessage = binding.receipt?.state == .ready ? "Your Watch confirmed voice setup. No code is needed." :
+                    (binding.receipt?.state.message ?? "Waiting for Watch confirmation. Open Scribe Pilot on your unlocked Watch; no code is needed.")
+            } else { voiceMessage = VoiceSetupState.needsSetup.message }
             syncWatchAccount()
         } catch {
             guard credential?.token == captured.token else { return }
@@ -397,9 +427,9 @@ final class PhoneWorkspace: ObservableObject {
         guard credential?.token == captured.token else { throw CancellationError() }
         guard device.valid, device.owner_id == captured.user.id, device.gateway_url == config.gateway_url else { throw VoiceError.setup }
         let hash = SHA256.hash(data: Data(captured.token.utf8)).map { String(format: "%02x", $0) }.joined()
-        try WorkspaceKeychain.save(WatchVoiceBinding(parentHash: hash, credential: device), account: "watch-voice")
+        try WorkspaceKeychain.save(WatchVoiceBinding(parentHash: hash, credential: device, setupRequestID: UUID().uuidString), account: "watch-voice")
+        voiceMessage = "Waiting for Watch confirmation. Open Scribe Pilot on your unlocked Watch; no code is needed."
         syncWatchAccount()
-        voiceMessage = "Watch voice setup sent. Your Watch needs a passcode to store its access securely."
     }
 
     private func revokePendingSessions() async {
