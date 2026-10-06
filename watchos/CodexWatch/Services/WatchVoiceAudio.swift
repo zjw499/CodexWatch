@@ -45,14 +45,30 @@ final class WatchVoiceAudio {
     private var hasInputTap = false
     private var playback = VoicePlaybackLedger()
     private var playbackGeneration = UUID()
+    private var activation: UUID?
     var outputItem: String?
     var onPlaybackFinished: (() -> Void)?
     var hasPendingPlayback: Bool { !playback.pending.isEmpty }
 
-    func start(deliver: @escaping @Sendable (Data?) -> Void) throws {
+    func start(deliver: @escaping @Sendable (Data?) -> Void) async throws {
+        try Task.checkCancellation()
         let session = AVAudioSession.sharedInstance()
+        let ticket = UUID()
+        activation = ticket
+        defer { if activation == ticket { activation = nil } }
         try session.setCategory(.playAndRecord, mode: .voiceChat, options: [])
-        try session.setActive(true)
+        let activated = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
+            session.activate(options: []) { active, error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: active) }
+            }
+        }
+        guard activation == ticket, !Task.isCancelled else {
+            // A late activation must not revive audio after exit, or stop a newer startup.
+            if activation == nil, engine == nil { try? session.setActive(false) }
+            throw CancellationError()
+        }
+        guard activated else { throw VoiceError.audioRoute }
         let engine = AVAudioEngine()
         self.engine = engine
         // Voice I/O provides acoustic echo cancellation for speaker conversations.
@@ -116,6 +132,7 @@ final class WatchVoiceAudio {
         return milliseconds
     }
     func stop() {
+        activation = nil
         playbackGeneration = UUID()
         if let engine { if hasInputTap { engine.inputNode.removeTap(onBus: 0) }; engine.stop() }
         hasInputTap = false

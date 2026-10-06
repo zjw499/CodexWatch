@@ -28,6 +28,7 @@ final class WatchVoiceService: ObservableObject {
     private var uploadTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var captureWatchdog: Task<Void, Never>?
+    private var captureTask: Task<Void, Never>?
     private var pendingAudio: [Data] = []
     private var sequence = 0
     private var generation = UUID()
@@ -208,29 +209,37 @@ final class WatchVoiceService: ObservableObject {
 
     func setVoiceScreenReady(_ ready: Bool) {
         voiceScreenReady = ready
-        if !ready, captureStarted { end(message: "Conversation ended when the Watch screen became inactive."); return }
-        do { try beginCaptureIfReady() }
-        catch { end(message: error.localizedDescription) }
+        if !ready, captureStarted || captureTask != nil { end(message: "Conversation ended when the Watch screen became inactive."); return }
+        beginCaptureIfReady()
     }
 
-    private func beginCaptureIfReady() throws {
-        guard voiceScreenReady, providerReady, isActive, !captureStarted else { return }
+    private func beginCaptureIfReady() {
+        guard voiceScreenReady, providerReady, isActive, !captureStarted, captureTask == nil else { return }
         let run = generation
-        try audio.start { [weak self] packet in
-            Task { @MainActor in
-                guard let self, self.generation == run, self.isActive else { return }
-                guard let packet else { self.end(message: VoiceError.audioRoute.localizedDescription); return }
-                self.capturedBatches += 1
-                self.microphoneLevel = self.muted ? 0 : VoiceAudioStatus.microphoneLevel(packet)
-                self.enqueueAudio(packet)
-            }
-        }
-        captureStarted = true
-        state = muted ? "muted" : desiredState
-        captureWatchdog = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(5)) } catch { return }
-            guard let self, self.generation == run, self.isActive, self.capturedBatches == 0 else { return }
-            self.end(message: "No microphone audio reached the app. Check microphone permission in Watch Settings, then start a new conversation.")
+        captureTask = Task { [weak self] in
+            guard let self, self.generation == run, self.isActive, self.voiceScreenReady else { return }
+            defer { if self.generation == run { self.captureTask = nil } }
+            do {
+                try Task.checkCancellation()
+                try await self.audio.start { [weak self] packet in
+                    Task { @MainActor in
+                        guard let self, self.generation == run, self.isActive else { return }
+                        guard let packet else { self.end(message: VoiceError.audioRoute.localizedDescription); return }
+                        self.capturedBatches += 1
+                        self.microphoneLevel = self.muted ? 0 : VoiceAudioStatus.microphoneLevel(packet)
+                        self.enqueueAudio(packet)
+                    }
+                }
+                guard self.generation == run, self.isActive, self.voiceScreenReady else { return }
+                self.captureStarted = true
+                self.state = self.muted ? "muted" : self.desiredState
+                self.captureWatchdog = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                    guard let self, self.generation == run, self.isActive, self.capturedBatches == 0 else { return }
+                    self.end(message: "No microphone audio reached the app. Check microphone permission in Watch Settings, then start a new conversation.")
+                }
+            } catch is CancellationError { }
+            catch { if self.generation == run { self.end(message: error.localizedDescription) } }
         }
     }
 
@@ -238,7 +247,7 @@ final class WatchVoiceService: ObservableObject {
         switch event.type {
         case "state":
             desiredState = event.state ?? "listening"
-            if desiredState == "listening" { providerReady = true; try beginCaptureIfReady() }
+            if desiredState == "listening" { providerReady = true; beginCaptureIfReady() }
             state = captureStarted ? (muted ? "muted" : (audio.hasPendingPlayback ? "speaking" : desiredState)) : "connecting"
             if desiredState == "listening", !audio.hasPendingPlayback { acknowledgePlayback() }
         case "audio":
@@ -313,6 +322,7 @@ final class WatchVoiceService: ObservableObject {
         microphoneLevel = 0
         audio.stop(); pendingAudio = []
         streamTask?.cancel(); uploadTask?.cancel(); heartbeatTask?.cancel(); captureWatchdog?.cancel(); captureWatchdog = nil
+        captureTask?.cancel(); captureTask = nil
         streamTask = nil; uploadTask = nil; heartbeatTask = nil; current = nil; credential = nil
         if notifyServer, let previous, let saved {
             Task {
