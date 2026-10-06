@@ -58,7 +58,8 @@ jobs:
           echo "$builds_json" | jq -c '.data[] | {version: .attributes.version, state: .attributes.processingState, uploaded: .attributes.uploadedDate, encryption: .attributes.usesNonExemptEncryption}'
 
           uploads_json="$(curl -fsSL --max-time 60 "${auth[@]}" -G "$api/apps/$APP_ID/buildUploads" \
-            --data-urlencode "sort=-createdDate" \
+            --data-urlencode "sort=-uploadedDate" \
+            --data-urlencode "filter[cfBundleVersion]=147" \
             --data-urlencode "limit=10")"
           echo "Recent Apple upload states:"
           echo "$uploads_json" | jq -c '.data[] | {version: .attributes.cfBundleVersion, marketing: .attributes.cfBundleShortVersionString, created: .attributes.createdDate, state: (if (.attributes.state | type) == "string" then .attributes.state else (.attributes.state.state // .attributes.state.processingState // "structured") end), issueCodes: [(.attributes.state.errors // [])[]? | .code]}'
