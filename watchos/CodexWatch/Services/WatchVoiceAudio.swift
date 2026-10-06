@@ -10,7 +10,6 @@ final class WatchVoiceAudio {
     private var graph: VoiceAudioGraph?
     private var playback = VoicePlaybackLedger()
     private var playbackGeneration = UUID()
-    private var activation: UUID?
     var outputItem: String?
     var onPlaybackFinished: (() -> Void)?
     var hasPendingPlayback: Bool { !playback.pending.isEmpty }
@@ -19,25 +18,15 @@ final class WatchVoiceAudio {
     func start(deliver: @escaping @Sendable (Data?) -> Void) async throws {
         try Task.checkCancellation()
         let session = AVAudioSession.sharedInstance()
-        let ticket = UUID()
-        activation = ticket
-        defer { if activation == ticket { activation = nil } }
         var stage = VoiceAudioStartupStage.configuration
         do {
             try session.setCategory(.playAndRecord, mode: .voiceChat, options: [])
             stage = .activation
-            let activated = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
-                session.activate(options: []) { active, error in
-                    if let error { continuation.resume(throwing: error) }
-                    else { continuation.resume(returning: active) }
-                }
-            }
-            guard activation == ticket, !Task.isCancelled else {
-                // A late activation must not revive audio after exit, or stop a newer startup.
-                if activation == nil, engine == nil { try? session.setActive(false) }
-                throw CancellationError()
-            }
-            guard activated else { throw VoiceAudioStartupError(stage: stage) }
+            // Build 147's physical S test captured with voice processing and idle output;
+            // the same graph with asynchronous activation received no microphone frames.
+            // Keep startup on the main actor with no suspension or late activation callback.
+            try session.setActive(true)
+            try Task.checkCancellation()
             let engine = AVAudioEngine()
             self.engine = engine
             // Voice I/O provides acoustic echo cancellation for speaker conversations.
@@ -117,7 +106,6 @@ final class WatchVoiceAudio {
         return milliseconds
     }
     func stop() {
-        activation = nil
         playbackGeneration = UUID()
         inputReceiver?.stop()
         engine?.stop()

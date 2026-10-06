@@ -69,16 +69,26 @@ failed to deliver microphone batches and reported Apple startup error `-308`.
 The owner confirmed build 145 still reports `MIC-01` on Apple Watch Ultra 2,
 watchOS 26.6 (23U67), while ordinary Scribe Pilot meeting recordings capture voice
 and produce transcripts. The microphone permission and basic recording route work;
-the failing path is the separate voice conversation audio setup. The precise physical
-cause is still unverified. Changing the receiver to a sink did not resolve it.
+the failing path is the separate voice conversation audio setup. Changing the receiver
+to a sink did not resolve it. Build 147's physical diagnostic on that Watch narrowed
+the failure to the combination of asynchronous activation, voice processing and idle
+output: both the echo-processing tap (E) and current sink (R) received zero frames.
+The same sink captured with active silent output (A) and with standard activation (S).
+Normal voice now uses the measured S configuration: `setActive(true)`, `.playAndRecord`,
+`.voiceChat`, voice processing enabled and unmuted, the existing sink receiver, and
+idle output until an assistant reply. This is a configuration-level finding; the
+underlying watchOS implementation cause remains unknown. Live conversation, echo,
+interruption and independent-network acceptance remain pending.
 Setup receipts contain only account/device/request identifiers and status;
 they cannot confirm a different account or an earlier setup request.
 
 Capture starts only after the voice screen is visible, active, and the provider is
-ready. Audio startup waits for watchOS asynchronous session activation, following
-[Apple's Watch audio activation guidance](https://developer.apple.com/documentation/avfaudio/avaudiosession/activate%28options%3Acompletionhandler%3A%29).
-Leaving the screen cancels pending startup; a late activation cannot restart capture
-or stop a newer audio startup. Voice ends on wrist-down screen dimming, leaving the active voice screen,
+ready. Normal voice activates synchronously with
+[`setActive(true)`](https://developer.apple.com/documentation/avfaudio/avaudiosession/setactive(_:options:)),
+as verified by the physical standard-activation comparison. Startup has no suspension
+between activation and engine start, and checks cancellation before activation and
+after it. There is no pending activation callback to revive audio after exit or stop
+a newer startup. Voice ends on wrist-down screen dimming, leaving the active voice screen,
 app backgrounding, explicit exit, a new audio interruption during capture, disconnection,
 credential revocation, assistant deletion/disablement, or configured limits. Wrist
 lowering and actual Watch lifecycle behavior must be tested on the physical device.
@@ -98,9 +108,29 @@ two-way default mode (D), voice chat mode without explicit voice processing (V),
 voice processing with a tap (E), build 145's sink/idle playback graph (R), the same
 graph with a continuously rendering silent player (A), the same graph with standard
 instead of asynchronous activation (S), and separate speaker-tone playback (P).
-This is a diagnostic comparison, not a change to normal voice capture or a physical
-acceptance result. Both activation methods are tested; asynchronous activation is
-supported by Apple's Watch audio guidance above.
+The R profile retains the pre-fix configuration so comparisons remain meaningful;
+normal voice now matches S. Both activation methods are supported by Apple; the
+choice is based on the measured device result, not a claim that asynchronous
+activation is unsupported. A local diagnostic alone does not establish live voice acceptance.
+
+The owner completed build 147's diagnostic on October 6 on Ultra 2/watchOS 26.6:
+
+| Check | Microphone frames | PCM batches | Result |
+| --- | ---: | ---: | --- |
+| M: meeting microphone | 153600 | 15 | Captured |
+| D: duplex default | 148800 | 15 | Captured |
+| V: voice chat without explicit processing | 148800 | 15 | Captured |
+| E: echo processing, tap, asynchronous activation | 0 | 0 | No capture |
+| R: original sink, idle output, asynchronous activation | 0 | 0 | No capture |
+| A: sink, active output, asynchronous activation | 147936 | 15 | Captured |
+| S: sink, idle output, standard activation | 151248 | 15 | Captured; selected fix |
+| P: separate speaker tone | N/A | N/A | 74520 output frames rendered; owner heard tones |
+
+The report selected `TEST-03` because the active-output finding precedes the
+standard-activation finding; S also passed and supplies the smaller production
+change. The complete run reported 22 route changes, zero interruptions and zero
+audio resets. Route changes across different audio configurations alone do not
+establish an external interruption. No raw audio or device identifiers were retained.
 
 Details show engine state and category/mode at startup and after three seconds,
 hardware/client PCM formats, input/output port types, explicit input mute and echo
