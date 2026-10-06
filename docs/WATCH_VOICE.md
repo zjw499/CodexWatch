@@ -66,10 +66,11 @@ cover only assistant output at different rates and mono/stereo routes: sinks and
 voice-processing I/O cannot be exercised in manual rendering. Physical microphone,
 echo cancellation and speaker acceptance remain required. Earlier physical tests
 failed to deliver microphone batches and reported Apple startup error `-308`.
-The latest screenshot, at 12:57 PM EDT on October 6 after pilot 143 became available,
-shows `MIC-01` with permissions allowed: startup returned but no input frames arrived.
-The installed Watch build is not shown in the photo. This is a failed physical capture
-result and prompted replacement of the input tap and muted mixer branch with a sink.
+The owner confirmed build 145 still reports `MIC-01` on Apple Watch Ultra 2,
+watchOS 26.6 (23U67), while ordinary Scribe Pilot meeting recordings capture voice
+and produce transcripts. The microphone permission and basic recording route work;
+the failing path is the separate voice conversation audio setup. The precise physical
+cause is still unverified. Changing the receiver to a sink did not resolve it.
 Setup receipts contain only account/device/request identifiers and status;
 they cannot confirm a different account or an earlier setup request.
 
@@ -83,6 +84,39 @@ credential revocation, assistant deletion/disablement, or configured limits. Wri
 lowering and actual Watch lifecycle behavior must be tested on the physical device.
 An interruption-ended notification does not end a conversation; Siri handoff before
 capture is ready does not by itself terminate the launch.
+
+## Local Watch audio test
+
+In **Talk to Assistant > Test Watch audio**, tap **Run audio test** once. Speak
+throughout the checks and keep the screen awake. The last check plays three short
+tones; select Yes or No to record whether they were actually heard. Send the compact
+comparison, `TEST-xx` finding, and speaker answer when reporting the failure.
+This works without voice provisioning, the iPhone, the PC, or a provider connection.
+
+The eight checks compare the working meeting category/default mode with a tap (M),
+two-way default mode (D), voice chat mode without explicit voice processing (V),
+voice processing with a tap (E), build 145's sink/idle playback graph (R), the same
+graph with a continuously rendering silent player (A), the same graph with standard
+instead of asynchronous activation (S), and separate speaker-tone playback (P).
+This is a diagnostic comparison, not a change to normal voice capture or a physical
+acceptance result. Both activation methods are tested; asynchronous activation is
+supported by Apple's Watch audio guidance above.
+
+Details show engine state and category/mode at startup and after three seconds,
+hardware/client PCM formats, input/output port types, explicit input mute and echo
+processing state, microphone and converted frame counts, batches, receiver faults,
+local peak level and rendered output frames. Output rendering never proves audibility.
+Failures contain only a local startup stage and numeric Apple code. Reports exclude
+device names, UIDs, serial numbers, raw error descriptions, userInfo and provider data.
+Counters and the speaker answer remain only in the Watch process; no audio files,
+network request, transcript, telemetry event or automatic upload is created.
+
+Recording and voice launches refuse to start while a test owns audio. Cancelling or
+leaving the screen stops capture and output. If activation is still pending, the test
+keeps its reservation until the callback completes and the session is deactivated,
+preventing a late callback from stopping a new activity. An existing recovered meeting
+retains priority. Wrist lowering, app inactivity, interruption, audio-service reset
+and route disconnection stop the test without automatic restart.
 
 ## Runtime and API
 

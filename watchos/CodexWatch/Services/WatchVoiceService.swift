@@ -145,6 +145,9 @@ final class WatchVoiceService: ObservableObject {
     }
 
     func open(assistantID: String? = nil, conversationID: String? = nil, requestID: String = UUID().uuidString) async {
+        guard !VoiceAudioDiagnosticReservation.shared.isHeld else {
+            message = "End the Watch audio test before starting a voice conversation."; return
+        }
         isPresented = true
         guard !isActive else { return }
         guard !AudioRecorderService.shared.isRecording else { message = VoiceError.audioBusy.localizedDescription; return }

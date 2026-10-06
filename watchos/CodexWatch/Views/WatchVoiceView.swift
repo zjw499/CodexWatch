@@ -19,6 +19,7 @@ struct WatchVoiceHomeView: View {
                     }.tint(ScribeTheme.red).disabled(!config.enabled || config.assistants.isEmpty || voice.setupState != .ready)
                 }
                 NavigationLink("Voice history") { WatchVoiceHistoryView() }
+                NavigationLink("Test Watch audio") { WatchAudioDiagnosticView() }
                 if let message = voice.message { Text(message).font(.caption).foregroundStyle(ScribeTheme.muted) }
                 if voice.setupState != .ready { Text(voice.setupState.message).font(.caption) }
                 Button("Sync from iPhone") { WatchConnectivityTransferService.shared.requestVoiceSetup() }.font(.caption)

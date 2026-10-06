@@ -225,6 +225,10 @@ final class AudioRecorderService: NSObject, ObservableObject {
     }
 
     func startRecording() async {
+        guard !VoiceAudioDiagnosticReservation.shared.isHeld else {
+            errorMessage = "End the Watch audio test before starting a meeting recording."
+            return
+        }
         guard !WatchVoiceService.shared.isActive else {
             errorMessage = "End your voice conversation before starting a meeting recording."
             return
@@ -248,6 +252,11 @@ final class AudioRecorderService: NSObject, ObservableObject {
 
         guard !WatchVoiceService.shared.isActive else {
             errorMessage = "End your voice conversation before starting a meeting recording."
+            return
+        }
+
+        guard !VoiceAudioDiagnosticReservation.shared.isHeld else {
+            errorMessage = "End the Watch audio test before starting a meeting recording."
             return
         }
 
@@ -560,6 +569,10 @@ final class AudioRecorderService: NSObject, ObservableObject {
 
     private func tryToResumeRecording() -> Bool {
         guard isRecording, !awaitingInterruptionEnd, let recordingID else { return false }
+        guard !VoiceAudioDiagnosticReservation.shared.isHeld else {
+            WatchAudioDiagnosticService.shared.cancel(message: "Recovered meeting recording is taking priority over the audio test.")
+            return false
+        }
 
         do {
             try activateAudioSession()
