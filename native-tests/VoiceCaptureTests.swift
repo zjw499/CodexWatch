@@ -87,10 +87,15 @@ final class VoiceCaptureTests: XCTestCase {
         XCTAssertNil(VoiceCaptureStatistics(inputFrames: 9600, outputFrames: 4800, batches: 1).startupFailure)
     }
 
-    private func offlineGraph() throws -> (AVAudioEngine, VoiceAudioGraph, SyntheticMicActivity) {
+    private func offlineGraph(inputRate: Double = 48000, inputChannels: AVAudioChannelCount = 1,
+                              outputRate: Double = 48000, outputChannels: AVAudioChannelCount = 1) throws -> (AVAudioEngine, VoiceAudioGraph, SyntheticMicActivity) {
         let engine = AVAudioEngine()
         let activity = SyntheticMicActivity()
-        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1))
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: inputRate, channels: inputChannels))
+        let outputFormat = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: outputRate, channels: outputChannels))
+        // Establish a different output route before connecting the shared graph.
+        // Setting manual rendering afterward would hide an incorrect output override.
+        try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 4096)
         // A known nonzero synthetic microphone must never reach the speaker mix.
         let source = AVAudioSourceNode(format: format) { _, _, frames, list in
             activity.received(Int(frames))
@@ -102,7 +107,8 @@ final class VoiceCaptureTests: XCTestCase {
         }
         engine.attach(source)
         let graph = try VoiceAudioGraph(engine: engine, microphone: source, inputFormat: format)
-        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 4096)
+        XCTAssertEqual(engine.mainMixerNode.outputFormat(forBus: 0).sampleRate, outputRate)
+        XCTAssertEqual(engine.mainMixerNode.outputFormat(forBus: 0).channelCount, outputChannels)
         try engine.start()
         return (engine, graph, activity)
     }
@@ -128,5 +134,50 @@ final class VoiceCaptureTests: XCTestCase {
         let channel = try XCTUnwrap(output.floatChannelData?[0])
         XCTAssertTrue((0..<Int(output.frameLength)).contains { abs(channel[$0]) > 0.1 })
         XCTAssertTrue((0..<Int(output.frameLength)).allSatisfy { abs(channel[$0]) < 0.3 })
+    }
+
+    func testDifferentMicrophoneAndSpeakerFormatsKeepCaptureAndReplyWorking() throws {
+        let routes: [(Double, AVAudioChannelCount, Double, AVAudioChannelCount)] = [
+            (16000, 1, 48000, 1), (16000, 1, 48000, 2),
+            (48000, 2, 16000, 1), (44100, 1, 48000, 2)
+        ]
+        for (inputRate, inputChannels, outputRate, outputChannels) in routes {
+            let (engine, graph, activity) = try offlineGraph(inputRate: inputRate, inputChannels: inputChannels,
+                                                           outputRate: outputRate, outputChannels: outputChannels)
+            defer { engine.stop() }
+            let output = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: 2048))
+            XCTAssertEqual(try engine.renderOffline(2048, to: output), .success)
+            XCTAssertGreaterThan(activity.receivedFrames, 0)
+            for index in 0..<Int(outputChannels) {
+                let channel = try XCTUnwrap(output.floatChannelData?[index])
+                XCTAssertTrue((0..<Int(output.frameLength)).allSatisfy { abs(channel[$0]) < 0.00001 })
+            }
+            graph.player.scheduleBuffer(try buffer(rate: 24000, frames: 4800, value: 0.25))
+            graph.player.play()
+            XCTAssertEqual(try engine.renderOffline(2048, to: output), .success)
+            let channel = try XCTUnwrap(output.floatChannelData?[0])
+            XCTAssertTrue((0..<Int(output.frameLength)).contains { abs(channel[$0]) > 0.05 })
+            XCTAssertTrue((0..<Int(output.frameLength)).allSatisfy { abs(channel[$0]) < 0.3 })
+        }
+    }
+
+    func testStartupErrorsIdentifyEveryStageWithoutLeakingUnderlyingDetails() {
+        let underlying = NSError(domain: "com.apple.coreaudio.avfaudio", code: -308,
+                                 userInfo: [NSLocalizedDescriptionKey: "private audio or credential text"])
+        for stage in VoiceAudioStartupStage.allCases {
+            let message = VoiceAudioStartupError(stage: stage, underlying: underlying).localizedDescription
+            XCTAssertTrue(message.contains(stage.rawValue))
+            XCTAssertTrue(message.contains("Apple -308"))
+            XCTAssertTrue(message.contains("audio service stopped"))
+            XCTAssertFalse(message.contains("private"))
+            XCTAssertFalse(message.contains("permission"))
+        }
+    }
+
+    func testUnavailableAudioRouteDoesNotInventAnAppleErrorCode() {
+        let message = VoiceAudioStartupError(stage: .speaker).localizedDescription
+        XCTAssertTrue(message.contains("OUTPUT-01"))
+        XCTAssertFalse(message.contains("Apple"))
+        XCTAssertFalse(message.contains("service stopped"))
     }
 }

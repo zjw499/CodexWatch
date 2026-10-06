@@ -35,10 +35,23 @@ without producing a PCM batch for five seconds, local frame counters distinguish
 missing microphone samples (`MIC-01`) from conversion (`PCM-01`) or delivery
 (`PCM-02`) failure. These are not treated as denied permission after authorization
 has succeeded. Counters are not persisted or logged. The input remains connected
-through an inaudible mixer branch while reply audio uses a separate audible branch;
-the main mixer uses the voice I/O format. Live conversion does not require preceding
-priming frames. Synthetic conversion and offline rendering tests cover this path;
-physical microphone, echo cancellation and speaker acceptance remain required.
+through an inaudible mixer branch while reply audio uses a separate audible branch.
+The main mixer keeps Apple's automatic output connection and follows the speaker's
+format independently of microphone and provider PCM. Forcing the microphone's
+rate/channel count onto output can prevent a physical route from starting; see
+[Apple's main mixer format guidance](https://developer.apple.com/documentation/avfaudio/avaudioengine/mainmixernode).
+Live conversion does not require preceding priming frames. Startup failures identify
+session configuration (`SESSION-01`), activation (`SESSION-02`), voice processing
+(`ECHO-01`), input/output availability (`INPUT-01`/`OUTPUT-01`), conversion (`PCM-01`),
+or engine preparation/start (`START-01`), with the numeric Apple error when available.
+Underlying error descriptions, payloads and device names are never displayed or logged.
+`-308` is Apple's `MIG_SERVER_DIED` status, indicating the service connection died;
+it does not establish which startup operation failed or why the service stopped.
+Synthetic conversion and offline rendering tests cover different input/output rates
+and mono/stereo routes; physical microphone, echo cancellation and speaker acceptance
+remain required. Pilot 140 failed to deliver microphone batches with permissions
+allowed; pilot 141 then failed on physical Watch startup with audio error `-308`.
+Neither pilot establishes physical voice acceptance.
 Setup receipts contain only account/device/request identifiers and status;
 they cannot confirm a different account or an earlier setup request.
 

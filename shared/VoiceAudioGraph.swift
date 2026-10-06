@@ -14,7 +14,8 @@ final class VoiceAudioGraph {
         engine.connect(microphone, to: microphoneMixer, format: inputFormat)
         engine.connect(microphoneMixer, to: engine.mainMixerNode, fromBus: 0, toBus: 0, format: inputFormat)
         engine.connect(player, to: engine.mainMixerNode, fromBus: 0, toBus: 1, format: replyFormat)
-        // Voice processing uses matching input/output I/O formats, independently of reply PCM.
-        engine.connect(engine.mainMixerNode, to: engine.outputNode, format: inputFormat)
+        // Keep the engine's automatic main-mixer/output connection. Microphone and
+        // speaker routes can have different rates or channel counts, especially on Watch.
+        // The mixers convert microphone/reply formats without overriding hardware output.
     }
 }
