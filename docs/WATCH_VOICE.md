@@ -31,8 +31,15 @@ Incomplete input transcription may remain labelled as an incomplete turn.
 The voice screen shows a local microphone activity meter, whether captured audio
 has reached the PC, and whether assistant audio has arrived. These indicators do
 not retain audio or prove that the physical speaker was audible. If capture starts
-without any microphone callbacks for five seconds, the session ends with a specific
-message. Setup receipts contain only account/device/request identifiers and status;
+without producing a PCM batch for five seconds, local frame counters distinguish
+missing microphone samples (`MIC-01`) from conversion (`PCM-01`) or delivery
+(`PCM-02`) failure. These are not treated as denied permission after authorization
+has succeeded. Counters are not persisted or logged. The input remains connected
+through an inaudible mixer branch while reply audio uses a separate audible branch;
+the main mixer uses the voice I/O format. Live conversion does not require preceding
+priming frames. Synthetic conversion and offline rendering tests cover this path;
+physical microphone, echo cancellation and speaker acceptance remain required.
+Setup receipts contain only account/device/request identifiers and status;
 they cannot confirm a different account or an earlier setup request.
 
 Capture starts only after the voice screen is visible, active, and the provider is
