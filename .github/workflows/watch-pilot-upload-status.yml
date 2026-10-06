@@ -1,0 +1,58 @@
+name: Inspect Watch pilot upload
+on:
+  push:
+    branches: [feature/watch-voice-assistants]
+    paths: ['.github/workflows/watch-pilot-upload-status.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      APP_ID: "6789821399"
+      APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+      APPSTORE_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+      APPSTORE_PRIVATE_KEY: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+    steps:
+      - name: Read Apple app and recent build metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in APPSTORE_ISSUER_ID APPSTORE_KEY_ID APPSTORE_PRIVATE_KEY; do
+            [[ -n "${!name:-}" ]] || { echo "Missing required secret: $name" >&2; exit 1; }
+          done
+          export ASC_JWT="$(ruby <<'RUBY'
+          require "base64"
+          require "digest"
+          require "json"
+          require "openssl"
+
+          def encode(value)
+            Base64.urlsafe_encode64(value, padding: false)
+          end
+
+          header = encode({ alg: "ES256", kid: ENV.fetch("APPSTORE_KEY_ID"), typ: "JWT" }.to_json)
+          now = Time.now.to_i
+          payload = encode({ iss: ENV.fetch("APPSTORE_ISSUER_ID"), iat: now, exp: now + 900, aud: "appstoreconnect-v1" }.to_json)
+          unsigned = "#{header}.#{payload}"
+          key = OpenSSL::PKey::EC.new(ENV.fetch("APPSTORE_PRIVATE_KEY"))
+          der = key.dsa_sign_asn1(Digest::SHA256.digest(unsigned))
+          values = OpenSSL::ASN1.decode(der).value
+          r = [values[0].value.to_i.to_s(16).rjust(64, "0")].pack("H*")
+          s = [values[1].value.to_i.to_s(16).rjust(64, "0")].pack("H*")
+          puts "#{unsigned}.#{encode(r + s)}"
+          RUBY
+          )"
+          echo "::add-mask::$ASC_JWT"
+          api="https://api.appstoreconnect.apple.com/v1"
+          auth=(-H "Authorization: Bearer $ASC_JWT")
+          app_json="$(curl -fsSL --max-time 60 "${auth[@]}" "$api/apps/$APP_ID")"
+          echo "$app_json" | jq -c '{name: .data.attributes.name, bundleId: .data.attributes.bundleId}'
+          builds_json="$(curl -fsSL --max-time 60 "${auth[@]}" -G "$api/builds" \
+            --data-urlencode "filter[app]=$APP_ID" \
+            --data-urlencode "sort=-uploadedDate" \
+            --data-urlencode "limit=25")"
+          echo "Recent Apple build metadata:"
+          echo "$builds_json" | jq -c '.data[] | {version: .attributes.version, state: .attributes.processingState, uploaded: .attributes.uploadedDate, encryption: .attributes.usesNonExemptEncryption}'
