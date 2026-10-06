@@ -96,6 +96,10 @@ final class VoiceCaptureTests: XCTestCase {
         // Establish a different output route before connecting the shared graph.
         // Setting manual rendering afterward would hide an incorrect output override.
         try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 4096)
+        // The offline renderer converts the mixer output to outputFormat. The mixer's
+        // automatic connection can retain the simulator's native 44.1 kHz/stereo format.
+        // Compare with that automatic connection, rather than the renderer's PCM format.
+        let automaticOutput = engine.mainMixerNode.outputFormat(forBus: 0)
         // A known nonzero synthetic microphone must never reach the speaker mix.
         let source = AVAudioSourceNode(format: format) { _, _, frames, list in
             activity.received(Int(frames))
@@ -107,8 +111,8 @@ final class VoiceCaptureTests: XCTestCase {
         }
         engine.attach(source)
         let graph = try VoiceAudioGraph(engine: engine, microphone: source, inputFormat: format)
-        XCTAssertEqual(engine.mainMixerNode.outputFormat(forBus: 0).sampleRate, outputRate)
-        XCTAssertEqual(engine.mainMixerNode.outputFormat(forBus: 0).channelCount, outputChannels)
+        XCTAssertEqual(engine.mainMixerNode.outputFormat(forBus: 0).sampleRate, automaticOutput.sampleRate)
+        XCTAssertEqual(engine.mainMixerNode.outputFormat(forBus: 0).channelCount, automaticOutput.channelCount)
         try engine.start()
         return (engine, graph, activity)
     }
@@ -179,5 +183,6 @@ final class VoiceCaptureTests: XCTestCase {
         XCTAssertTrue(message.contains("OUTPUT-01"))
         XCTAssertFalse(message.contains("Apple"))
         XCTAssertFalse(message.contains("service stopped"))
+        XCTAssertNil(VoiceAudioStartupError(stage: .conversion, underlying: VoiceError.audioConversion).nativeCode)
     }
 }

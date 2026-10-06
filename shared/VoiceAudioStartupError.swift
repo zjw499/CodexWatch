@@ -30,7 +30,10 @@ struct VoiceAudioStartupError: LocalizedError {
 
     init(stage: VoiceAudioStartupStage, underlying: Error? = nil) {
         self.stage = stage
-        nativeCode = underlying.map { ($0 as NSError).code }
+        // Swift application errors bridge to NSError with arbitrary case numbers;
+        // those numbers are not native Apple audio errors.
+        if let underlying, !(underlying is VoiceError) { nativeCode = (underlying as NSError).code }
+        else { nativeCode = nil }
     }
 
     var errorDescription: String? {
