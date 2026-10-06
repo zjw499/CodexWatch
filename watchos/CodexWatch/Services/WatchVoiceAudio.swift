@@ -5,16 +5,16 @@ import Foundation
 final class WatchVoiceAudio {
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
-    private var encoder: VoicePCMEncoder?
+    private var inputReceiver: VoiceInputReceiver?
+    private var inputSink: AVAudioSinkNode?
     private var graph: VoiceAudioGraph?
-    private var hasInputTap = false
     private var playback = VoicePlaybackLedger()
     private var playbackGeneration = UUID()
     private var activation: UUID?
     var outputItem: String?
     var onPlaybackFinished: (() -> Void)?
     var hasPendingPlayback: Bool { !playback.pending.isEmpty }
-    var captureStatistics: VoiceCaptureStatistics { encoder?.statistics ?? VoiceCaptureStatistics() }
+    var captureStatistics: VoiceCaptureStatistics { inputReceiver?.statistics ?? VoiceCaptureStatistics() }
 
     func start(deliver: @escaping @Sendable (Data?) -> Void) async throws {
         try Task.checkCancellation()
@@ -43,6 +43,7 @@ final class WatchVoiceAudio {
             // Voice I/O provides acoustic echo cancellation for speaker conversations.
             stage = .voiceProcessing
             try engine.inputNode.setVoiceProcessingEnabled(true)
+            engine.inputNode.isVoiceProcessingInputMuted = false
             stage = .microphone
             let hardwareInput = engine.inputNode.inputFormat(forBus: 0)
             let input = engine.inputNode.outputFormat(forBus: 0)
@@ -51,15 +52,14 @@ final class WatchVoiceAudio {
             stage = .speaker
             let hardwareOutput = engine.outputNode.outputFormat(forBus: 0)
             guard hardwareOutput.sampleRate > 0, hardwareOutput.channelCount > 0 else { throw VoiceAudioStartupError(stage: stage) }
-            let graph = try VoiceAudioGraph(engine: engine, microphone: engine.inputNode, inputFormat: input)
+            let graph = try VoiceAudioGraph(engine: engine)
             self.graph = graph
             self.player = graph.player
-            // Read the format after all voice I/O connections have been established.
             stage = .conversion
-            let encoder = try VoicePCMEncoder(input: engine.inputNode.outputFormat(forBus: 0), deliver: deliver)
-            self.encoder = encoder
-            engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { buffer, _ in encoder.consume(buffer) }
-            hasInputTap = true
+            let receiver = try VoiceInputReceiver(input: input, deliver: deliver)
+            self.inputReceiver = receiver
+            self.inputSink = receiver.attach(to: engine)
+            receiver.start()
             stage = .engine
             // start() prepares the engine and reports preparation/start failures through throws.
             try engine.start()
@@ -119,9 +119,10 @@ final class WatchVoiceAudio {
     func stop() {
         activation = nil
         playbackGeneration = UUID()
-        if let engine { if hasInputTap { engine.inputNode.removeTap(onBus: 0) }; engine.stop() }
-        hasInputTap = false
-        player?.stop(); encoder = nil; graph = nil; player = nil; engine = nil
+        inputReceiver?.stop()
+        engine?.stop()
+        inputReceiver?.clearStoppedInput()
+        player?.stop(); inputSink = nil; inputReceiver = nil; graph = nil; player = nil; engine = nil
         playback.reset(); outputItem = nil
         try? AVAudioSession.sharedInstance().setActive(false)
     }

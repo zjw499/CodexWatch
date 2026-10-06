@@ -224,7 +224,10 @@ final class WatchVoiceService: ObservableObject {
                 try await self.audio.start { [weak self] packet in
                     Task { @MainActor in
                         guard let self, self.generation == run, self.isActive else { return }
-                        guard let packet else { self.end(message: VoiceError.audioConversion.localizedDescription); return }
+                        guard let packet else {
+                            self.end(message: self.audio.captureStatistics.startupFailure ?? VoiceError.audioConversion.localizedDescription)
+                            return
+                        }
                         self.capturedBatches += 1
                         self.microphoneLevel = self.muted ? 0 : VoiceAudioStatus.microphoneLevel(packet)
                         self.enqueueAudio(packet)

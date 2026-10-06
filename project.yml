@@ -57,6 +57,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: $(PRODUCT_BUNDLE_IDENTIFIER)
         PRODUCT_NAME: Scribe Pilot
         PRODUCT_MODULE_NAME: ScribePilot
+        SWIFT_OBJC_BRIDGING_HEADER: shared/VoiceCaptureRing.h
+        CLANG_C_LANGUAGE_STANDARD: gnu11
         SKIP_INSTALL: NO
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
@@ -144,6 +146,8 @@ targets:
         TARGETED_DEVICE_FAMILY: 4
         INFOPLIST_KEY_WKAppBundleIdentifier: com.zachwyatt.codexwatch.watchkitapp
         WK_APP_BUNDLE_IDENTIFIER: com.zachwyatt.codexwatch.watchkitapp
+        SWIFT_OBJC_BRIDGING_HEADER: shared/VoiceCaptureRing.h
+        CLANG_C_LANGUAGE_STANDARD: gnu11
 
   ScribePilotTests:
     type: bundle.unit-test

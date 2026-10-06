@@ -34,8 +34,18 @@ not retain audio or prove that the physical speaker was audible. If capture star
 without producing a PCM batch for five seconds, local frame counters distinguish
 missing microphone samples (`MIC-01`) from conversion (`PCM-01`) or delivery
 (`PCM-02`) failure. These are not treated as denied permission after authorization
-has succeeded. Counters are not persisted or logged. The input remains connected
-through an inaudible mixer branch while reply audio uses a separate audible branch.
+has succeeded. Counters are not persisted or logged. The microphone connects directly
+to an `AVAudioSinkNode`, independently of assistant playback. It has no connection
+to the audible mixer. The receiver copies hardware-format PCM into preallocated,
+bounded memory using lock-free atomics; a serial worker converts and delivers it.
+The audio callback performs no allocation, blocking lock, dispatch or network work,
+following [Apple's audio-thread guidance](https://developer.apple.com/videos/play/wwdc2019/510/).
+Input is copied before the hardware reuses its buffers. Overflow ends the conversation
+with `CAP-01`; an unexpected PCM layout or callback size ends it with `CAP-02`.
+Stopping disables input, waits for the worker and engine, and clears queued samples.
+Voice processing stays enabled and its microphone input is explicitly unmuted at
+startup. The sink uses the input node's output format, as required by
+[Apple's sink guidance](https://developer.apple.com/documentation/avfaudio/avaudiosinknode).
 The main mixer keeps Apple's automatic output connection and follows the speaker's
 format independently of microphone and provider PCM. Forcing the microphone's
 rate/channel count onto output can prevent a physical route from starting; see
@@ -49,12 +59,17 @@ Apple defines Mach status `-308` as `MIG_SERVER_DIED`, indicating the service co
 died, in its [system error definitions](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/mach/mig_errors.h).
 The Watch audio error carries this code; it does not establish which startup operation
 failed or why the service stopped.
-Synthetic conversion and offline rendering tests cover different input/output rates
-and mono/stereo routes; physical microphone, echo cancellation and speaker acceptance
-remain required. The prior physical test failed to deliver microphone batches with
-permissions allowed. The latest screenshot, after pilot 141 became available, shows
-startup error `-308`; the installed Watch build is not visible and confirmation is
-pending. These failures do not establish physical voice acceptance.
+Synthetic receiver/conversion tests cover callback copying, variable sizes and ordering,
+bounded overflow, stopped input, planar/interleaved stereo, and worker delivery.
+Native graph inspection verifies microphone-to-sink wiring. Offline rendering tests
+cover only assistant output at different rates and mono/stereo routes: sinks and
+voice-processing I/O cannot be exercised in manual rendering. Physical microphone,
+echo cancellation and speaker acceptance remain required. Earlier physical tests
+failed to deliver microphone batches and reported Apple startup error `-308`.
+The latest screenshot, at 12:57 PM EDT on October 6 after pilot 143 became available,
+shows `MIC-01` with permissions allowed: startup returned but no input frames arrived.
+The installed Watch build is not shown in the photo. This is a failed physical capture
+result and prompted replacement of the input tap and muted mixer branch with a sink.
 Setup receipts contain only account/device/request identifiers and status;
 they cannot confirm a different account or an earlier setup request.
 

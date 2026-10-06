@@ -6,8 +6,15 @@ struct VoiceCaptureStatistics: Sendable {
     var inputFrames: Int64 = 0
     var outputFrames: Int64 = 0
     var batches = 0
+    var receiverFailure: UInt32 = 0
 
     var startupFailure: String? {
+        if receiverFailure == 1 {
+            return "Watch audio capture could not keep up (CAP-01). Start a new conversation."
+        }
+        if receiverFailure != 0 {
+            return "Watch microphone format changed during capture (CAP-02). Start a new conversation."
+        }
         guard batches == 0 else { return nil }
         if inputFrames == 0 {
             return "Watch audio capture did not start (MIC-01). Microphone permission is allowed. Start a new conversation."

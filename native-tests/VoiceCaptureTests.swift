@@ -17,13 +17,6 @@ private final class CapturedVoicePackets: @unchecked Sendable {
     }
 }
 
-private final class SyntheticMicActivity: @unchecked Sendable {
-    private let lock = NSLock()
-    private var frames = 0
-    func received(_ count: Int) { lock.lock(); frames += count; lock.unlock() }
-    var receivedFrames: Int { lock.lock(); defer { lock.unlock() }; return frames }
-}
-
 final class VoiceCaptureTests: XCTestCase {
     private func buffer(rate: Double, frames: Int, value: Float = 0.25) throws -> AVAudioPCMBuffer {
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1))
@@ -87,11 +80,8 @@ final class VoiceCaptureTests: XCTestCase {
         XCTAssertNil(VoiceCaptureStatistics(inputFrames: 9600, outputFrames: 4800, batches: 1).startupFailure)
     }
 
-    private func offlineGraph(inputRate: Double = 48000, inputChannels: AVAudioChannelCount = 1,
-                              outputRate: Double = 48000, outputChannels: AVAudioChannelCount = 1) throws -> (AVAudioEngine, VoiceAudioGraph, SyntheticMicActivity) {
+    private func offlineGraph(outputRate: Double = 48000, outputChannels: AVAudioChannelCount = 1) throws -> (AVAudioEngine, VoiceAudioGraph) {
         let engine = AVAudioEngine()
-        let activity = SyntheticMicActivity()
-        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: inputRate, channels: inputChannels))
         let outputFormat = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: outputRate, channels: outputChannels))
         // Establish a different output route before connecting the shared graph.
         // Setting manual rendering afterward would hide an incorrect output override.
@@ -100,36 +90,25 @@ final class VoiceCaptureTests: XCTestCase {
         // automatic connection can retain the simulator's native 44.1 kHz/stereo format.
         // Compare with that automatic connection, rather than the renderer's PCM format.
         let automaticOutput = engine.mainMixerNode.outputFormat(forBus: 0)
-        // A known nonzero synthetic microphone must never reach the speaker mix.
-        let source = AVAudioSourceNode(format: format) { _, _, frames, list in
-            activity.received(Int(frames))
-            for buffer in UnsafeMutableAudioBufferListPointer(list) {
-                guard let data = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
-                for index in 0..<Int(frames) { data[index] = 0.5 }
-            }
-            return 0
-        }
-        engine.attach(source)
-        let graph = try VoiceAudioGraph(engine: engine, microphone: source, inputFormat: format)
+        let graph = try VoiceAudioGraph(engine: engine)
         XCTAssertEqual(engine.mainMixerNode.outputFormat(forBus: 0).sampleRate, automaticOutput.sampleRate)
         XCTAssertEqual(engine.mainMixerNode.outputFormat(forBus: 0).channelCount, automaticOutput.channelCount)
         try engine.start()
-        return (engine, graph, activity)
+        return (engine, graph)
     }
 
-    func testMicrophoneRenderBranchIsInaudibleBeforeAssistantSpeech() throws {
-        let (engine, graph, activity) = try offlineGraph()
+    func testOutputIsSilentBeforeAssistantSpeech() throws {
+        let (engine, graph) = try offlineGraph()
         defer { engine.stop() }
         let output = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: 2048))
         XCTAssertEqual(try engine.renderOffline(2048, to: output), .success)
         let channel = try XCTUnwrap(output.floatChannelData?[0])
         XCTAssertTrue((0..<Int(output.frameLength)).allSatisfy { abs(channel[$0]) < 0.00001 })
-        XCTAssertGreaterThan(activity.receivedFrames, 0, "Listening must pull microphone input before any reply is playing")
         XCTAssertFalse(graph.player.isPlaying)
     }
 
-    func testAssistantReplyRemainsAudibleWithMutedMicBranchAndDifferentRate() throws {
-        let (engine, graph, _) = try offlineGraph()
+    func testAssistantReplyRemainsAudibleAtDifferentOutputRate() throws {
+        let (engine, graph) = try offlineGraph()
         defer { engine.stop() }
         graph.player.scheduleBuffer(try buffer(rate: 24000, frames: 4800, value: 0.25))
         graph.player.play()
@@ -140,18 +119,15 @@ final class VoiceCaptureTests: XCTestCase {
         XCTAssertTrue((0..<Int(output.frameLength)).allSatisfy { abs(channel[$0]) < 0.3 })
     }
 
-    func testDifferentMicrophoneAndSpeakerFormatsKeepCaptureAndReplyWorking() throws {
-        let routes: [(Double, AVAudioChannelCount, Double, AVAudioChannelCount)] = [
-            (16000, 1, 48000, 1), (16000, 1, 48000, 2),
-            (48000, 2, 16000, 1), (44100, 1, 48000, 2)
+    func testDifferentSpeakerFormatsKeepReplyWorking() throws {
+        let routes: [(Double, AVAudioChannelCount)] = [
+            (16000, 1), (44100, 1), (48000, 1), (48000, 2)
         ]
-        for (inputRate, inputChannels, outputRate, outputChannels) in routes {
-            let (engine, graph, activity) = try offlineGraph(inputRate: inputRate, inputChannels: inputChannels,
-                                                           outputRate: outputRate, outputChannels: outputChannels)
+        for (outputRate, outputChannels) in routes {
+            let (engine, graph) = try offlineGraph(outputRate: outputRate, outputChannels: outputChannels)
             defer { engine.stop() }
             let output = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: 2048))
             XCTAssertEqual(try engine.renderOffline(2048, to: output), .success)
-            XCTAssertGreaterThan(activity.receivedFrames, 0)
             for index in 0..<Int(outputChannels) {
                 let channel = try XCTUnwrap(output.floatChannelData?[index])
                 XCTAssertTrue((0..<Int(output.frameLength)).allSatisfy { abs(channel[$0]) < 0.00001 })
@@ -163,6 +139,149 @@ final class VoiceCaptureTests: XCTestCase {
             XCTAssertTrue((0..<Int(output.frameLength)).contains { abs(channel[$0]) > 0.05 })
             XCTAssertTrue((0..<Int(output.frameLength)).allSatisfy { abs(channel[$0]) < 0.3 })
         }
+    }
+
+    func testReceiverCopiesCallbacksBeforeSourceMemoryIsReused() throws {
+        for rate in [16000.0, 24000.0, 44100.0, 48000.0] {
+            let packets = CapturedVoicePackets()
+            let input = try buffer(rate: rate, frames: Int(rate / 50))
+            let receiver = try VoiceInputReceiver(input: input.format) { packets.append($0) }
+            defer { receiver.stop(); receiver.clearStoppedInput() }
+            for _ in 0..<40 {
+                // Only the preallocated ring is touched during receive; conversion is deferred.
+                input.floatChannelData![0].update(repeating: 0.25, count: Int(input.frameLength))
+                receiver.receive(frames: input.frameLength, from: input.audioBufferList)
+                input.floatChannelData![0].update(repeating: 0, count: Int(input.frameLength))
+                receiver.drain()
+            }
+            XCTAssertFalse(packets.result.failed)
+            XCTAssertGreaterThanOrEqual(packets.result.packets.count, 3)
+            XCTAssertGreaterThan(VoiceAudioStatus.microphoneLevel(try XCTUnwrap(packets.result.packets.first)), 0)
+            XCTAssertEqual(receiver.statistics.inputFrames, Int64(rate * 0.8))
+            XCTAssertNil(receiver.statistics.startupFailure)
+        }
+    }
+
+    func testLiveInputConnectsOnlyToSinkAndIsIndependentOfReplyPlayback() throws {
+        // Inspect native wiring without starting hardware. Offline rendering cannot
+        // exercise a sink or voice-processing I/O, and is only used for reply tests.
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        let receiver = try VoiceInputReceiver(input: format) { _ in }
+        defer { receiver.stop(); receiver.clearStoppedInput() }
+        let graph = try VoiceAudioGraph(engine: engine)
+        let sink = receiver.attach(to: engine)
+        XCTAssertTrue(engine.inputConnectionPoint(for: sink, inputBus: 0)?.node === input)
+        let destinations = engine.outputConnectionPoints(for: input, outputBus: 0)
+        XCTAssertEqual(destinations.count, 1)
+        XCTAssertTrue(destinations.first?.node === sink)
+        XCTAssertTrue(engine.inputConnectionPoint(for: engine.mainMixerNode, inputBus: 0)?.node === graph.player)
+        XCTAssertFalse(graph.player.isPlaying)
+    }
+
+    func testReceiverWorkerDeliversWithoutManualDrain() throws {
+        let delivered = expectation(description: "worker delivers a live PCM batch")
+        let packets = CapturedVoicePackets()
+        let input = try buffer(rate: 24000, frames: 2400)
+        let receiver = try VoiceInputReceiver(input: input.format) { packet in
+            packets.append(packet)
+            delivered.fulfill()
+        }
+        defer { receiver.stop(); receiver.clearStoppedInput() }
+        receiver.start()
+        for _ in 0..<2 { receiver.receive(frames: input.frameLength, from: input.audioBufferList) }
+        wait(for: [delivered], timeout: 2)
+        XCTAssertFalse(packets.result.failed)
+        XCTAssertEqual(packets.result.packets.count, 1)
+        XCTAssertEqual(receiver.statistics.inputFrames, 4800)
+    }
+
+    func testReceiverHandlesPlanarAndInterleavedStereoPCM() throws {
+        for interleaved in [false, true] {
+            let format = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000,
+                                                   channels: 2, interleaved: interleaved))
+            let input = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960))
+            input.frameLength = 960
+            let packets = CapturedVoicePackets()
+            let receiver = try VoiceInputReceiver(input: format) { packets.append($0) }
+            defer { receiver.stop(); receiver.clearStoppedInput() }
+            for _ in 0..<30 {
+                for audio in UnsafeMutableAudioBufferListPointer(input.mutableAudioBufferList) {
+                    let samples = try XCTUnwrap(audio.mData?.assumingMemoryBound(to: Float.self))
+                    samples.update(repeating: 0.25, count: Int(input.frameLength * audio.mNumberChannels))
+                }
+                receiver.receive(frames: input.frameLength, from: input.audioBufferList)
+                receiver.drain()
+            }
+            XCTAssertFalse(packets.result.failed)
+            XCTAssertGreaterThanOrEqual(packets.result.packets.count, 2)
+            XCTAssertGreaterThan(VoiceAudioStatus.microphoneLevel(try XCTUnwrap(packets.result.packets.first)), 0)
+            XCTAssertNil(receiver.statistics.startupFailure)
+        }
+    }
+
+    func testReceiverPreservesVariableCallbackSizesAndOrdering() throws {
+        let packets = CapturedVoicePackets()
+        let input = try buffer(rate: 24000, frames: 1200)
+        let receiver = try VoiceInputReceiver(input: input.format) { packets.append($0) }
+        defer { receiver.stop(); receiver.clearStoppedInput() }
+        for (frames, value) in [(100, Float(0.25)), (1100, Float(-0.25)), (600, Float(0.5)), (1200, Float(-0.5)), (1200, Float(0)), (600, Float(0.25))] {
+            input.frameLength = AVAudioFrameCount(frames)
+            input.floatChannelData![0].update(repeating: value, count: frames)
+            receiver.receive(frames: input.frameLength, from: input.audioBufferList)
+        }
+        receiver.drain()
+        XCTAssertFalse(packets.result.failed)
+        let data = try XCTUnwrap(packets.result.packets.first)
+        XCTAssertEqual(data.count, 9600)
+        data.withUnsafeBytes { raw in
+            for (index, expected) in [(0, 8192), (99, 8192), (100, -8192), (1199, -8192), (1200, 16384),
+                                      (1799, 16384), (1800, -16384), (2999, -16384), (3000, 0), (4199, 0), (4200, 8192)] {
+                let sample = Int(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: index * 2, as: Int16.self)))
+                XCTAssertLessThanOrEqual(abs(sample - expected), 1)
+            }
+        }
+        XCTAssertEqual(receiver.statistics.inputFrames, 4800)
+    }
+
+    func testReceiverOverflowEndsCaptureInsteadOfOverwritingUnsentAudio() throws {
+        let packets = CapturedVoicePackets()
+        let input = try buffer(rate: 24000, frames: 2400)
+        let receiver = try VoiceInputReceiver(input: input.format, slots: 2) { packets.append($0) }
+        defer { receiver.stop(); receiver.clearStoppedInput() }
+        for _ in 0..<3 { receiver.receive(frames: input.frameLength, from: input.audioBufferList) }
+        receiver.drain(); receiver.drain()
+        XCTAssertTrue(packets.result.failed)
+        XCTAssertTrue(packets.result.packets.isEmpty)
+        XCTAssertEqual(receiver.statistics.receiverFailure, 1)
+        XCTAssertTrue(receiver.statistics.startupFailure?.contains("CAP-01") == true)
+    }
+
+    func testReceiverRejectsOversizedOrChangedInputWithoutReadingBeyondBuffers() throws {
+        let packets = CapturedVoicePackets()
+        let input = try buffer(rate: 24000, frames: 2400)
+        let receiver = try VoiceInputReceiver(input: input.format) { packets.append($0) }
+        defer { receiver.stop(); receiver.clearStoppedInput() }
+        receiver.receive(frames: VoiceInputReceiver.maximumFrames + 1, from: input.audioBufferList)
+        receiver.drain()
+        XCTAssertTrue(packets.result.failed)
+        XCTAssertTrue(packets.result.packets.isEmpty)
+        XCTAssertEqual(receiver.statistics.receiverFailure, 2)
+        XCTAssertTrue(receiver.statistics.startupFailure?.contains("CAP-02") == true)
+    }
+
+    func testReceiverStopDiscardsQueuedInputAndRejectsLateCallbacks() throws {
+        let packets = CapturedVoicePackets()
+        let input = try buffer(rate: 24000, frames: 2400)
+        let receiver = try VoiceInputReceiver(input: input.format) { packets.append($0) }
+        receiver.receive(frames: input.frameLength, from: input.audioBufferList)
+        receiver.stop(); receiver.clearStoppedInput()
+        receiver.receive(frames: input.frameLength, from: input.audioBufferList)
+        receiver.drain()
+        XCTAssertEqual(receiver.statistics.inputFrames, 2400)
+        XCTAssertTrue(packets.result.packets.isEmpty)
+        XCTAssertFalse(packets.result.failed)
     }
 
     func testStartupErrorsIdentifyEveryStageWithoutLeakingUnderlyingDetails() {
