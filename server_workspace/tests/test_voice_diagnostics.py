@@ -61,6 +61,30 @@ def test_lost_ack_is_idempotent_and_speaker_feedback_cannot_modify_counters(voic
     assert upload(voice, premature).status_code == 409
 
 
+def test_session_report_records_safe_transport_counters_and_rejects_private_payloads(voice):
+    body = report(); body["kind"] = "voice-session"
+    body["transport"] = {"endReason": "upload-backlog", "uploadedBytes": 48000,
+                         "uploadRequests": 1, "pendingUploadBytes": 96000, "peakUploadBytes": 96000,
+                         "lastUploadMs": 600, "maxUploadMs": 600, "receivedAudioBytes": 9600,
+                         "playbackFrames": 4800, "peakPlaybackFrames": 9600}
+    assert upload(voice, body).status_code == 200
+    assert upload(voice, body).status_code == 200
+    stored = DiagnosticStore(voice[0]).local_review("alice")["report"]
+    assert stored["transport"] == body["transport"]
+    for key, value in (("providerPayload", "forbidden"), ("endReason", "private string"), ("maxUploadMs", -1)):
+        changed = copy.deepcopy(body); changed["request_id"] = str(uuid.uuid4())
+        changed["transport"][key] = value
+        assert upload(voice, changed).status_code == 422
+
+
+def test_older_counter_reports_keep_their_original_idempotency_body(voice):
+    body = report()
+    assert upload(voice, body).status_code == 200
+    stored = DiagnosticStore(voice[0]).local_review("alice")["report"]
+    assert "transport" not in stored
+    assert upload(voice, body).status_code == 200
+
+
 @pytest.mark.parametrize("change", [
     lambda x: x.update(audio="forbidden"), lambda x: x.update(token="forbidden"),
     lambda x: x.update(transcript="forbidden"), lambda x: x.update(watch_os="device serial"),

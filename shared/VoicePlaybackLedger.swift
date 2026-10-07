@@ -12,8 +12,12 @@ struct VoicePlaybackLedger {
     private(set) var pending: [Segment] = []
     private var completed: [String: Int64] = [:]
 
+    func remainingFrames(audibleFrame: Int64) -> Int64 {
+        pending.reduce(Int64(0)) { $0 + max(0, $1.end - max($1.start, audibleFrame)) }
+    }
+
     mutating func schedule(item: String, frames: Int64, renderFrame: Int64, audibleFrame: Int64) -> Segment? {
-        let remaining = pending.reduce(Int64(0)) { $0 + max(0, $1.end - max($1.start, audibleFrame)) }
+        let remaining = remainingFrames(audibleFrame: audibleFrame)
         guard frames > 0, remaining + frames <= 96000 else { return nil }
         let segment = Segment(item: item, start: max(pending.last?.end ?? 0, renderFrame), frames: frames)
         pending.append(segment)

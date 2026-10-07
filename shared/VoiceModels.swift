@@ -143,7 +143,7 @@ enum VoiceWire {
 }
 
 enum VoiceError: LocalizedError {
-    case setup, connection, version, status(Int), microphone, audioBusy, audioRoute, audioConversion, slow
+    case setup, connection, version, status(Int), microphone, audioBusy, audioRoute, audioConversion, slow, uploadBacklog, playbackBacklog
     var errorDescription: String? {
         switch self {
         case .setup: return "Open Scribe Pilot on your iPhone and set up Watch voice in Settings."
@@ -154,6 +154,8 @@ enum VoiceError: LocalizedError {
         case .audioRoute: return "The Watch could not start two-way audio. Check its speaker or headphone connection."
         case .audioConversion: return "Watch microphone audio conversion failed (PCM-01). Start a new conversation."
         case .slow: return "The audio connection is too slow. Start a new conversation."
+        case .uploadBacklog: return "Microphone upload could not keep up (NET-01). Start a new conversation."
+        case .playbackBacklog: return "Assistant playback could not keep up (NET-02). Start a new conversation."
         case let .status(code):
             switch code {
             case 401: return "Voice access expired. Open Scribe Pilot on your iPhone to set it up again."

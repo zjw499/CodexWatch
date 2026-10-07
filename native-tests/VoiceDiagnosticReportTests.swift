@@ -3,6 +3,22 @@ import XCTest
 @testable import ScribePilot
 
 final class VoiceDiagnosticReportTests: XCTestCase {
+    func testOlderReportHasNoTransportAndNewConversationReportContainsSafeCounters() throws {
+        let old = try JSONDecoder().decode(VoiceDiagnosticReport.self, from: JSONEncoder().encode(report()))
+        XCTAssertNil(old.transport)
+        var value = VoiceDiagnosticReport(request_id: UUID().uuidString, kind: .voiceSession, build: "151",
+            watch_os: "26.6", completed: false, route_changes: 0, interruptions: 0, media_resets: 0, results: old.results)
+        value.transport = VoiceTransportDiagnostic(endReason: .uploadBacklog, uploadedBytes: 9600,
+            uploadRequests: 1, pendingUploadBytes: 96000, peakUploadBytes: 96000, lastUploadMs: 600,
+            maxUploadMs: 600, receivedAudioBytes: 48000, playbackFrames: 4800, peakPlaybackFrames: 9600)
+        let data = try JSONEncoder().encode(value)
+        let decoded = try JSONDecoder().decode(VoiceDiagnosticReport.self, from: data)
+        XCTAssertEqual(decoded.kind, .voiceSession)
+        XCTAssertEqual(decoded.transport?.endReason, .uploadBacklog)
+        XCTAssertEqual(decoded.transport?.maxUploadMs, 600)
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("transcript"))
+    }
+
     private func report() -> VoiceDiagnosticReport {
         var result = VoiceAudioDiagnosticResult(phase: .production)
         result.inputFrames = 1104; result.peakLevel = 0.4

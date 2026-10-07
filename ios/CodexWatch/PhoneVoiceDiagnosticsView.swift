@@ -17,7 +17,7 @@ struct PhoneVoiceDiagnosticsView: View {
     @State private var message: String?
     var body: some View {
         List {
-            Text("Watch audio tests and conversation audio failures send counters automatically. Reports contain no audio or conversation text.")
+            Text("Watch audio tests and conversations send counters automatically. Reports contain no audio or conversation text.")
                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
             if review { Text("Opening reports here records an administrator review in the audit history.").font(.footnote) }
             ForEach(entries) { entry in
@@ -60,8 +60,18 @@ private struct PhoneVoiceDiagnosticDetailView: View {
         List {
             if let report {
                 Text("Build \(report.build) · watchOS \(report.watch_os)")
-                Text(report.kind == .audioTest ? "Local audio test" : "Conversation audio failure")
+                Text(report.kind == .audioTest ? "Local audio test" : "Conversation audio report")
                 if let heard = report.speaker_heard { Text(heard ? "Speaker heard: yes" : "Speaker heard: no") }
+                if let transport = report.transport {
+                    Section("Connection and playback") {
+                        Text("End reason: \(transport.endReason.rawValue)")
+                        Text("Uploaded \(transport.uploadedBytes) bytes in \(transport.uploadRequests) requests")
+                        Text("Upload time: last \(transport.lastUploadMs) ms · Maximum \(transport.maxUploadMs) ms")
+                        Text("Unsent \(transport.pendingUploadBytes) bytes · Peak \(transport.peakUploadBytes)")
+                        Text("Received \(transport.receivedAudioBytes) reply bytes")
+                        Text("Playback queued \(transport.playbackFrames) frames · Peak \(transport.peakPlaybackFrames)")
+                    }
+                }
                 ForEach(report.results) { result in
                     Section("\(result.id): \(result.phase.title)") {
                         Text("Input \(result.inputFrames) · Worker \(result.drainedFrames)")

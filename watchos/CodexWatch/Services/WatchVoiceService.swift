@@ -29,7 +29,8 @@ final class WatchVoiceService: ObservableObject {
     private var heartbeatTask: Task<Void, Never>?
     private var captureWatchdog: Task<Void, Never>?
     private var captureTask: Task<Void, Never>?
-    private var pendingAudio: [Data] = []
+    private var pendingAudio = VoiceUploadBuffer()
+    private var transport = VoiceTransportDiagnostic()
     private var sequence = 0
     private var generation = UUID()
     private var observers: [NSObjectProtocol] = []
@@ -160,6 +161,7 @@ final class WatchVoiceService: ObservableObject {
         isActive = true; state = "connecting"; muted = false; message = nil; turns = []
         providerReady = false; captureStarted = false
         microphoneLevel = 0; capturedBatches = 0; uploadedBatches = 0; receivedAudio = false
+        pendingAudio = VoiceUploadBuffer(); transport = VoiceTransportDiagnostic()
         generation = UUID()
         let run = generation
         do {
@@ -194,7 +196,7 @@ final class WatchVoiceService: ObservableObject {
                     }
                     if self.generation == run, self.isActive { self.end(message: "The voice connection ended. Completed text was saved.") }
                 } catch is CancellationError { }
-                catch { if self.generation == run { self.end(message: error.localizedDescription) } }
+                catch { if self.generation == run { self.end(message: error.localizedDescription, reason: Self.transportReason(error)) } }
             }
             heartbeatTask = Task { [weak self] in
                 while !Task.isCancelled {
@@ -203,7 +205,7 @@ final class WatchVoiceService: ObservableObject {
                         guard let self, self.generation == run, self.isActive else { return }
                         try await self.client.control(VoiceControl(action: "heartbeat"), sessionID: info.id, credential: saved)
                     } catch is CancellationError { return }
-                    catch { if let self, self.generation == run { self.end(message: error.localizedDescription) }; return }
+                    catch { if let self, self.generation == run { self.end(message: error.localizedDescription, reason: .network) }; return }
                 }
             }
         } catch { if generation == run { end(message: error.localizedDescription) } }
@@ -269,7 +271,7 @@ final class WatchVoiceService: ObservableObject {
         result.failedStage = failure?.stage; result.nativeCode = failure?.nativeCode
         WatchVoiceDiagnosticReporter.shared.submit(WatchVoiceDiagnosticReporter.report(
             kind: .voiceStartup, completed: false, results: [result]))
-        end(message: message)
+        end(message: message, diagnostic: false)
     }
 
     private func receive(_ event: VoiceEvent, run: UUID) async throws {
@@ -281,6 +283,7 @@ final class WatchVoiceService: ObservableObject {
             if desiredState == "listening", !audio.hasPendingPlayback { acknowledgePlayback() }
         case "audio":
             guard let encoded = event.audio, let item = event.item_id, let data = Data(base64Encoded: encoded) else { throw VoiceError.connection }
+            transport.receivedAudioBytes += data.count
             try audio.play(data, item: item)
             receivedAudio = true
             state = "speaking"
@@ -293,15 +296,14 @@ final class WatchVoiceService: ObservableObject {
                 if let index = turns.firstIndex(where: { $0.id == turn.id }) { turns[index] = turn }
                 else { turns.append(turn) }
             }
-        case "ended": end(message: event.message ?? "Conversation ended.", notifyServer: false)
+        case "ended": end(message: event.message ?? "Conversation ended.", notifyServer: false, reason: .serverEnded)
         default: break
         }
     }
 
     private func enqueueAudio(_ data: Data) {
         guard !muted, isActive else { return }
-        guard pendingAudio.count < 10 else { end(message: VoiceError.slow.localizedDescription); return }
-        pendingAudio.append(data)
+        guard pendingAudio.append(data) else { end(message: VoiceError.uploadBacklog.localizedDescription, reason: .uploadBacklog); return }
         guard uploadTask == nil else { return }
         let run = generation
         uploadTask = Task { [weak self] in
@@ -310,15 +312,19 @@ final class WatchVoiceService: ObservableObject {
             do {
                 while self.generation == run, self.isActive, !self.pendingAudio.isEmpty {
                     try Task.checkCancellation()
-                    let batch = self.pendingAudio.removeFirst()
+                    guard let batch = self.pendingAudio.take() else { break }
                     guard let current = self.current, let credential = self.credential else { throw VoiceError.setup }
+                    let began = Date()
                     try await self.client.audio(batch, sequence: self.sequence, sessionID: current.id, credential: credential)
                     guard self.generation == run else { return }
+                    self.transport.lastUploadMs = min(60000, max(0, Int(Date().timeIntervalSince(began) * 1000)))
+                    self.transport.maxUploadMs = max(self.transport.maxUploadMs, self.transport.lastUploadMs)
+                    self.transport.uploadRequests += 1; self.transport.uploadedBytes += batch.count
                     self.sequence += 1
-                    self.uploadedBatches += 1
+                    self.uploadedBatches += batch.count / 9600
                 }
             } catch is CancellationError { }
-            catch { if self.generation == run { self.end(message: error.localizedDescription) } }
+            catch { if self.generation == run { self.end(message: error.localizedDescription, reason: .network) } }
         }
     }
 
@@ -333,7 +339,7 @@ final class WatchVoiceService: ObservableObject {
 
     func toggleMute() {
         guard isActive, let current, let credential else { return }
-        muted.toggle(); pendingAudio = []; microphoneLevel = 0; state = muted ? "muted" : desiredState
+        muted.toggle(); pendingAudio.clear(); microphoneLevel = 0; state = muted ? "muted" : desiredState
         let value = muted, run = generation
         Task {
             do { try await client.control(VoiceControl(action: "mute", muted: value), sessionID: current.id, credential: credential) }
@@ -341,15 +347,31 @@ final class WatchVoiceService: ObservableObject {
         }
     }
 
-    func end(message: String = "Conversation ended.", notifyServer: Bool = true) {
+    private static func transportReason(_ error: Error) -> VoiceTransportDiagnostic.EndReason {
+        if let error = error as? VoiceError, case .playbackBacklog = error { return .playbackBacklog }
+        return .network
+    }
+
+    func end(message: String = "Conversation ended.", notifyServer: Bool = true,
+             reason: VoiceTransportDiagnostic.EndReason = .closed, diagnostic: Bool = true) {
         guard isActive else { return }
         let previous = current, saved = credential
         let item = audio.hasPendingPlayback ? audio.outputItem : nil
         let milliseconds = item.map { audio.playedMilliseconds(item: $0) }
+        if diagnostic {
+            transport.endReason = reason
+            transport.pendingUploadBytes = pendingAudio.bytes; transport.peakUploadBytes = pendingAudio.peakBytes
+            transport.playbackFrames = min(96000, audio.pendingPlaybackFrames)
+            transport.peakPlaybackFrames = min(96000, audio.peakPlaybackFrames)
+            var report = WatchVoiceDiagnosticReporter.report(kind: .voiceSession, completed: reason == .closed,
+                results: [audio.diagnosticResult])
+            report.transport = transport
+            WatchVoiceDiagnosticReporter.shared.submit(report)
+        }
         isActive = false; generation = UUID(); state = "ended"; muted = false; self.message = message
         providerReady = false; captureStarted = false
         microphoneLevel = 0
-        audio.stop(); pendingAudio = []
+        audio.stop(); pendingAudio.clear()
         streamTask?.cancel(); uploadTask?.cancel(); heartbeatTask?.cancel(); captureWatchdog?.cancel(); captureWatchdog = nil
         captureTask?.cancel(); captureTask = nil
         streamTask = nil; uploadTask = nil; heartbeatTask = nil; current = nil; credential = nil

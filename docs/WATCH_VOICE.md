@@ -329,3 +329,40 @@ additive and voice startup uses `recover_jobs=False`. Deploy private read/review
 routes separately in a quiescent workspace window; verify no recording processing
 jobs are active before restarting the private worker. Rollback changes only the
 selected service's pointer and retains encrypted reports/history.
+
+## Build 150 physical audio and interrupted replies
+
+On October 7 the automatically delivered build 150 report on Ultra 2/watchOS 26.6
+showed N production capture running: 158976 input/drained frames, 79488 converted
+frames, 16 batches and zero receiver/converter faults. It reached ready on the
+first attempt at 923 ms. Separate speaker tones were heard. The owner then tried
+a normal conversation: speech reached the assistant and part of its reply was
+audible, but the conversation ended with the generic slow-connection message.
+Full physical acceptance remains incomplete.
+
+The prior implementation used the same slow message for three different bounds.
+The PC event queue ended at 256000 base64 audio bytes (about four seconds), and
+Watch playback ended when over four seconds were scheduled ahead. A fast
+six-second reply burst reproduces the PC limit without requiring a slow network.
+The separate microphone path uploaded each 200 ms packet in a serial HTTP
+request; sustained acknowledgement latency above 200 ms would fill its queue.
+Build 150 did not report transport counters, so which of those guards ended this
+specific physical conversation is unknown.
+
+The corrected gateway keeps a bounded 30-second PCM reservoir only in memory and
+streams at most 200 ms of audio per event, paced at 24000 mono PCM16 frames/second.
+It does not send a catch-up burst after a stalled transport. Provider reading
+continues while audio is paced, so speech interruptions can clear buffered output
+promptly. Pending caption snapshots coalesce while preserving question/answer
+order. Provider listening is deferred until buffered audio has been sent, while
+interrupt/end controls remain prompt. Watch playback/truncation still uses actual
+heard progress as required by [Realtime interruption handling](https://developers.openai.com/api/docs/guides/realtime-conversations#interruption-and-truncation).
+
+The next Watch pilot combines queued microphone packets into uploads of at most
+one second, retaining byte/sequence identity on a lost-ack retry. Unsent audio
+remains bounded to two seconds, with one request in flight. It sends safe capture,
+upload timing/byte-count and playback queue reports at conversation end; NET-01,
+NET-02 and NET-03 distinguish upload, Watch playback and PC output limits. Reports
+contain no audio, text, credentials, provider payloads or device identifiers.
+Deploy the extended strict receiver before distributing this pilot. Private review
+routes and the recording worker need no restart for this voice-only update.

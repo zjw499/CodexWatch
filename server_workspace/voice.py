@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from .workspace import Workspace, digest, fail, identifier
 from .voice_diagnostics import DiagnosticReport, DiagnosticStore
+from .voice_stream import PacedVoiceEvents, VoiceStreamOverflow
 
 
 class VoicePolicy(BaseModel):
@@ -359,8 +360,7 @@ class VoiceSession:
         self.history = conversation["turns"]
         self.state = "connecting"
         self.peer = None
-        self.events = asyncio.Queue(maxsize=128)
-        self.queued_bytes = 0
+        self.events = PacedVoiceEvents()
         self.event_id = 0
         self.sequence = 0
         self.last_audio_hash = ""
@@ -384,14 +384,10 @@ class VoiceSession:
     async def emit(self, kind, **fields):
         if self.state == "ended" and kind != "ended":
             return
-        self.event_id += 1
-        event = {"version": 1, "id": self.event_id, "type": kind, **fields}
-        size = len(fields.get("audio", ""))
-        if self.events.full() or self.queued_bytes + size > 256000:
-            await self.end("Audio connection is too slow. Start a new conversation.")
-            return
-        self.queued_bytes += size
-        self.events.put_nowait(event)
+        try:
+            self.events.put(kind, **fields)
+        except VoiceStreamOverflow:
+            await self.end("Assistant audio exceeded its buffer limit (NET-03). Start a new conversation.")
 
     async def start(self):
         try:
@@ -451,6 +447,7 @@ class VoiceSession:
                         await self.emit("turn", turn=turn)
                     if self.last_output_item:
                         self.blocked_output.add(self.last_output_item)
+                        self.events.discard_audio(self.last_output_item)
                         await self.emit("interrupt", item_id=self.last_output_item)
                     self.state = "listening"
                     await self.emit("state", state=self.state)
@@ -469,6 +466,8 @@ class VoiceSession:
                     self.last_output_item = item
                     self.output_bytes[item] = self.output_bytes.get(item, 0) + len(base64.b64decode(event["delta"], validate=True))
                     self.activity = time.monotonic()
+                    if self.state != "speaking":
+                        await self.emit("state", state="speaking")
                     self.state = "speaking"
                     await self.emit("audio", item_id=item, audio=event["delta"])
                 elif kind == "response.output_audio_transcript.delta" and item:
@@ -568,6 +567,7 @@ class VoiceSession:
                 self.last_output_item = None
             else:
                 self.blocked_output.add(body.item_id)
+                self.events.discard_audio(body.item_id)
                 turn = self.save(body.item_id, "assistant", interrupted=True)
                 await self.emit("turn", turn=turn)
                 await self.peer.send({"type": "conversation.item.truncate", "item_id": body.item_id,
@@ -595,9 +595,7 @@ class VoiceSession:
             db.execute("UPDATE voice_conversations SET state='ended',updated=? WHERE id=? AND deleted=0",
                        (time.time(), self.conversation_id))
             self.store.w.audit(db, self.user["id"], "voice-session-ended", self.id)
-        while not self.events.empty():
-            self.events.get_nowait()
-        self.queued_bytes = 0
+        self.events.clear()
         await self.emit("ended", message=message)
         if self.peer:
             with suppress(Exception):
@@ -769,7 +767,8 @@ def create_voice_app(workspace, peer_factory=None):
                     except asyncio.TimeoutError:
                         yield ": heartbeat\n\n"
                         continue
-                    session.queued_bytes -= len(event.get("audio", ""))
+                    session.event_id += 1
+                    event = {"version": 1, "id": session.event_id, **event}
                     yield "id: " + str(event["id"]) + "\ndata: " + json.dumps(event, separators=(",", ":")) + "\n\n"
                     if event["type"] == "ended":
                         break

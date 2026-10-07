@@ -13,6 +13,8 @@ final class WatchVoiceAudio {
     var outputItem: String?
     var onPlaybackFinished: (() -> Void)?
     var hasPendingPlayback: Bool { !playback.pending.isEmpty }
+    var pendingPlaybackFrames: Int64 { playback.remainingFrames(audibleFrame: audibleFrames()) }
+    private(set) var peakPlaybackFrames: Int64 = 0
     private var configurationObserver: NSObjectProtocol?
     private var startupGeneration = UUID()
     private var attemptGeneration = UUID()
@@ -46,6 +48,7 @@ final class WatchVoiceAudio {
         startupGeneration = UUID()
         let run = startupGeneration
         started = false; startedAt = Date(); attempt = 1; configurationChanges = 0; events = []
+        peakPlaybackFrames = 0
         initialSnapshot = VoiceAudioDiagnosticSnapshot(); lastSnapshot = initialSnapshot
         lastStatistics = VoiceCaptureStatistics(); lastRenderedFrames = 0
         let session = AVAudioSession.sharedInstance()
@@ -148,7 +151,8 @@ final class WatchVoiceAudio {
               let samples = buffer.floatChannelData?[0] else { throw VoiceError.audioRoute }
         buffer.frameLength = buffer.frameCapacity
         guard let segment = playback.schedule(item: item, frames: Int64(buffer.frameLength),
-                                             renderFrame: renderFrames(), audibleFrame: audibleFrames()) else { throw VoiceError.slow }
+                                             renderFrame: renderFrames(), audibleFrame: audibleFrames()) else { throw VoiceError.playbackBacklog }
+        peakPlaybackFrames = max(peakPlaybackFrames, pendingPlaybackFrames)
         data.withUnsafeBytes { raw in
             for index in 0..<Int(buffer.frameLength) {
                 let sample = Int16(littleEndian: raw.loadUnaligned(fromByteOffset: index * 2, as: Int16.self))

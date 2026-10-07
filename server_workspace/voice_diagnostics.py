@@ -69,11 +69,24 @@ class Result(SafeBody):
     events: list[EngineEvent] = Field(default_factory=list, max_length=12)
 
 
+class Transport(SafeBody):
+    endReason: Literal["closed", "network", "server-ended", "upload-backlog", "playback-backlog"]
+    uploadedBytes: int = Field(default=0, ge=0, le=2000000000)
+    uploadRequests: int = Field(default=0, ge=0, le=100000)
+    pendingUploadBytes: int = Field(default=0, ge=0, le=96000)
+    peakUploadBytes: int = Field(default=0, ge=0, le=96000)
+    lastUploadMs: int = Field(default=0, ge=0, le=60000)
+    maxUploadMs: int = Field(default=0, ge=0, le=60000)
+    receivedAudioBytes: int = Field(default=0, ge=0, le=2000000000)
+    playbackFrames: int = Field(default=0, ge=0, le=96000)
+    peakPlaybackFrames: int = Field(default=0, ge=0, le=96000)
+
+
 class DiagnosticReport(SafeBody):
     version: Literal[1] = 1
     request_id: str = Field(min_length=36, max_length=36)
     revision: int = Field(default=1, ge=1, le=100)
-    kind: Literal["audio-test", "voice-startup"]
+    kind: Literal["audio-test", "voice-startup", "voice-session"]
     build: str = Field(pattern=r"^[0-9]{1,8}$")
     watch_os: str = Field(pattern=r"^[0-9]{1,3}(\.[0-9]{1,3}){0,2}$")
     completed: bool
@@ -82,6 +95,7 @@ class DiagnosticReport(SafeBody):
     interruptions: int = Field(default=0, ge=0, le=100000)
     media_resets: int = Field(default=0, ge=0, le=100000)
     results: list[Result] = Field(min_length=1, max_length=9)
+    transport: Transport | None = None
 
     @model_validator(mode="after")
     def safe_run(self):
@@ -95,6 +109,10 @@ class DiagnosticReport(SafeBody):
             raise ValueError("Duplicate diagnostic phases")
         if self.kind == "voice-startup" and (phases != ["N"] or self.speaker_heard is not None):
             raise ValueError("Startup diagnostics require one normal capture result")
+        if self.kind == "voice-session" and (phases != ["N"] or self.speaker_heard is not None or self.transport is None):
+            raise ValueError("Session diagnostics require capture and safe transport counters")
+        if self.kind != "voice-session" and self.transport is not None:
+            raise ValueError("Transport counters require session diagnostics")
         if self.kind == "audio-test" and self.completed and set(phases) != set("NMDVERASP"):
             raise ValueError("A completed test requires all phases")
         return self
@@ -106,6 +124,8 @@ class DiagnosticStore:
 
     def save(self, owner, report):
         value = report.model_dump()
+        if report.transport is None:
+            value.pop("transport")  # Keep older reports' idempotency comparison unchanged.
         now = time.time()
         with self.w.db() as db:
             # Validate the credential again inside the same transaction as the write.

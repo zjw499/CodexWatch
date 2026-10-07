@@ -236,6 +236,18 @@ def test_audio_retries_mute_sequence_and_size_validation(voice):
     assert len([e for e in peer.sent if e["type"] == "input_audio_buffer.append"]) == 1
 
 
+def test_combined_microphone_batch_and_lost_ack_preserve_one_provider_append(voice):
+    s = start(voice)
+    public, peer = voice[2], voice[7][-1]
+    route = f"/voice/v1/sessions/{s['id']}/audio?sequence=0"
+    headers = {**voice[6], "Content-Type": "application/octet-stream"}
+    data = b"".join(bytes([index]) * 9600 for index in range(5))
+    for _ in range(2):
+        assert public.post(route, headers=headers, content=data).status_code == 200
+    appends = [e for e in peer.sent if e["type"] == "input_audio_buffer.append"]
+    assert len(appends) == 1 and base64.b64decode(appends[0]["audio"]) == data
+
+
 def test_transcripts_owner_admin_review_and_delete_rejects_late_events(voice):
     w, private, public, people, _, _, vh, _ = voice
     s = start(voice)
@@ -326,9 +338,9 @@ def test_delayed_input_transcription_preserves_turn_order(voice):
     session = voice[2].app.state.voice.sessions[s["id"]]
     async def drain():
         events = []
-        while not session.events.empty(): events.append(session.events.get_nowait())
+        while session.events.controls: events.append(await session.events.get())
         return [e["turn"]["role"] for e in events if e["type"] == "turn"]
-    assert voice[2].portal.call(drain) == ["user", "assistant", "user"]
+    assert voice[2].portal.call(drain) == ["user", "assistant"]
     detail = VoiceStore(voice[0]).conversation(s["conversation_id"], voice[3]["alice"][0]["user"]["id"])
     assert [t["text"] for t in detail["turns"]] == ["Question", "Answer"]
 
@@ -368,8 +380,18 @@ def test_provider_configuration_and_no_raw_audio_files(voice):
 
 def test_bounded_output_stops_slow_watch(voice):
     s = start(voice)
-    push(voice, {"type": "response.output_audio.delta", "item_id": "a1", "delta": "a" * 260000})
+    push(voice, {"type": "response.output_audio.delta", "item_id": "a1", "delta": base64.b64encode(bytes(1440002)).decode()})
     assert voice[2].app.state.voice.sessions[s["id"]].state == "ended"
+
+
+def test_provider_generating_six_second_reply_does_not_end_healthy_watch(voice):
+    s = start(voice)
+    push(voice, {"type": "response.output_audio.delta", "item_id": "a1", "delta": base64.b64encode(bytes(288000)).decode()})
+    session = voice[2].app.state.voice.sessions[s["id"]]
+    assert session.state == "speaking"
+    assert session.events.audio_bytes == 288000
+    push(voice, {"type": "input_audio_buffer.speech_started", "item_id": "u2"})
+    assert session.state == "listening" and session.events.audio_bytes == 0
 
 
 def test_sse_terminal_event_is_versioned_and_no_store(voice):

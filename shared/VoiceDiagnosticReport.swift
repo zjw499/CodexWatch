@@ -1,7 +1,7 @@
 import Foundation
 
 struct VoiceDiagnosticReport: Codable, Sendable {
-    enum Kind: String, Codable, Sendable { case audioTest = "audio-test", voiceStartup = "voice-startup" }
+    enum Kind: String, Codable, Sendable { case audioTest = "audio-test", voiceStartup = "voice-startup", voiceSession = "voice-session" }
     let version = 1
     let request_id: String
     var revision = 1
@@ -14,6 +14,23 @@ struct VoiceDiagnosticReport: Codable, Sendable {
     let interruptions: Int
     let media_resets: Int
     let results: [VoiceAudioDiagnosticResult]
+    var transport: VoiceTransportDiagnostic?
+}
+
+struct VoiceTransportDiagnostic: Codable, Sendable {
+    enum EndReason: String, Codable, Sendable {
+        case closed, network, serverEnded = "server-ended", uploadBacklog = "upload-backlog", playbackBacklog = "playback-backlog"
+    }
+    var endReason = EndReason.closed
+    var uploadedBytes = 0
+    var uploadRequests = 0
+    var pendingUploadBytes = 0
+    var peakUploadBytes = 0
+    var lastUploadMs = 0
+    var maxUploadMs = 0
+    var receivedAudioBytes = 0
+    var playbackFrames: Int64 = 0
+    var peakPlaybackFrames: Int64 = 0
 }
 
 struct VoiceDiagnosticReceipt: Codable {
