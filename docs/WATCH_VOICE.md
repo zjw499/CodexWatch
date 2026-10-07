@@ -180,7 +180,7 @@ The explicit host support command reads only the selected account's latest safe
 report and audits the access. It never recovers recording jobs:
 
 ```powershell
-$env:PYTHONPATH = Get-Content D:\watch-audio-pipeline\.runtime\scribe-workspace\active-source.txt
+$env:PYTHONPATH = Get-Content D:\watch-audio-pipeline\.runtime\scribe-workspace\voice-active-source.txt
 D:\watch-audio-pipeline\.venv\Scripts\python.exe -m server_workspace.run --config D:\watch-audio-pipeline\.runtime\scribe-workspace\workspace-config.json voice-diagnostics --username admin
 ```
 
@@ -319,3 +319,13 @@ The next pilot adds bounded startup stabilization plus automatically delivered w
 converter and engine-event evidence. It retains echo processing and the silent output
 clock. Full physical Watch microphone, playback, interruption and independent-network
 acceptance remain pending; build 149 did not pass.
+
+
+For gateway-only updates, use `deploy_workspace.ps1 -Version <verified-source-SHA>
+-InstallVoiceGateway -VoiceGatewayOnly`. The voice supervisor uses its own release
+pointer, falling back to the main pointer for older installations. This leaves the
+recording worker and private HTTPS listener running. The diagnostic table is
+additive and voice startup uses `recover_jobs=False`. Deploy private read/review
+routes separately in a quiescent workspace window; verify no recording processing
+jobs are active before restarting the private worker. Rollback changes only the
+selected service's pointer and retains encrypted reports/history.

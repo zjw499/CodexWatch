@@ -49,7 +49,11 @@ try {
         try {
             # The venv launcher and Python child can outlive a failed supervisor independently.
             Stop-OrphanedWorkspace
-            $selected = (Get-Content -LiteralPath (Join-Path $PrivateRoot 'active-source.txt') -Raw).Trim()
+            $sourcePointer = Join-Path $PrivateRoot 'active-source.txt'
+            if ($voice -and (Test-Path -LiteralPath (Join-Path $PrivateRoot 'voice-active-source.txt'))) {
+                $sourcePointer = Join-Path $PrivateRoot 'voice-active-source.txt'
+            }
+            $selected = (Get-Content -LiteralPath $sourcePointer -Raw).Trim()
             $env:PYTHONPATH = $selected
             foreach ($stream in @('stdout', 'stderr')) {
                 $log = Join-Path $PrivateRoot "$servicePrefix.$stream.log"

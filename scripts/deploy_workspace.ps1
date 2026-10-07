@@ -3,10 +3,12 @@ param(
     [string] $PipelineRoot = "D:\watch-audio-pipeline",
     [string] $KeyFile = "C:\Users\zjw49\Desktop\OPENAI_API_KEY.txt",
     [switch] $InstallVoiceGateway,
+    [switch] $VoiceGatewayOnly,
     [switch] $ExposeVoiceGateway
 )
 $ErrorActionPreference = "Stop"
 if ($Version -notmatch '^[a-f0-9]{40}$') { throw "Use the verified source commit SHA" }
+if ($VoiceGatewayOnly -and -not $InstallVoiceGateway) { throw "Voice-only deployment requires InstallVoiceGateway" }
 if ($ExposeVoiceGateway -and -not $InstallVoiceGateway) { throw "Install the scoped voice gateway before exposing it" }
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $sourceCommit = (& git -C $sourceRoot rev-parse HEAD).Trim()
@@ -75,14 +77,18 @@ if (-not (Test-Path -LiteralPath (Join-Path $privateRoot 'workspace.sqlite3'))) 
     & $python -m server_workspace.run --config $configuration bootstrap
     if ($LASTEXITCODE -ne 0) { throw "Administrator bootstrap failed" }
 }
-$pointer = Join-Path $privateRoot "active-source.txt"
-if (Test-Path -LiteralPath $pointer) { Copy-Item -LiteralPath $pointer -Destination (Join-Path $privateRoot 'previous-source.txt') -Force }
-Set-Content -LiteralPath $pointer -Value $releaseRoot -NoNewline
-
-& (Join-Path $PSScriptRoot 'install_workspace_supervisor.ps1') -PrivateRoot $privateRoot -PythonPath $python
-& $tailscale serve --bg --yes --set-path=/workspace http://127.0.0.1:8790
-if ($LASTEXITCODE -ne 0) { throw "Workspace started locally, but private HTTPS routing failed" }
+if (-not $VoiceGatewayOnly) {
+    $pointer = Join-Path $privateRoot "active-source.txt"
+    if (Test-Path -LiteralPath $pointer) { Copy-Item -LiteralPath $pointer -Destination (Join-Path $privateRoot 'previous-source.txt') -Force }
+    Set-Content -LiteralPath $pointer -Value $releaseRoot -NoNewline
+    & (Join-Path $PSScriptRoot 'install_workspace_supervisor.ps1') -PrivateRoot $privateRoot -PythonPath $python
+    & $tailscale serve --bg --yes --set-path=/workspace http://127.0.0.1:8790
+    if ($LASTEXITCODE -ne 0) { throw "Workspace started locally, but private HTTPS routing failed" }
+}
 if ($InstallVoiceGateway) {
+    $voicePointer = Join-Path $privateRoot 'voice-active-source.txt'
+    if (Test-Path -LiteralPath $voicePointer) { Copy-Item -LiteralPath $voicePointer -Destination (Join-Path $privateRoot 'voice-previous-source.txt') -Force }
+    Set-Content -LiteralPath $voicePointer -Value $releaseRoot -NoNewline
     & (Join-Path $PSScriptRoot 'install_workspace_supervisor.ps1') -PrivateRoot $privateRoot -PythonPath $python -ServiceMode 'voice-serve'
 }
 if ($ExposeVoiceGateway) {
