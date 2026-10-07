@@ -34,6 +34,7 @@ final class WatchAudioDiagnosticService: ObservableObject {
     @Published var speakerHeard: Bool?
     private var task: Task<Void, Never>?
     private var engine: AVAudioEngine?
+    private var productionAudio: WatchVoiceAudio?
     private var graph: VoiceAudioGraph?
     private var receiver: VoiceInputReceiver?
     private var sink: AVAudioSinkNode?
@@ -56,7 +57,8 @@ final class WatchAudioDiagnosticService: ObservableObject {
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             let began = VoiceAudioStatus.interruptionBegan(note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt)
             Task { @MainActor in
-                guard let self, self.isRunning, began, self.engine?.isRunning == true else { return }
+                guard let self, self.isRunning, began,
+                      self.engine?.isRunning == true || self.productionAudio?.diagnosticSnapshot.engineRunning == true else { return }
                 self.interruptions += 1
                 self.cancel(message: "Audio was interrupted. Completed checks are shown below.")
             }
@@ -125,6 +127,7 @@ final class WatchAudioDiagnosticService: ObservableObject {
     }
 
     private func check(_ phase: VoiceAudioDiagnosticPhase) async throws -> VoiceAudioDiagnosticResult {
+        if phase == .production { return try await checkProduction() }
         let session = AVAudioSession.sharedInstance()
         var result = VoiceAudioDiagnosticResult(phase: phase)
         var stage = VoiceAudioStartupStage.configuration
@@ -136,7 +139,7 @@ final class WatchAudioDiagnosticService: ObservableObject {
             let useSink = [.currentVoice, .activeOutput, .standardActivation].contains(phase)
             try session.setCategory(phase == .meeting ? .record : (speakerOnly ? .playback : .playAndRecord),
                                     mode: voiceChat ? .voiceChat : .default, options: [])
-            result.before = sessionSnapshot()
+            result.before = WatchVoiceAudio.snapshot(engine: nil)
             stage = .activation
             if phase == .meeting || phase == .standardActivation || speakerOnly {
                 try session.setActive(true)
@@ -196,14 +199,10 @@ final class WatchAudioDiagnosticService: ObservableObject {
             if phase == .meeting { engine.prepare() }
             try engine.start()
             if phase == .activeOutput || speakerOnly { graph?.player.play() }
-            result.before = snapshot(engine: engine, speakerOnly: speakerOnly)
+            result.before = WatchVoiceAudio.snapshot(engine: engine, speakerOnly: speakerOnly, includesOutput: phase != .meeting)
             // Poll the local meter without ever retaining packets or queueing audio to UI.
-            for _ in 0..<12 {
-                try await Task.sleep(for: .milliseconds(250))
-                microphoneLevel = meter.values.peak
-                guard !AudioRecorderService.shared.isRecording, !WatchVoiceService.shared.isActive else { throw CancellationError() }
-            }
-            result.after = snapshot(engine: engine, speakerOnly: speakerOnly)
+            try await observeInput(meter)
+            result.after = WatchVoiceAudio.snapshot(engine: engine, speakerOnly: speakerOnly, includesOutput: phase != .meeting)
             let statistics = receiver?.statistics ?? encoder?.statistics ?? VoiceCaptureStatistics()
             result.inputFrames = statistics.inputFrames
             result.convertedFrames = statistics.outputFrames
@@ -218,9 +217,44 @@ final class WatchAudioDiagnosticService: ObservableObject {
         } catch {
             let failure = (error as? VoiceAudioStartupError) ?? VoiceAudioStartupError(stage: stage, underlying: error)
             result.failedStage = failure.stage; result.nativeCode = failure.nativeCode
-            result.after = sessionSnapshot(); result.after.engineRunning = engine?.isRunning == true
+            result.after = WatchVoiceAudio.snapshot(engine: engine, speakerOnly: phase == .speaker, includesOutput: phase != .meeting)
         }
         return result
+    }
+
+    private func checkProduction() async throws -> VoiceAudioDiagnosticResult {
+        let audio = WatchVoiceAudio()
+        productionAudio = audio
+        let meter = DiagnosticAudioMeter()
+        var result = VoiceAudioDiagnosticResult(phase: .production)
+        do {
+            // Use the actual startup, receiver, echo processing and silent clock.
+            // No copied setup and no earlier comparison can prime this first check.
+            try await audio.start { meter.consume($0) }
+            result.before = audio.diagnosticSnapshot
+            try await observeInput(meter)
+            result.after = audio.diagnosticSnapshot
+            let statistics = audio.captureStatistics
+            result.inputFrames = statistics.inputFrames; result.convertedFrames = statistics.outputFrames
+            result.batches = statistics.batches; result.receiverFailure = statistics.receiverFailure
+            result.peakLevel = meter.values.peak; result.conversionFailed = meter.values.failed
+            result.renderedFrames = audio.outputClockFrames
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            let failure = (error as? VoiceAudioStartupError) ?? VoiceAudioStartupError(stage: .engine, underlying: error)
+            result.failedStage = failure.stage; result.nativeCode = failure.nativeCode
+            result.after = audio.diagnosticSnapshot
+        }
+        return result
+    }
+
+    private func observeInput(_ meter: DiagnosticAudioMeter) async throws {
+        for _ in 0..<12 {
+            try await Task.sleep(for: .milliseconds(250))
+            microphoneLevel = meter.values.peak
+            guard !AudioRecorderService.shared.isRecording, !WatchVoiceService.shared.isActive else { throw CancellationError() }
+        }
     }
 
     private func outputBuffer(tone: Bool) throws -> AVAudioPCMBuffer {
@@ -236,57 +270,8 @@ final class WatchAudioDiagnosticService: ObservableObject {
         return buffer
     }
 
-    private func sessionSnapshot() -> VoiceAudioDiagnosticSnapshot {
-        let session = AVAudioSession.sharedInstance()
-        var result = VoiceAudioDiagnosticSnapshot()
-        switch session.category {
-        case .record: result.category = "record"
-        case .playAndRecord: result.category = "playAndRecord"
-        case .playback: result.category = "playback"
-        default: result.category = "Other"
-        }
-        switch session.mode {
-        case .default: result.mode = "default"
-        case .voiceChat: result.mode = "voiceChat"
-        default: result.mode = "Other"
-        }
-        func port(_ value: AVAudioSession.Port) -> String {
-            // Deliberately exclude portName, UID, data source and arbitrary strings.
-            switch value {
-            case .builtInMic: return "built-in mic"
-            case .builtInSpeaker: return "built-in speaker"
-            case .bluetoothHFP: return "Bluetooth HFP"
-            case .bluetoothA2DP: return "Bluetooth A2DP"
-            case .bluetoothLE: return "Bluetooth LE"
-            case .headphones: return "headphones"
-            case .headsetMic: return "headset mic"
-            default: return "Other"
-            }
-        }
-        result.inputPorts = session.currentRoute.inputs.map { port($0.portType) }
-        result.outputPorts = session.currentRoute.outputs.map { port($0.portType) }
-        result.outputVolume = session.outputVolume
-        return result
-    }
-
-    private func snapshot(engine: AVAudioEngine, speakerOnly: Bool) -> VoiceAudioDiagnosticSnapshot {
-        var result = sessionSnapshot()
-        result.engineRunning = engine.isRunning
-        if !speakerOnly {
-            let hardware = engine.inputNode.inputFormat(forBus: 0), capture = engine.inputNode.outputFormat(forBus: 0)
-            result.hardwareInputRate = hardware.sampleRate; result.hardwareInputChannels = hardware.channelCount
-            result.captureRate = capture.sampleRate; result.captureChannels = capture.channelCount
-            result.voiceProcessing = engine.inputNode.isVoiceProcessingEnabled
-            result.inputMuted = engine.inputNode.isVoiceProcessingInputMuted
-        }
-        if phase != .meeting {
-            let output = engine.outputNode.outputFormat(forBus: 0)
-            result.outputRate = output.sampleRate; result.outputChannels = output.channelCount
-        }
-        return result
-    }
-
     private func stopEngine() {
+        productionAudio?.stop(); productionAudio = nil
         receiver?.stop(); engine?.stop()
         if tapInstalled { engine?.inputNode.removeTap(onBus: 0); tapInstalled = false }
         receiver?.clearStoppedInput(); graph?.player.stop()

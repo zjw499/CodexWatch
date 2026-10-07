@@ -62,7 +62,8 @@ failed or why the service stopped.
 Synthetic receiver/conversion tests cover callback copying, variable sizes and ordering,
 bounded overflow, stopped input, planar/interleaved stereo, and worker delivery.
 Native graph inspection verifies microphone-to-sink wiring. Offline rendering tests
-cover only assistant output at different rates and mono/stereo routes: sinks and
+cover silent-clock looping, prompt replies, reply pause/interruption and clock cleanup
+at different rates and mono/stereo routes. They cover output only: sinks and
 voice-processing I/O cannot be exercised in manual rendering. Physical microphone,
 echo cancellation and speaker acceptance remain required. Earlier physical tests
 failed to deliver microphone batches and reported Apple startup error `-308`.
@@ -70,22 +71,29 @@ The owner confirmed build 145 still reports `MIC-01` on Apple Watch Ultra 2,
 watchOS 26.6 (23U67), while ordinary Scribe Pilot meeting recordings capture voice
 and produce transcripts. The microphone permission and basic recording route work;
 the failing path is the separate voice conversation audio setup. Changing the receiver
-to a sink did not resolve it. Build 147's physical diagnostic on that Watch narrowed
-the failure to the combination of asynchronous activation, voice processing and idle
-output: both the echo-processing tap (E) and current sink (R) received zero frames.
-The same sink captured with active silent output (A) and with standard activation (S).
-Normal voice now uses the measured S configuration: `setActive(true)`, `.playAndRecord`,
-`.voiceChat`, voice processing enabled and unmuted, the existing sink receiver, and
-idle output until an assistant reply. This is a configuration-level finding; the
-underlying watchOS implementation cause remains unknown. Live conversation, echo,
-interruption and independent-network acceptance remain pending.
+to a sink did not resolve it. Build 147's local diagnostic captured with active
+silent output (A) and standard activation (S), while the asynchronous idle-output
+echo tap (E) and original sink (R) received zero frames. Build 148 changed only to
+standard activation, but the owner confirmed a normal conversation still ended
+with `MIC-01`. S ran after A; earlier output activity might have influenced its
+success. That is a hypothesis, not a proven watchOS implementation cause.
+The next pilot keeps output rendering continuously through a separate silent
+24 kHz mono player alongside the reply player. It retains synchronous activation,
+voice processing, unmuted input and sink capture; output graph setup precedes
+input format inspection, matching the comparison's setup order. Silent output
+never enters the reply ledger, queues ahead of replies or stops when a reply is
+interrupted. End stops both players and clears capture. This follows the successful
+A comparison's continuous-output principle; the separate-player implementation
+and full conversation still require physical acceptance. A new first diagnostic
+uses the actual normal conversation audio implementation without a provider connection.
 Setup receipts contain only account/device/request identifiers and status;
 they cannot confirm a different account or an earlier setup request.
 
 Capture starts only after the voice screen is visible, active, and the provider is
 ready. Normal voice activates synchronously with
 [`setActive(true)`](https://developer.apple.com/documentation/avfaudio/avaudiosession/setactive(_:options:)),
-as verified by the physical standard-activation comparison. Startup has no suspension
+with a continuous silent output clock. Standard activation alone failed in build 148.
+Startup has no suspension
 between activation and engine start, and checks cancellation before activation and
 after it. There is no pending activation callback to revive audio after exit or stop
 a newer startup. Voice ends on wrist-down screen dimming, leaving the active voice screen,
@@ -103,15 +111,19 @@ tones; select Yes or No to record whether they were actually heard. Send the com
 comparison, `TEST-xx` finding, and speaker answer when reporting the failure.
 This works without voice provisioning, the iPhone, the PC, or a provider connection.
 
-The eight checks compare the working meeting category/default mode with a tap (M),
+The first check (N) runs the actual `WatchVoiceAudio` implementation, before any
+comparison can warm the route. Its microphone meter, batch counts, safe session
+snapshots and silent-output frame count come from that instance. Eight retained
+comparison checks follow: the working meeting category/default mode with a tap (M),
 two-way default mode (D), voice chat mode without explicit voice processing (V),
 voice processing with a tap (E), build 145's sink/idle playback graph (R), the same
 graph with a continuously rendering silent player (A), the same graph with standard
 instead of asynchronous activation (S), and separate speaker-tone playback (P).
-The R profile retains the pre-fix configuration so comparisons remain meaningful;
-normal voice now matches S. Both activation methods are supported by Apple; the
-choice is based on the measured device result, not a claim that asynchronous
-activation is unsupported. A local diagnostic alone does not establish live voice acceptance.
+R is labelled **Original voice input** and retains the earlier configuration.
+Findings assess N as normal voice; successful later comparisons cannot claim normal
+startup succeeded. Both activation methods are supported by Apple; the change does
+not imply asynchronous activation is unsupported. A local diagnostic alone does
+not establish live voice acceptance.
 
 The owner completed build 147's diagnostic on October 6 on Ultra 2/watchOS 26.6:
 
@@ -123,12 +135,13 @@ The owner completed build 147's diagnostic on October 6 on Ultra 2/watchOS 26.6:
 | E: echo processing, tap, asynchronous activation | 0 | 0 | No capture |
 | R: original sink, idle output, asynchronous activation | 0 | 0 | No capture |
 | A: sink, active output, asynchronous activation | 147936 | 15 | Captured |
-| S: sink, idle output, standard activation | 151248 | 15 | Captured; selected fix |
+| S: sink, idle output, standard activation | 151248 | 15 | Captured locally; build 148 normal startup later failed |
 | P: separate speaker tone | N/A | N/A | 74520 output frames rendered; owner heard tones |
 
 The report selected `TEST-03` because the active-output finding precedes the
-standard-activation finding; S also passed and supplies the smaller production
-change. The complete run reported 22 route changes, zero interruptions and zero
+standard-activation finding. S also passed in that sequence, but changing only
+activation did not resolve the normal conversation. The complete run reported
+22 route changes, zero interruptions and zero
 audio resets. Route changes across different audio configurations alone do not
 establish an external interruption. No raw audio or device identifiers were retained.
 

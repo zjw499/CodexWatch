@@ -3,6 +3,9 @@ import Foundation
 // Diagnostic data contains counters and known audio route types only. It is kept
 // in memory on the Watch; no microphone samples, identifiers or error payloads.
 enum VoiceAudioDiagnosticPhase: String, CaseIterable, Identifiable, Hashable, Sendable {
+    // Run the actual conversation audio implementation before comparison profiles
+    // can warm up the route. This is local capture only, without a provider session.
+    case production = "N"
     case meeting = "M"
     case duplex = "D"
     case voiceMode = "V"
@@ -15,11 +18,12 @@ enum VoiceAudioDiagnosticPhase: String, CaseIterable, Identifiable, Hashable, Se
     var id: String { rawValue }
     var title: String {
         switch self {
+        case .production: return "Normal voice microphone"
         case .meeting: return "Meeting microphone"
         case .duplex: return "Two-way microphone"
         case .voiceMode: return "Voice chat mode"
         case .echoTap: return "Echo processing"
-        case .currentVoice: return "Current voice input"
+        case .currentVoice: return "Original voice input"
         case .activeOutput: return "Active output clock"
         case .standardActivation: return "Standard activation"
         case .speaker: return "Speaker tone"
@@ -91,22 +95,24 @@ enum VoiceAudioDiagnosticFinding: String, Sendable {
     case engineStopped = "TEST-10"
     case sessionChanged = "TEST-11"
     case silentInput = "TEST-12"
+    case productionOnly = "TEST-13"
 
     var message: String {
         switch self {
         case .incomplete: return "Test stopped before all checks finished. Keep the screen awake and run again."
-        case .currentWorks: return "Current voice supplied microphone batches here. Investigate the conversation launch and lifecycle."
-        case .conversion: return "Current voice received samples but conversion or buffering failed."
-        case .outputClock: return "Active output captured audio; the current idle-output setup did not."
-        case .activation: return "Standard activation captured audio; current activation did not."
-        case .receiver: return "The echo tap captured audio; the current input receiver did not."
+        case .currentWorks: return "Normal voice supplied microphone batches here. Investigate the live conversation launch and lifecycle."
+        case .conversion: return "Normal voice received samples but conversion or buffering failed."
+        case .outputClock: return "The output-clock comparison captured audio; normal voice did not. Inspect the N check details."
+        case .activation: return "The standard-activation comparison captured audio; normal voice did not."
+        case .receiver: return "The echo tap captured audio; normal voice did not."
         case .echoProcessing: return "Voice chat captured audio before echo processing was enabled."
         case .voiceMode: return "Two-way audio captured samples; voice chat mode did not."
         case .duplex: return "Meeting capture worked; two-way voice capture did not."
         case .baseline: return "The local meeting microphone check failed too. Inspect its error and route details."
-        case .engineStopped: return "The current voice engine stopped during its microphone check."
-        case .sessionChanged: return "The current voice session or audio route changed during capture."
-        case .silentInput: return "Current voice supplied only silent samples. Check the input mute and route details."
+        case .engineStopped: return "The normal voice engine stopped during its microphone check."
+        case .sessionChanged: return "The normal voice session or audio route changed during capture."
+        case .silentInput: return "Normal voice supplied only silent samples. Check the input mute and route details."
+        case .productionOnly: return "A later comparison captured audio but normal voice did not. Inspect the N check; later success does not prove normal startup works."
         }
     }
 
@@ -117,12 +123,13 @@ enum VoiceAudioDiagnosticFinding: String, Sendable {
         func result(_ phase: VoiceAudioDiagnosticPhase) -> VoiceAudioDiagnosticResult {
             results.first { $0.phase == phase }!
         }
-        let current = result(.currentVoice)
+        let current = result(.production)
         if current.before.engineRunning && !current.after.engineRunning { return .engineStopped }
         if current.before.engineRunning && (current.before.category != current.after.category || current.before.mode != current.after.mode ||
             current.before.inputPorts != current.after.inputPorts || current.before.outputPorts != current.after.outputPorts) { return .sessionChanged }
         if current.capturedAudio { return current.peakLevel == 0 ? .silentInput : .currentWorks }
         if current.inputFrames > 0 { return .conversion }
+        if result(.currentVoice).capturedAudio { return .productionOnly }
         if result(.activeOutput).capturedAudio { return .outputClock }
         if result(.standardActivation).capturedAudio { return .activation }
         if result(.echoTap).capturedAudio { return .receiver }

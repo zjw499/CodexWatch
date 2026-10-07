@@ -80,7 +80,8 @@ final class VoiceCaptureTests: XCTestCase {
         XCTAssertNil(VoiceCaptureStatistics(inputFrames: 9600, outputFrames: 4800, batches: 1).startupFailure)
     }
 
-    private func offlineGraph(outputRate: Double = 48000, outputChannels: AVAudioChannelCount = 1) throws -> (AVAudioEngine, VoiceAudioGraph) {
+    private func offlineGraph(outputRate: Double = 48000, outputChannels: AVAudioChannelCount = 1,
+                              keepOutputActive: Bool = false) throws -> (AVAudioEngine, VoiceAudioGraph) {
         let engine = AVAudioEngine()
         let outputFormat = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: outputRate, channels: outputChannels))
         // Establish a different output route before connecting the shared graph.
@@ -90,11 +91,75 @@ final class VoiceCaptureTests: XCTestCase {
         // automatic connection can retain the simulator's native 44.1 kHz/stereo format.
         // Compare with that automatic connection, rather than the renderer's PCM format.
         let automaticOutput = engine.mainMixerNode.outputFormat(forBus: 0)
-        let graph = try VoiceAudioGraph(engine: engine)
+        let graph = try VoiceAudioGraph(engine: engine, keepOutputActive: keepOutputActive)
         XCTAssertEqual(engine.mainMixerNode.outputFormat(forBus: 0).sampleRate, automaticOutput.sampleRate)
         XCTAssertEqual(engine.mainMixerNode.outputFormat(forBus: 0).channelCount, automaticOutput.channelCount)
         try engine.start()
+        graph.startOutputClock()
         return (engine, graph)
+    }
+
+    func testContinuousOutputClockRendersSilenceAcrossLoopsAndSpeakerFormats() throws {
+        for (rate, channels) in [(16000.0, AVAudioChannelCount(1)), (44100, 1), (48000, 2)] {
+            let (engine, graph) = try offlineGraph(outputRate: rate, outputChannels: channels, keepOutputActive: true)
+            defer { graph.stopOutputClock(); engine.stop() }
+            let output = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: 2048))
+            // Exercise more than one second, including the looping-buffer boundary.
+            for _ in 0..<Int(rate / 2048) + 3 {
+                XCTAssertEqual(try engine.renderOffline(2048, to: output), .success)
+                for channel in 0..<Int(channels) {
+                    let samples = try XCTUnwrap(output.floatChannelData?[channel])
+                    XCTAssertTrue((0..<Int(output.frameLength)).allSatisfy { abs(samples[$0]) < 0.00001 })
+                }
+            }
+            XCTAssertGreaterThan(graph.outputClockFrames, 24000)
+            XCTAssertFalse(graph.player.isPlaying, "Silent clock must not start the assistant player")
+        }
+    }
+
+    func testRepliesPlayPromptlyWhileSilentClockKeepsRenderingThroughPauses() throws {
+        let (engine, graph) = try offlineGraph(keepOutputActive: true)
+        defer { graph.stopOutputClock(); engine.stop() }
+        let output = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: 2048))
+        for _ in 0..<3 { XCTAssertEqual(try engine.renderOffline(2048, to: output), .success) }
+        let idleClock = graph.outputClockFrames
+        graph.player.scheduleBuffer(try buffer(rate: 24000, frames: 9600, value: 0.25))
+        graph.player.play()
+        XCTAssertEqual(try engine.renderOffline(2048, to: output), .success)
+        XCTAssertTrue((0..<Int(output.frameLength)).contains { abs(output.floatChannelData![0][$0]) > 0.1 })
+        graph.player.pause()
+        // Flush converter tail, then verify the quiet gap still has an output clock.
+        for _ in 0..<2 { XCTAssertEqual(try engine.renderOffline(2048, to: output), .success) }
+        XCTAssertTrue((0..<Int(output.frameLength)).allSatisfy { abs(output.floatChannelData![0][$0]) < 0.00001 })
+        XCTAssertGreaterThan(graph.outputClockFrames, idleClock)
+        graph.player.play()
+        XCTAssertEqual(try engine.renderOffline(2048, to: output), .success)
+        XCTAssertTrue((0..<Int(output.frameLength)).contains { abs(output.floatChannelData![0][$0]) > 0.1 })
+    }
+
+    func testInterruptionDiscardsQueuedReplyWithoutStoppingClockAndEndStopsBoth() throws {
+        let (engine, graph) = try offlineGraph(keepOutputActive: true)
+        defer { engine.stop() }
+        let output = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: 2048))
+        graph.player.scheduleBuffer(try buffer(rate: 24000, frames: 24000, value: 0.25))
+        graph.player.scheduleBuffer(try buffer(rate: 24000, frames: 24000, value: -0.25))
+        graph.player.play()
+        XCTAssertEqual(try engine.renderOffline(2048, to: output), .success)
+        let speakingClock = graph.outputClockFrames
+        graph.player.stop()
+        for _ in 0..<3 { XCTAssertEqual(try engine.renderOffline(2048, to: output), .success) }
+        XCTAssertTrue((0..<Int(output.frameLength)).allSatisfy { abs(output.floatChannelData![0][$0]) < 0.00001 })
+        XCTAssertGreaterThan(graph.outputClockFrames, speakingClock)
+        // Restarting the reply player must not resurrect either queued buffer.
+        graph.player.play()
+        for _ in 0..<2 { XCTAssertEqual(try engine.renderOffline(2048, to: output), .success) }
+        XCTAssertTrue((0..<Int(output.frameLength)).allSatisfy { abs(output.floatChannelData![0][$0]) < 0.00001 })
+        graph.player.stop(); graph.stopOutputClock()
+        for _ in 0..<2 { XCTAssertEqual(try engine.renderOffline(2048, to: output), .success) }
+        let endedClock = graph.outputClockFrames
+        XCTAssertEqual(try engine.renderOffline(2048, to: output), .success)
+        XCTAssertEqual(graph.outputClockFrames, endedClock)
+        XCTAssertFalse(graph.player.isPlaying)
     }
 
     func testOutputIsSilentBeforeAssistantSpeech() throws {

@@ -10,7 +10,7 @@ struct WatchAudioDiagnosticView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Test Watch audio").font(.headline)
-                Text("Speak throughout the microphone checks. Keep your wrist raised and this screen awake. The last check plays three short tones.")
+                Text("The first check uses normal voice capture. Speak throughout the checks. Keep your wrist raised and this screen awake. The last check plays three short tones.")
                     .font(.caption)
                 Text("This local test saves and sends no audio.").font(.caption2).foregroundStyle(ScribeTheme.muted)
                 if test.isRunning {

@@ -31,7 +31,8 @@ final class VoiceAudioDiagnosticTests: XCTestCase {
             ([.meeting, .duplex, .voiceMode, .echoTap], .receiver),
             ([.meeting, .standardActivation], .activation),
             ([.meeting, .activeOutput], .outputClock),
-            ([.currentVoice], .currentWorks)
+            ([.production], .currentWorks),
+            ([.currentVoice], .productionOnly)
         ]
         for (working, expected) in cases {
             XCTAssertEqual(VoiceAudioDiagnosticFinding.evaluate(report(working: working)), expected)
@@ -40,15 +41,15 @@ final class VoiceAudioDiagnosticTests: XCTestCase {
 
     func testFramesWithoutBatchesRemainAConversionFailure() {
         var results = report(working: [.meeting, .activeOutput])
-        let index = VoiceAudioDiagnosticPhase.allCases.firstIndex(of: .currentVoice)!
+        let index = VoiceAudioDiagnosticPhase.allCases.firstIndex(of: .production)!
         results[index].inputFrames = 144000
         XCTAssertEqual(VoiceAudioDiagnosticFinding.evaluate(results), .conversion)
         XCTAssertEqual(results[index].marker, "PCM")
     }
 
     func testReceiverFaultDoesNotCountAsSuccessfulCapture() {
-        var results = report(working: [.meeting, .currentVoice])
-        let index = VoiceAudioDiagnosticPhase.allCases.firstIndex(of: .currentVoice)!
+        var results = report(working: [.meeting, .production])
+        let index = VoiceAudioDiagnosticPhase.allCases.firstIndex(of: .production)!
         results[index].receiverFailure = 1
         XCTAssertFalse(results[index].capturedAudio)
         XCTAssertEqual(results[index].marker, "CAP")
@@ -58,8 +59,8 @@ final class VoiceAudioDiagnosticTests: XCTestCase {
     }
 
     func testStoppedEngineAndChangedSessionDoNotClaimSuccessfulVoice() {
-        var results = report(working: [.meeting, .currentVoice])
-        let index = VoiceAudioDiagnosticPhase.allCases.firstIndex(of: .currentVoice)!
+        var results = report(working: [.meeting, .production])
+        let index = VoiceAudioDiagnosticPhase.allCases.firstIndex(of: .production)!
         results[index].after.engineRunning = false
         XCTAssertEqual(VoiceAudioDiagnosticFinding.evaluate(results), .engineStopped)
         results[index].after.engineRunning = true
@@ -71,10 +72,18 @@ final class VoiceAudioDiagnosticTests: XCTestCase {
     }
 
     func testSilentSamplesDoNotClaimTheMicrophoneHeardTheUser() {
-        var results = report(working: [.currentVoice])
-        let index = VoiceAudioDiagnosticPhase.allCases.firstIndex(of: .currentVoice)!
+        var results = report(working: [.production])
+        let index = VoiceAudioDiagnosticPhase.allCases.firstIndex(of: .production)!
         results[index].peakLevel = 0
         XCTAssertEqual(VoiceAudioDiagnosticFinding.evaluate(results), .silentInput)
+    }
+
+    func testLaterWarmComparisonsCannotClaimNormalStartupSucceeded() {
+        XCTAssertEqual(VoiceAudioDiagnosticPhase.allCases.first, .production)
+        let laterOnly = report(working: [.meeting, .duplex, .voiceMode, .activeOutput, .standardActivation])
+        XCTAssertEqual(VoiceAudioDiagnosticFinding.evaluate(laterOnly), .outputClock)
+        XCTAssertFalse(VoiceAudioDiagnosticFinding.evaluate(laterOnly).message.contains("idle-output"))
+        XCTAssertEqual(VoiceAudioDiagnosticFinding.evaluate(report(working: [.production, .activeOutput])), .currentWorks)
     }
 
     func testRenderingDoesNotClaimTheSpeakerWasAudible() {
