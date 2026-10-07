@@ -74,7 +74,7 @@ final class VoiceCaptureTests: XCTestCase {
         let missing = VoiceCaptureStatistics().startupFailure ?? ""
         XCTAssertTrue(missing.contains("MIC-01"))
         XCTAssertTrue(missing.contains("permission is allowed"))
-        let conversion = VoiceCaptureStatistics(inputFrames: 2400).startupFailure ?? ""
+        let conversion = VoiceCaptureStatistics(inputFrames: 2400, drainedFrames: 2400, conversionErrors: 1).startupFailure ?? ""
         XCTAssertTrue(conversion.contains("PCM-01"))
         XCTAssertFalse(conversion.contains("permission"))
         XCTAssertNil(VoiceCaptureStatistics(inputFrames: 9600, outputFrames: 4800, batches: 1).startupFailure)

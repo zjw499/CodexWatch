@@ -56,6 +56,7 @@ struct PhoneWorkspaceAdminView: View {
             Section("Organization review") {
                 NavigationLink("Watch voice policy") { PhoneVoicePolicyView() }
                 NavigationLink("Review all users' voice conversations") { PhoneVoiceHistoryView(review: true) }
+                NavigationLink("Review Watch audio reports") { PhoneVoiceDiagnosticsView(review: true) }
                 NavigationLink("Review all users' recordings") {
                     List(recordings) { recording in
                         NavigationLink { PhoneRemoteRecordingView(recordingID: recording.id, review: true) } label: {

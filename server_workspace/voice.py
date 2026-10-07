@@ -16,6 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from .workspace import Workspace, digest, fail, identifier
+from .voice_diagnostics import DiagnosticReport, DiagnosticStore
 
 
 class VoicePolicy(BaseModel):
@@ -281,6 +282,29 @@ def install_private_routes(app, workspace, account, admin):
     @app.get("/api/admin/voice/conversations/{conversation_id}")
     def review_detail(conversation_id: str, user=Depends(admin)):
         return store.conversation(conversation_id, user["id"], review=True)
+
+    diagnostics = DiagnosticStore(workspace)
+
+    @app.get("/api/voice/diagnostics")
+    def diagnostic_history(user=Depends(account)):
+        return diagnostics.history(user["id"])
+
+    @app.get("/api/voice/diagnostics/{report_id}")
+    def diagnostic_detail(report_id: str, user=Depends(account)):
+        return diagnostics.detail(user["id"], identifier(report_id))
+
+    @app.delete("/api/voice/diagnostics/{report_id}")
+    def diagnostic_delete(report_id: str, user=Depends(account)):
+        diagnostics.delete(user["id"], identifier(report_id))
+        return {"ok": True}
+
+    @app.get("/api/admin/voice/diagnostics")
+    def diagnostic_review_history(user=Depends(admin)):
+        return diagnostics.history(user["id"], review=True)
+
+    @app.get("/api/admin/voice/diagnostics/{report_id}")
+    def diagnostic_review(report_id: str, user=Depends(admin)):
+        return diagnostics.detail(user["id"], identifier(report_id), review=True)
 
     @app.get("/api/admin/voice/policy")
     def policy(user=Depends(admin)):
@@ -677,6 +701,10 @@ def create_voice_app(workspace, peer_factory=None):
     @app.get("/voice/v1/health")
     def health():
         return {"ok": True, "version": 1}
+
+    @app.post("/voice/v1/diagnostics")
+    def diagnostic_upload(body: DiagnosticReport, user=Depends(account)):
+        return DiagnosticStore(workspace).save(user, body)
 
     @app.get("/voice/v1/config")
     def config(user=Depends(account)):

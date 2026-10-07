@@ -33,6 +33,7 @@ struct WatchVoiceHomeView: View {
 }
 
 struct WatchVoiceView: View {
+    @ObservedObject private var reporter = WatchVoiceDiagnosticReporter.shared
     @ObservedObject private var voice = WatchVoiceService.shared
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
@@ -51,6 +52,8 @@ struct WatchVoiceView: View {
                         Button("End", role: .destructive) { voice.end() }.tint(ScribeTheme.red)
                     }
                 } else { Button("New conversation") { Task { await voice.newConversation() } } }
+                if !voice.isActive, let status = reporter.status { Text(status).font(.caption2) }
+                if !voice.isActive, reporter.hasPending { Button("Send report again") { reporter.retry() }.font(.caption) }
                 if voice.isActive || voice.capturedBatches > 0 {
                     VStack(spacing: 4) {
                         ProgressView(value: voice.microphoneLevel).tint(ScribeTheme.red)

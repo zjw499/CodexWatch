@@ -1,8 +1,8 @@
 import Foundation
 
-// Diagnostic data contains counters and known audio route types only. It is kept
-// in memory on the Watch; no microphone samples, identifiers or error payloads.
-enum VoiceAudioDiagnosticPhase: String, CaseIterable, Identifiable, Hashable, Sendable {
+// Reports contain bounded counters and known audio formats only, never microphone
+// samples, transcripts, route names/identifiers or arbitrary error payloads.
+enum VoiceAudioDiagnosticPhase: String, CaseIterable, Identifiable, Hashable, Codable, Sendable {
     // Run the actual conversation audio implementation before comparison profiles
     // can warm up the route. This is local capture only, without a provider session.
     case production = "N"
@@ -31,7 +31,7 @@ enum VoiceAudioDiagnosticPhase: String, CaseIterable, Identifiable, Hashable, Se
     }
 }
 
-struct VoiceAudioDiagnosticSnapshot: Sendable {
+struct VoiceAudioDiagnosticSnapshot: Codable, Sendable {
     var engineRunning = false
     var category = "Unknown"
     var mode = "Unknown"
@@ -46,9 +46,23 @@ struct VoiceAudioDiagnosticSnapshot: Sendable {
     var voiceProcessing = false
     var inputMuted = false
     var outputVolume: Float = 0
+    var captureFormat = "Unknown"
+    var captureInterleaved = false
+    var captureBytesPerFrame: UInt32 = 0
 }
 
-struct VoiceAudioDiagnosticResult: Identifiable, Sendable {
+struct VoiceAudioEngineEvent: Codable, Sendable {
+    enum Kind: String, Codable, Sendable { case start, configuration, stopped, rebuild, ready, timeout }
+    let kind: Kind
+    let elapsedMs: Int
+    let attempt: Int
+    let snapshot: VoiceAudioDiagnosticSnapshot
+    let inputFrames: Int64
+    let convertedFrames: Int64
+    let batches: Int
+}
+
+struct VoiceAudioDiagnosticResult: Codable, Identifiable, Sendable {
     let phase: VoiceAudioDiagnosticPhase
     var id: String { phase.id }
     var before = VoiceAudioDiagnosticSnapshot()
@@ -62,6 +76,29 @@ struct VoiceAudioDiagnosticResult: Identifiable, Sendable {
     var renderedFrames: Int64 = 0
     var failedStage: VoiceAudioStartupStage?
     var nativeCode: Int?
+    var drainedFrames: Int64 = 0
+    var pendingFrames = 0
+    var conversionErrors = 0
+    var converterStatus = 0
+    var converterCode: Int?
+    var configurationChanges = 0
+    var startupAttempts = 1
+    var events = [VoiceAudioEngineEvent]()
+
+    // Peak activity is displayed locally only. It never enters saved support reports.
+    enum CodingKeys: String, CodingKey {
+        case phase, before, after, inputFrames, convertedFrames, batches, receiverFailure, conversionFailed
+        case renderedFrames, failedStage, nativeCode, drainedFrames, pendingFrames, conversionErrors
+        case converterStatus, converterCode, configurationChanges, startupAttempts, events
+    }
+
+    mutating func apply(_ statistics: VoiceCaptureStatistics) {
+        inputFrames = statistics.inputFrames; convertedFrames = statistics.outputFrames
+        batches = statistics.batches; receiverFailure = statistics.receiverFailure
+        drainedFrames = statistics.drainedFrames; pendingFrames = statistics.pendingFrames
+        conversionErrors = statistics.conversionErrors; converterStatus = statistics.converterStatus
+        converterCode = statistics.converterCode; conversionFailed = conversionErrors > 0
+    }
 
     var capturedAudio: Bool {
         inputFrames > 0 && batches > 0 && receiverFailure == 0 && !conversionFailed && failedStage == nil

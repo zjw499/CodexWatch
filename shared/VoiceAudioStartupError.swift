@@ -1,6 +1,6 @@
 import Foundation
 
-enum VoiceAudioStartupStage: String, CaseIterable, Sendable {
+enum VoiceAudioStartupStage: String, CaseIterable, Codable, Sendable {
     case configuration = "SESSION-01"
     case activation = "SESSION-02"
     case voiceProcessing = "ECHO-01"

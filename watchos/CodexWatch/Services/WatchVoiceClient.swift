@@ -37,6 +37,14 @@ final class WatchVoiceClient {
         try check(response)
         return try JSONDecoder().decode(T.self, from: body)
     }
+    func diagnostic(_ report: VoiceDiagnosticReport, credential: VoiceDeviceCredential) async throws -> VoiceDiagnosticReceipt {
+        let data = try JSONEncoder().encode(report)
+        do { return try await send("diagnostics", credential: credential, method: "POST", data: data) }
+        catch let error as URLError where [.timedOut, .networkConnectionLost].contains(error.code) {
+            try Task.checkCancellation()
+            return try await send("diagnostics", credential: credential, method: "POST", data: data)
+        }
+    }
     func audio(_ data: Data, sequence: Int, sessionID: String, credential: VoiceDeviceCredential) async throws {
         guard VoiceWire.validID(sessionID) else { throw VoiceError.connection }
         let request = try request("sessions/\(sessionID)/audio?sequence=\(sequence)", credential: credential, method: "POST", data: data, audio: true)

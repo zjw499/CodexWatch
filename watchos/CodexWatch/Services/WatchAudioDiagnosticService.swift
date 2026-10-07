@@ -2,8 +2,8 @@ import AVFoundation
 import Combine
 import Foundation
 
-// Samples are discarded after counting/conversion. No file, network, analytics,
-// provider connection, credential or transcript is involved in this test.
+// Samples are discarded after counting/conversion. Only bounded safe counters
+// are submitted to the authenticated workspace after the local audio test.
 private final class DiagnosticAudioMeter: @unchecked Sendable {
     private let lock = NSLock()
     private var peak = 0.0
@@ -31,7 +31,9 @@ final class WatchAudioDiagnosticService: ObservableObject {
     @Published private(set) var routeChanges = 0
     @Published private(set) var interruptions = 0
     @Published private(set) var mediaResets = 0
-    @Published var speakerHeard: Bool?
+    @Published private(set) var speakerHeard: Bool?
+    private var lastReport: VoiceDiagnosticReport?
+    private var configurationChanges = 0
     private var task: Task<Void, Never>?
     private var engine: AVAudioEngine?
     private var productionAudio: WatchVoiceAudio?
@@ -44,6 +46,14 @@ final class WatchAudioDiagnosticService: ObservableObject {
 
     private init() {
         let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] note in
+            let changed = (note.object as? AVAudioEngine).map { ObjectIdentifier($0) }
+            Task { @MainActor in
+                guard let self, self.isRunning, let engine = self.engine,
+                      changed == ObjectIdentifier(engine) else { return }
+                self.configurationChanges += 1
+            }
+        })
         observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] note in
             let reason = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
             Task { @MainActor in
@@ -80,7 +90,7 @@ final class WatchAudioDiagnosticService: ObservableObject {
         }
         guard let reservation = VoiceAudioDiagnosticReservation.shared.acquire() else { return }
         isRunning = true; completed = false; results = []; phase = nil
-        message = nil; speakerHeard = nil; microphoneLevel = 0
+        message = nil; speakerHeard = nil; lastReport = nil; microphoneLevel = 0
         routeChanges = 0; interruptions = 0; mediaResets = 0
         task = Task { [weak self] in
             guard let self else { VoiceAudioDiagnosticReservation.shared.release(reservation); return }
@@ -89,6 +99,12 @@ final class WatchAudioDiagnosticService: ObservableObject {
                 try? AVAudioSession.sharedInstance().setActive(false)
                 VoiceAudioDiagnosticReservation.shared.release(reservation)
                 self.isRunning = false; self.phase = nil; self.microphoneLevel = 0; self.task = nil
+                if !self.results.isEmpty {
+                    let report = WatchVoiceDiagnosticReporter.report(kind: .audioTest, completed: self.completed,
+                        results: self.results, routeChanges: self.routeChanges,
+                        interruptions: self.interruptions, mediaResets: self.mediaResets)
+                    self.lastReport = report; WatchVoiceDiagnosticReporter.shared.submit(report)
+                }
             }
             let granted = await withCheckedContinuation { continuation in
                 AVAudioSession.sharedInstance().requestRecordPermission { continuation.resume(returning: $0) }
@@ -117,6 +133,12 @@ final class WatchAudioDiagnosticService: ObservableObject {
         }
     }
 
+    func recordSpeakerHeard(_ heard: Bool) {
+        guard completed, speakerHeard == nil, var report = lastReport else { return }
+        speakerHeard = heard; report.speaker_heard = heard; report.revision += 1
+        lastReport = report; WatchVoiceDiagnosticReporter.shared.submit(report)
+    }
+
     func cancel(message: String = "Test stopped. Completed checks are shown below.") {
         guard isRunning else { return }
         self.message = message
@@ -127,6 +149,7 @@ final class WatchAudioDiagnosticService: ObservableObject {
     }
 
     private func check(_ phase: VoiceAudioDiagnosticPhase) async throws -> VoiceAudioDiagnosticResult {
+        configurationChanges = 0
         if phase == .production { return try await checkProduction() }
         let session = AVAudioSession.sharedInstance()
         var result = VoiceAudioDiagnosticResult(phase: phase)
@@ -204,12 +227,10 @@ final class WatchAudioDiagnosticService: ObservableObject {
             try await observeInput(meter)
             result.after = WatchVoiceAudio.snapshot(engine: engine, speakerOnly: speakerOnly, includesOutput: phase != .meeting)
             let statistics = receiver?.statistics ?? encoder?.statistics ?? VoiceCaptureStatistics()
-            result.inputFrames = statistics.inputFrames
-            result.convertedFrames = statistics.outputFrames
-            result.batches = statistics.batches
-            result.receiverFailure = statistics.receiverFailure
+            result.apply(statistics)
+            result.configurationChanges = configurationChanges
             result.peakLevel = meter.values.peak
-            result.conversionFailed = meter.values.failed
+            result.conversionFailed = statistics.conversionErrors > 0
             if let player = graph?.player, let render = player.lastRenderTime,
                let time = player.playerTime(forNodeTime: render) { result.renderedFrames = max(0, time.sampleTime) }
         } catch is CancellationError {
@@ -226,26 +247,18 @@ final class WatchAudioDiagnosticService: ObservableObject {
         let audio = WatchVoiceAudio()
         productionAudio = audio
         let meter = DiagnosticAudioMeter()
-        var result = VoiceAudioDiagnosticResult(phase: .production)
+        var failure: VoiceAudioStartupError?
         do {
-            // Use the actual startup, receiver, echo processing and silent clock.
-            // No copied setup and no earlier comparison can prime this first check.
             try await audio.start { meter.consume($0) }
-            result.before = audio.diagnosticSnapshot
             try await observeInput(meter)
-            result.after = audio.diagnosticSnapshot
-            let statistics = audio.captureStatistics
-            result.inputFrames = statistics.inputFrames; result.convertedFrames = statistics.outputFrames
-            result.batches = statistics.batches; result.receiverFailure = statistics.receiverFailure
-            result.peakLevel = meter.values.peak; result.conversionFailed = meter.values.failed
-            result.renderedFrames = audio.outputClockFrames
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            let failure = (error as? VoiceAudioStartupError) ?? VoiceAudioStartupError(stage: .engine, underlying: error)
-            result.failedStage = failure.stage; result.nativeCode = failure.nativeCode
-            result.after = audio.diagnosticSnapshot
+            failure = (error as? VoiceAudioStartupError) ?? VoiceAudioStartupError(stage: .engine, underlying: error)
         }
+        var result = audio.diagnosticResult
+        result.peakLevel = meter.values.peak
+        result.failedStage = failure?.stage; result.nativeCode = failure?.nativeCode
         return result
     }
 

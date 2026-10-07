@@ -31,10 +31,17 @@ Incomplete input transcription may remain labelled as an incomplete turn.
 The voice screen shows a local microphone activity meter, whether captured audio
 has reached the PC, and whether assistant audio has arrived. These indicators do
 not retain audio or prove that the physical speaker was audible. If capture starts
-without producing a PCM batch for five seconds, local frame counters distinguish
-missing microphone samples (`MIC-01`) from conversion (`PCM-01`) or delivery
-(`PCM-02`) failure. These are not treated as denied permission after authorization
-has succeeded. Counters are not persisted or logged. The microphone connects directly
+without a full PCM batch, counters distinguish missing hardware samples (`MIC-01`),
+short capture (`MIC-02`), a receiver fault (`CAP-01`/`CAP-02`), an undrained worker
+(`CAP-03`), and an actual converter error (`PCM-01`). A format change can stop the
+engine, so startup observes configuration-change notifications and rebuilds with
+fresh hardware formats at most twice, before sending any audio. Startup is bounded
+to five seconds and becomes ready only after a running engine produces a full batch.
+Queued batches from abandoned attempts are discarded; the successful attempt keeps
+its first packets in order. Established conversations end if a configuration change
+stops the engine; they do not restart automatically. See
+[Apple's configuration-change guidance](https://developer.apple.com/documentation/avfaudio/avaudioengineconfigurationchangenotification).
+The microphone connects directly
 to an `AVAudioSinkNode`, independently of assistant playback. It has no connection
 to the audible mixer. The receiver copies hardware-format PCM into preallocated,
 bounded memory using lock-free atomics; a serial worker converts and delivers it.
@@ -77,7 +84,7 @@ echo tap (E) and original sink (R) received zero frames. Build 148 changed only 
 standard activation, but the owner confirmed a normal conversation still ended
 with `MIC-01`. S ran after A; earlier output activity might have influenced its
 success. That is a hypothesis, not a proven watchOS implementation cause.
-The next pilot keeps output rendering continuously through a separate silent
+Build 149 kept output rendering continuously through a separate silent
 24 kHz mono player alongside the reply player. It retains synchronous activation,
 voice processing, unmuted input and sink capture; output graph setup precedes
 input format inspection, matching the comparison's setup order. Silent output
@@ -93,9 +100,9 @@ Capture starts only after the voice screen is visible, active, and the provider 
 ready. Normal voice activates synchronously with
 [`setActive(true)`](https://developer.apple.com/documentation/avfaudio/avaudiosession/setactive(_:options:)),
 with a continuous silent output clock. Standard activation alone failed in build 148.
-Startup has no suspension
-between activation and engine start, and checks cancellation before activation and
-after it. There is no pending activation callback to revive audio after exit or stop
+Activation and initial engine start do not suspend. Subsequent startup checks
+yield to route notifications, check cancellation and audio ownership at each wait,
+and invalidate old attempts before cleanup. There is no pending activation callback to revive audio after exit or stop
 a newer startup. Voice ends on wrist-down screen dimming, leaving the active voice screen,
 app backgrounding, explicit exit, a new audio interruption during capture, disconnection,
 credential revocation, assistant deletion/disablement, or configured limits. Wrist
@@ -107,9 +114,14 @@ capture is ready does not by itself terminate the launch.
 
 In **Talk to Assistant > Test Watch audio**, tap **Run audio test** once. Speak
 throughout the checks and keep the screen awake. The last check plays three short
-tones; select Yes or No to record whether they were actually heard. Send the compact
-comparison, `TEST-xx` finding, and speaker answer when reporting the failure.
-This works without voice provisioning, the iPhone, the PC, or a provider connection.
+tones; select Yes or No to record whether they were actually heard. Test counters
+send automatically to the authenticated PC workspace; the screen shows sent or
+waiting status and offers a retry. No audio is uploaded by the test. Local checks
+still work without provisioning or networking. A provisioned Watch credential,
+internet and the PC are required to deliver the report. You do not need to read out
+counters. Normal conversation audio startup failures send the same safe details.
+On iPhone, Settings > Watch voice > Watch audio reports provides review/deletion.
+The administrator review screen is explicit and audited.
 
 The first check (N) runs the actual `WatchVoiceAudio` implementation, before any
 comparison can warm the route. Its microphone meter, batch counts, safe session
@@ -151,8 +163,29 @@ processing state, microphone and converted frame counts, batches, receiver fault
 local peak level and rendered output frames. Output rendering never proves audibility.
 Failures contain only a local startup stage and numeric Apple code. Reports exclude
 device names, UIDs, serial numbers, raw error descriptions, userInfo and provider data.
-Counters and the speaker answer remain only in the Watch process; no audio files,
-network request, transcript, telemetry event or automatic upload is created.
+Reports contain only allowlisted formats/port types, OS/build numbers, numeric
+counters/errors and at most twelve startup events. Local microphone levels are
+excluded. Credential/account metadata is not part of the report body. The server
+binds ownership to the authenticated, unexpired parent session and encrypts content
+with workspace DPAPI. JSON rejects unknown fields, including audio, transcripts,
+credentials and arbitrary device names. Request UUIDs and monotonic revisions make
+lost acknowledgements and speaker feedback safe to retry. Each account retains at
+most 100 recent reports. Deleted report tombstones reject delayed retries. Up to ten
+unsent reports are protected on Watch, excluded from backup and cleared on account
+changes. Reports use POST `/voice/v1/diagnostics`; private owner read/delete routes
+are `/api/voice/diagnostics`, and audited administrator reads use
+`/api/admin/voice/diagnostics`.
+
+The explicit host support command reads only the selected account's latest safe
+report and audits the access. It never recovers recording jobs:
+
+```powershell
+$env:PYTHONPATH = Get-Content D:\watch-audio-pipeline\.runtime\scribe-workspace\active-source.txt
+D:\watch-audio-pipeline\.venv\Scripts\python.exe -m server_workspace.run --config D:\watch-audio-pipeline\.runtime\scribe-workspace\workspace-config.json voice-diagnostics --username admin
+```
+
+Use `--report-id <UUID>` for an earlier report. Substitute the intended account's
+username; this local support interface is not exposed on HTTPS.
 
 Recording and voice launches refuse to start while a test owns audio. Cancelling or
 leaving the screen stops capture and output. If activation is still pending, the test
@@ -269,3 +302,20 @@ For rollback, first turn off both production and pilot voice in organization pol
 then run `scripts/disable_watch_voice.ps1`. It disables the voice scheduled task,
 stops only its verified process and removes only Funnel 8443. Existing private HTTPS,
 recordings, and encrypted conversation history are retained. Database changes are additive.
+
+
+## Build 149 physical result and next pilot
+
+The owner reported PCM-01 in a normal conversation and completed diagnostic test 2
+on Ultra 2/watchOS 26.6: N received 1104 frames/zero batches; M received 153600/15;
+D and V each received 148800/15; E received zero; R and S were stopped with zero;
+A was stopped after 1104/zero; P rendered 75072 frames and the owner heard tones.
+There were 26 route changes, zero interruptions and zero media resets.
+
+1104 input frames are shorter than a 200 ms batch at the likely hardware rates.
+The prior message conflated a converter error with capture stopping before batching.
+Engine configuration changes are a plausible cause, not established by these counters.
+The next pilot adds bounded startup stabilization plus automatically delivered worker,
+converter and engine-event evidence. It retains echo processing and the silent output
+clock. Full physical Watch microphone, playback, interruption and independent-network
+acceptance remain pending; build 149 did not pass.

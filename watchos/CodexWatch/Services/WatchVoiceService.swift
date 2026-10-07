@@ -47,6 +47,10 @@ final class WatchVoiceService: ObservableObject {
                 setupState = cache.configuration.enabled ? (cache.configuration.assistants.isEmpty ? .needsAssistant : .ready) : .disabled
             }
         }
+        audio.onEngineStopped = { [weak self] in
+            guard let self, self.isActive else { return }
+            self.endAudioFailure(message: "Watch audio stopped after its configuration changed (AUDIO-01). Start a new conversation.")
+        }
         audio.onPlaybackFinished = { [weak self] in
             guard let self, self.isActive else { return }
             self.state = self.muted ? "muted" : self.desiredState
@@ -79,6 +83,7 @@ final class WatchVoiceService: ObservableObject {
     func applyAccount(owner: String?, configurationData: Data?, credentialData: Data?) -> VoiceSetupState {
         let oldOwner = VoiceDescriptorCache.read()?.owner
         if owner == nil || oldOwner != owner {
+            WatchVoiceDiagnosticReporter.shared.accountChanged(owner)
             end(message: "Your account changed.")
             VoiceKeychain.clear(); VoiceDescriptorCache.clear(); configuration = nil; turns = []; isPresented = false
             lastAssistantID = nil
@@ -105,6 +110,7 @@ final class WatchVoiceService: ObservableObject {
             } catch { return finishSetup(.needsUnlock) }
         }
         guard let saved = try? access(), saved.gateway_url == config.gateway_url else { return finishSetup(.needsSetup) }
+        WatchVoiceDiagnosticReporter.shared.retry()
         return finishSetup(config.assistants.isEmpty ? .needsAssistant : .ready)
     }
 
@@ -228,7 +234,7 @@ final class WatchVoiceService: ObservableObject {
                     Task { @MainActor in
                         guard let self, self.generation == run, self.isActive else { return }
                         guard let packet else {
-                            self.end(message: self.audio.captureStatistics.startupFailure ?? VoiceError.audioConversion.localizedDescription)
+                            self.endAudioFailure(message: self.audio.captureStatistics.startupFailure ?? VoiceError.audioConversion.localizedDescription)
                             return
                         }
                         self.capturedBatches += 1
@@ -244,11 +250,26 @@ final class WatchVoiceService: ObservableObject {
                     guard let self, self.generation == run, self.isActive, self.capturedBatches == 0 else { return }
                     let failure = self.audio.captureStatistics.startupFailure
                         ?? "Watch audio delivery did not start (PCM-02). Start a new conversation."
-                    self.end(message: failure)
+                    self.endAudioFailure(message: failure)
                 }
             } catch is CancellationError { }
-            catch { if self.generation == run { self.end(message: error.localizedDescription) } }
+            catch {
+                if self.generation == run {
+                    let failure = error as? VoiceAudioStartupError
+                    let message = failure?.stage == .engine ? (self.audio.captureStatistics.startupFailure ?? error.localizedDescription) : error.localizedDescription
+                    self.endAudioFailure(message: message, failure: failure)
+                }
+            }
         }
+    }
+
+    private func endAudioFailure(message: String, failure: VoiceAudioStartupError? = nil) {
+        guard isActive else { return }
+        var result = audio.diagnosticResult
+        result.failedStage = failure?.stage; result.nativeCode = failure?.nativeCode
+        WatchVoiceDiagnosticReporter.shared.submit(WatchVoiceDiagnosticReporter.report(
+            kind: .voiceStartup, completed: false, results: [result]))
+        end(message: message)
     }
 
     private func receive(_ event: VoiceEvent, run: UUID) async throws {

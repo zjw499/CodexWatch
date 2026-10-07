@@ -22,10 +22,11 @@ def main():
             or url.port != 8443 or url.path or url.query or url.fragment or url.username or url.password):
         parser.error("Use the HTTPS Tailscale Funnel origin on port 8443.")
     opener = build_opener(NoRedirects())
-    for path, expected in [("/voice/v1/health", 200), ("/voice/v1/config", 401),
-                           ("/api/recordings", 404), ("/api/admin/voice/policy", 404)]:
+    for path, method, expected in [("/voice/v1/health", "GET", 200), ("/voice/v1/config", "GET", 401),
+                                    ("/voice/v1/diagnostics", "POST", 401), ("/api/recordings", "GET", 404),
+                                    ("/api/voice/diagnostics", "GET", 404), ("/api/admin/voice/policy", "GET", 404)]:
         try:
-            with opener.open(Request(base + path, headers={"Accept": "application/json"}), timeout=15) as response:
+            with opener.open(Request(base + path, method=method, headers={"Accept": "application/json"}), timeout=15) as response:
                 status = response.status
                 if path.endswith("/health"):
                     health = json.loads(response.read(4096))

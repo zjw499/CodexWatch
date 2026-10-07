@@ -2,6 +2,7 @@ import SwiftUI
 import WatchKit
 
 struct WatchAudioDiagnosticView: View {
+    @ObservedObject private var reporter = WatchVoiceDiagnosticReporter.shared
     @ObservedObject private var test = WatchAudioDiagnosticService.shared
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
@@ -12,7 +13,7 @@ struct WatchAudioDiagnosticView: View {
                 Text("Test Watch audio").font(.headline)
                 Text("The first check uses normal voice capture. Speak throughout the checks. Keep your wrist raised and this screen awake. The last check plays three short tones.")
                     .font(.caption)
-                Text("This local test saves and sends no audio.").font(.caption2).foregroundStyle(ScribeTheme.muted)
+                Text("Test counters are sent to your PC workspace automatically. No audio is saved or sent.").font(.caption2).foregroundStyle(ScribeTheme.muted)
                 if test.isRunning {
                     Text(test.phase.map { "\($0.id): \($0.title)" } ?? "Preparing audio...").font(.caption.bold())
                     ProgressView(value: test.microphoneLevel).tint(ScribeTheme.red).accessibilityLabel("Local microphone activity")
@@ -33,13 +34,16 @@ struct WatchAudioDiagnosticView: View {
                 if test.completed {
                     Text("Did you hear the final speaker tones?").font(.caption)
                     HStack {
-                        Button("Yes") { test.speakerHeard = true }.tint(test.speakerHeard == true ? .green : ScribeTheme.red)
-                        Button("No") { test.speakerHeard = false }.tint(test.speakerHeard == false ? .orange : ScribeTheme.red)
+                        Button("Yes") { test.recordSpeakerHeard(true) }.tint(test.speakerHeard == true ? .green : ScribeTheme.red)
+                        Button("No") { test.recordSpeakerHeard(false) }.tint(test.speakerHeard == false ? .orange : ScribeTheme.red)
                     }
+                    .disabled(test.speakerHeard != nil)
                     Text(test.speakerHeard.map { $0 ? "Speaker heard: yes" : "Speaker heard: no" } ?? "Speaker audibility unconfirmed")
                         .font(.caption2)
-                    Text("Send the comparison above and your speaker result when reporting the problem.").font(.caption)
+                    Text("You do not need to read out the counters.").font(.caption)
                 }
+                if let status = reporter.status { Text(status).font(.caption) }
+                if reporter.hasPending && !test.isRunning { Button("Send report again") { reporter.retry() }.font(.caption) }
                 ForEach(test.results) { result in
                     NavigationLink { WatchAudioDiagnosticDetailView(result: result) } label: {
                         VStack(alignment: .leading, spacing: 3) {
@@ -60,6 +64,7 @@ struct WatchAudioDiagnosticView: View {
         .onChange(of: scenePhase) { _, phase in if phase != .active { test.cancel(message: "Test stopped when the app left the foreground.") } }
         .onChange(of: isLuminanceReduced) { _, reduced in if reduced { test.cancel(message: "Test stopped when the screen dimmed. Keep your wrist raised and run again.") } }
         .onDisappear { test.cancel() }
+        .task { reporter.retry() }
     }
 }
 
@@ -69,7 +74,8 @@ private struct WatchAudioDiagnosticDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
                 Text(result.phase.title).font(.headline)
-                Text("Input frames: \(result.inputFrames)\nConverted: \(result.convertedFrames)\nBatches: \(result.batches)\nReceiver fault: \(result.receiverFailure)\nConversion failed: \(result.conversionFailed ? "yes" : "no")\nPeak level: \(result.peakLevel, specifier: "%.3f")\nOutput rendered: \(result.renderedFrames)")
+                Text("Input frames: \(result.inputFrames)\nDrained: \(result.drainedFrames)\nConverted: \(result.convertedFrames)\nPending: \(result.pendingFrames)\nBatches: \(result.batches)\nReceiver fault: \(result.receiverFailure)\nConversion failed: \(result.conversionFailed ? "yes" : "no")\nPeak level: \(result.peakLevel, specifier: "%.3f")\nOutput rendered: \(result.renderedFrames)")
+                Text("Engine changes: \(result.configurationChanges) · Attempts: \(result.startupAttempts)\nConverter errors: \(result.conversionErrors) · Status: \(result.converterStatus)")
                 if let code = result.failureCode { Text(code) }
                 snapshot("At start", result.before)
                 snapshot("At end", result.after)

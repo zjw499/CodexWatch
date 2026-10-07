@@ -7,6 +7,11 @@ struct VoiceCaptureStatistics: Sendable {
     var outputFrames: Int64 = 0
     var batches = 0
     var receiverFailure: UInt32 = 0
+    var drainedFrames: Int64 = 0
+    var pendingFrames = 0
+    var conversionErrors = 0
+    var converterStatus = 0
+    var converterCode: Int?
 
     var startupFailure: String? {
         if receiverFailure == 1 {
@@ -19,7 +24,16 @@ struct VoiceCaptureStatistics: Sendable {
         if inputFrames == 0 {
             return "Watch audio capture did not start (MIC-01). Microphone permission is allowed. Start a new conversation."
         }
-        return "Watch received microphone samples but could not send converted audio (PCM-01). Start a new conversation."
+        if conversionErrors > 0 {
+            return "Watch microphone audio conversion failed (PCM-01). Start a new conversation."
+        }
+        if outputFrames > 0 && outputFrames < 4800 {
+            return "Watch capture stopped before a full audio batch arrived (MIC-02). Start a new conversation."
+        }
+        if drainedFrames == 0 {
+            return "Watch microphone samples did not reach the audio worker (CAP-03). Start a new conversation."
+        }
+        return "Watch microphone conversion produced no audio (PCM-02). Start a new conversation."
     }
 }
 

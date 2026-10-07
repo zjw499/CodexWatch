@@ -156,6 +156,10 @@ class Workspace:
                   assistant_id TEXT NOT NULL, state TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
                   created REAL NOT NULL, updated REAL NOT NULL, content BLOB NOT NULL);
                 CREATE INDEX IF NOT EXISTS voice_conversation_owner ON voice_conversations(owner,updated);
+                CREATE TABLE IF NOT EXISTS voice_diagnostics (id TEXT PRIMARY KEY, owner TEXT NOT NULL,
+                  revision INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
+                  created REAL NOT NULL, updated REAL NOT NULL, content BLOB NOT NULL);
+                CREATE INDEX IF NOT EXISTS voice_diagnostic_owner ON voice_diagnostics(owner,updated);
                 CREATE TABLE IF NOT EXISTS voice_sessions (id TEXT PRIMARY KEY, owner TEXT NOT NULL,
                   device_hash TEXT NOT NULL, conversation_id TEXT NOT NULL, request_id TEXT NOT NULL,
                   state TEXT NOT NULL, created REAL NOT NULL, UNIQUE(owner,request_id));

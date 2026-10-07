@@ -30,6 +30,7 @@ struct CodexWatchApp: App {
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("-scribe-ui-preview") { return }
                     #endif
+                    WatchVoiceDiagnosticReporter.shared.retry()
                     await recorder.prepare()
                     await WatchShortcutCommandRouter.consumePendingCommand(using: recorder)
                 }
@@ -47,6 +48,7 @@ struct CodexWatchApp: App {
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background { voice.end(message: "Conversation ended when Scribe Pilot left the foreground.") }
                 guard phase == .active else { return }
+                WatchVoiceDiagnosticReporter.shared.retry()
                 Task {
                     await WatchShortcutCommandRouter.consumePendingCommand(using: recorder)
                 }

@@ -28,16 +28,23 @@ final class VoicePCMEncoder: @unchecked Sendable {
     func consume(_ buffer: AVAudioPCMBuffer) {
         lock.lock(); defer { lock.unlock() }
         counters.inputFrames += Int64(buffer.frameLength)
+        counters.drainedFrames += Int64(buffer.frameLength)
         guard buffer.frameLength > 0 else { return }
         let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * 24000 / buffer.format.sampleRate)) + 32
-        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { deliver(nil); return }
+        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
+            counters.conversionErrors += 1; deliver(nil); return
+        }
         var supplied = false
         var error: NSError?
         let status = converter.convert(to: output, error: &error) { _, inputStatus in
             if supplied { inputStatus.pointee = .noDataNow; return nil }
             supplied = true; inputStatus.pointee = .haveData; return buffer
         }
-        guard status != .error, error == nil, let channel = output.floatChannelData?[0] else { deliver(nil); return }
+        counters.converterStatus = Int(status.rawValue)
+        counters.converterCode = error.map { $0.code }
+        guard status != .error, error == nil, let channel = output.floatChannelData?[0] else {
+            counters.conversionErrors += 1; deliver(nil); return
+        }
         counters.outputFrames += Int64(output.frameLength)
         var samples = [Int16](repeating: 0, count: Int(output.frameLength))
         for i in samples.indices {
@@ -50,5 +57,6 @@ final class VoicePCMEncoder: @unchecked Sendable {
             deliver(Data(pending.prefix(9600)))
             pending.removeFirst(9600)
         }
+        counters.pendingFrames = pending.count / 2
     }
 }
