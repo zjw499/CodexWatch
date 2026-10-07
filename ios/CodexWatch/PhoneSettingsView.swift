@@ -184,6 +184,19 @@ struct PhoneAssistantEditor: View {
                         ForEach(workspace.voiceConfiguration?.voices ?? ["marin", "cedar"], id: \.self) { Text($0.capitalized).tag($0) }
                     }
                     .accessibilityIdentifier("assistant-voice-picker")
+                    Toggle("Calculations and current time", isOn: $assistant.voiceSettings.tools_enabled)
+                    if assistant.voiceSettings.tools_enabled {
+                        Toggle("Search the public web", isOn: $assistant.voiceSettings.web_search)
+                            .accessibilityIdentifier("assistant-web-search-toggle")
+                        if assistant.voiceSettings.web_search {
+                            Text("Use this assistant for public, non-sensitive topics. Live web search is outside the organization's BAA. Recording content is never included in search.")
+                                .font(.footnote).foregroundStyle(ScribeTheme.muted)
+                            if workspace.voiceConfiguration?.public_web_search_enabled != true {
+                                Text("An administrator must enable public web search in Watch voice policy.")
+                                    .font(.footnote).foregroundStyle(ScribeTheme.muted)
+                            }
+                        }
+                    }
                     if let models = workspace.voiceConfiguration?.models, models.count > 1 {
                         Picker("Voice model", selection: $assistant.voiceSettings.model) {
                             ForEach(models, id: \.self) { Text($0).tag($0) }

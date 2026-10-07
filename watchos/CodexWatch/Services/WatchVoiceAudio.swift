@@ -185,6 +185,8 @@ final class WatchVoiceAudio {
     }
     func interrupt(item: String) -> Int {
         let milliseconds = playedMilliseconds(item: item)
+        // An earlier item's delayed interrupt must not stop a newer reply.
+        guard outputItem == item else { return milliseconds }
         playbackGeneration = UUID(); player?.stop()
         playback.reset(); outputItem = nil
         return milliseconds

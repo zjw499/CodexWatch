@@ -3,6 +3,21 @@ import AVFoundation
 @testable import ScribePilot
 
 final class VoiceModelsTests: XCTestCase {
+    func testPreToolsVoiceSettingsDecodeWithSafeWebDefault() throws {
+        let data = Data(#"{"enabled":true,"model":"gpt-realtime-2.1","voice":"marin"}"#.utf8)
+        var settings = try JSONDecoder().decode(VoiceAssistantSettings.self, from: data)
+        XCTAssertTrue(settings.enabled)
+        XCTAssertTrue(settings.tools_enabled)
+        XCTAssertFalse(settings.web_search)
+        settings.web_search = true
+        XCTAssertEqual(try JSONDecoder().decode(VoiceAssistantSettings.self, from: JSONEncoder().encode(settings)), settings)
+    }
+    func testWebCitationsDecodeWithoutBreakingOldTurns() throws {
+        let event = try XCTUnwrap(VoiceWire.event(line: #"data: {"version":1,"id":3,"type":"turn","turn":{"id":"a1","role":"assistant","text":"Result","final":true,"interrupted":false,"sources":[{"title":"Source","url":"https://example.org"}]}}"#))
+        XCTAssertEqual(event.turn?.sources?.first?.link?.host, "example.org")
+        XCTAssertNil(VoiceSource(title: "Bad", url: "https://user:secret@example.org").link)
+        XCTAssertNil(VoiceSource(title: "Bad", url: "javascript:unsafe").link)
+    }
     func testLegacyAssistantDecodesWithoutVoiceAndNewProfileRoundTrips() throws {
         let old = Data(#"{"id":"assistant-1","name":"Meeting","instructions":"Use the transcript","model":"gpt-4.1-mini"}"#.utf8)
         var assistant = try JSONDecoder().decode(WorkspaceAssistant.self, from: old)

@@ -23,6 +23,12 @@ struct PhoneVoicePolicyView: View {
                     get: { policy.max_active_sessions ?? 1 }, set: { policy.max_active_sessions = $0 }), in: 1...16)
                 Text("Each Watch runs one conversation at a time.").font(.footnote).foregroundStyle(ScribeTheme.muted)
             }
+            Section("Public web search") {
+                Toggle("Allow public web search", isOn: Binding(
+                    get: { policy.public_web_search_enabled ?? false }, set: { policy.public_web_search_enabled = $0 }))
+                Text("Live web search is outside the organization's BAA. Enable it only on assistants for public, non-sensitive conversations. Calculations and time run on the PC.")
+                    .font(.footnote).foregroundStyle(ScribeTheme.muted)
+            }
             Button("Save voice policy") {
                 busy = true
                 Task {

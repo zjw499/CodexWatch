@@ -1,7 +1,8 @@
 # Watch voice assistants
 
 Scribe Pilot now has a separate Watch voice conversation flow. Existing assistants
-gain optional `voice` settings: enabled, approved Realtime model, and voice.
+gain optional `voice` settings: enabled, approved Realtime model, voice, local
+calculations/time, and public web search.
 Recording-result models and recording-grounded follow-up chats retain their roles.
 Old client saves preserve omitted voice settings. Old profiles default to voice off.
 
@@ -208,11 +209,48 @@ and the legacy 8789 pipeline are preserved.
 The Watch sends PCM16 little-endian mono 24 kHz in 200 ms HTTPS POST batches,
 and receives versioned JSON events over a streaming HTTPS SSE response. The PC
 holds the GA OpenAI Realtime WebSocket, organization/project headers, approved
-model, voice, transcription, semantic VAD, and empty tools policy. It never forwards
+model, voice, transcription, semantic VAD, and allowlisted tool definitions. It never forwards
 the OpenAI key. Playback offsets drive interruption truncation. Fully played
 answers remain available as context; unfinished or interrupted answers do not.
 Both uplink and downlink buffers are bounded; insufficient throughput ends the
 conversation instead of accumulating audio. No automatic conversation restart.
+
+## Conversational assistant and tools
+
+Voice instructions add a natural spoken style, direct answers, short default replies,
+and follow-up context. Custom assistant instructions still apply; recording-summary
+directions apply when notes are requested. VAD commits speech, while the PC explicitly
+requests one response per completed user turn. A newer question waits for an old
+response's cancellation acknowledgement instead of losing its response request.
+Delayed playback reports refer to the known item, and cannot interrupt a newer reply.
+
+Calculations use a bounded arithmetic parser, and current time uses IANA timezones
+on the PC. Public search uses the approved Responses model and `web_search` with
+`store=false`. Only an isolated public query is sent, never history or recordings.
+A query privacy check runs without tools inside the approved Responses boundary
+before any search; failed checks and private queries do not enable search. This
+model check supplements the public-only restriction; it is not a guarantee of PHI
+redaction. Live web search is outside the OpenAI BAA, even when Realtime has Modified
+Retention. Both the organization's `public_web_search_enabled` policy and the
+assistant's `web_search` setting must permit search. Existing profiles default to
+search off. A separate General conversation profile is appropriate for public topics.
+See [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data).
+
+Tool work runs separately from the provider reader, times out within 25 seconds,
+and is cancelled by a newer user turn or session termination. There are at most
+four tool invocations per user turn and 32 per session. Results return as Realtime
+function-call outputs followed by a spoken response. Search activity appears on
+Watch; clickable sources remain with the encrypted transcript on Watch and iPhone.
+Tool failures are explained in conversation, with provider bodies kept private.
+Tools cannot access recordings, execute code, send messages, or modify accounts.
+Older clients preserve omitted nested tool settings and the organization web policy.
+
+The bounded live check `scripts/verify_voice_conversation.py --config <path> --live`
+uses only fixed synthetic public questions. It verifies a calculator answer, a
+follow-up using that context, and a web-backed answer with citations. It does not
+recover recording jobs or prove physical Watch turn-taking acceptance. Completed
+sessions save encrypted counts of VAD commits, replies, interruptions, and tool
+success/failure for support without retaining queries or provider payloads in logs.
 
 Voice-only Watch credentials are hashed in SQLite and bound to an active parent
 workspace session, owner, device ID, and expiry (at most the current seven-day

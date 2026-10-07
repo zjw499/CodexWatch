@@ -13,6 +13,8 @@ final class WatchVoiceService: ObservableObject {
     @Published private(set) var state = "ready"
     @Published private(set) var assistantName = "Assistant"
     @Published private(set) var message: String?
+    @Published private(set) var toolMessage: String?
+    @Published private(set) var usesPublicWeb = false
     @Published private(set) var turns: [VoiceTurn] = []
     @Published private(set) var configuration: VoiceConfiguration?
     @Published private(set) var setupState: VoiceSetupState = .needsSetup
@@ -158,7 +160,7 @@ final class WatchVoiceService: ObservableObject {
         isPresented = true
         guard !isActive else { return }
         guard !AudioRecorderService.shared.isRecording else { message = VoiceError.audioBusy.localizedDescription; return }
-        isActive = true; state = "connecting"; muted = false; message = nil; turns = []
+        isActive = true; state = "connecting"; muted = false; message = nil; toolMessage = nil; turns = []
         providerReady = false; captureStarted = false
         microphoneLevel = 0; capturedBatches = 0; uploadedBatches = 0; receivedAudio = false
         pendingAudio = VoiceUploadBuffer(); transport = VoiceTransportDiagnostic()
@@ -187,6 +189,7 @@ final class WatchVoiceService: ObservableObject {
             }
             guard info.version == 1, info.state != "ended", VoiceWire.validID(info.id) else { throw VoiceError.connection }
             current = info; assistantName = info.assistant_name; lastAssistantID = info.assistant_id; sequence = 0
+            usesPublicWeb = info.web_search == true
             streamTask = Task { [weak self] in
                 guard let self else { return }
                 do {
@@ -281,6 +284,7 @@ final class WatchVoiceService: ObservableObject {
             if desiredState == "listening" { providerReady = true; beginCaptureIfReady() }
             state = captureStarted ? (muted ? "muted" : (audio.hasPendingPlayback ? "speaking" : desiredState)) : "connecting"
             if desiredState == "listening", !audio.hasPendingPlayback { acknowledgePlayback() }
+        case "tool": toolMessage = event.message?.isEmpty == false ? event.message : nil
         case "audio":
             guard let encoded = event.audio, let item = event.item_id, let data = Data(base64Encoded: encoded) else { throw VoiceError.connection }
             transport.receivedAudioBytes += data.count
@@ -290,7 +294,12 @@ final class WatchVoiceService: ObservableObject {
         case "interrupt":
             guard let item = event.item_id, let current, let credential else { return }
             let milliseconds = audio.interrupt(item: item)
-            try await client.control(VoiceControl(action: "interrupt", item_id: item, audio_end_ms: milliseconds), sessionID: current.id, credential: credential)
+            // A slow control acknowledgement must not block incoming captions
+            // or the answer to the next question on the event stream.
+            Task {
+                do { try await client.control(VoiceControl(action: "interrupt", item_id: item, audio_end_ms: milliseconds), sessionID: current.id, credential: credential) }
+                catch { if generation == run { end(message: error.localizedDescription, reason: .network) } }
+            }
         case "turn":
             if let turn = event.turn {
                 if let index = turns.firstIndex(where: { $0.id == turn.id }) { turns[index] = turn }
@@ -368,7 +377,7 @@ final class WatchVoiceService: ObservableObject {
             report.transport = transport
             WatchVoiceDiagnosticReporter.shared.submit(report)
         }
-        isActive = false; generation = UUID(); state = "ended"; muted = false; self.message = message
+        isActive = false; generation = UUID(); state = "ended"; muted = false; self.message = message; toolMessage = nil
         providerReady = false; captureStarted = false
         microphoneLevel = 0
         audio.stop(); pendingAudio.clear()

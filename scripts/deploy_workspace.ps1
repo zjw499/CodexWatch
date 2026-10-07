@@ -44,7 +44,7 @@ foreach ($sid in @($identity.User, (New-Object System.Security.Principal.Securit
 New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 $moduleDestination = Join-Path $releaseRoot "server_workspace"
 New-Item -ItemType Directory -Path $moduleDestination -Force | Out-Null
-$files = @('__init__.py', 'workspace.py', 'audio.py', 'voice.py', 'voice_stream.py', 'voice_diagnostics.py', 'run.py', 'requirements.txt')
+$files = @('__init__.py', 'workspace.py', 'audio.py', 'voice.py', 'voice_stream.py', 'voice_tools.py', 'voice_diagnostics.py', 'run.py', 'requirements.txt')
 $manifest = @()
 foreach ($name in $files) {
     $source = Join-Path $sourceRoot "server_workspace\$name"

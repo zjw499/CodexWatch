@@ -371,11 +371,140 @@ def test_gateway_init_and_recovery_never_reset_recording_jobs(voice):
 def test_provider_configuration_and_no_raw_audio_files(voice):
     start(voice)
     update = voice[7][-1].sent[0]["session"]
-    assert update["tools"] == [] and update["tool_choice"] == "none"
+    assert {tool["name"] for tool in update["tools"]} == {"calculate", "current_time"}
+    assert update["tool_choice"] == "auto"
     assert update["audio"]["input"]["format"]["rate"] == 24000
     assert update["audio"]["output"]["voice"] == "marin"
-    assert update["instructions"] == voice[4]["instructions"]
+    assert update["instructions"].endswith(voice[4]["instructions"])
+    assert update["audio"]["input"]["turn_detection"]["create_response"] is False
     assert set(p.name for p in voice[0].config.root.iterdir()) == {"workspace.sqlite3"}
+
+
+def test_each_committed_question_gets_a_reply_even_when_previous_response_is_cancelling(voice):
+    s = start(voice)
+    peer = voice[7][-1]
+    for index in range(3):
+        push(voice, {"type": "input_audio_buffer.speech_started", "item_id": f"u{index}"})
+        push(voice, {"type": "input_audio_buffer.speech_stopped", "item_id": f"u{index}"})
+        push(voice, {"type": "input_audio_buffer.committed", "item_id": f"u{index}"})
+        # Retry/duplicate provider notification must not cause a second reply.
+        push(voice, {"type": "input_audio_buffer.committed", "item_id": f"u{index}"})
+        if index:
+            assert len([e for e in peer.sent if e["type"] == "response.create"]) == index
+            push(voice, {"type": "response.done", "response": {"id": f"r{index-1}", "status": "cancelled", "output": []}})
+        assert len([e for e in peer.sent if e["type"] == "response.create"]) == index + 1
+        push(voice, {"type": "response.created", "response": {"id": f"r{index}"}})
+    assert voice[2].app.state.voice.sessions[s["id"]].state != "ended"
+
+
+def test_delayed_interrupt_of_old_audio_does_not_end_or_clear_the_new_reply(voice):
+    s = start(voice)
+    audio = base64.b64encode(bytes(9600)).decode()
+    push(voice, {"type": "response.output_audio.delta", "item_id": "old", "delta": audio})
+    push(voice, {"type": "input_audio_buffer.speech_started", "item_id": "next"})
+    push(voice, {"type": "response.output_audio.delta", "item_id": "new", "delta": audio})
+    route = f"/voice/v1/sessions/{s['id']}/control"
+    for _ in range(2):
+        assert voice[2].post(route, headers=voice[6], json={"action": "interrupt", "item_id": "old", "audio_end_ms": 80}).status_code == 200
+    session = voice[2].app.state.voice.sessions[s["id"]]
+    assert session.last_output_item == "new" and session.state != "ended"
+    assert session.events.audio_bytes == 9600
+    assert len([e for e in voice[7][-1].sent if e["type"] == "conversation.item.truncate"]) == 1
+
+
+def test_playback_ack_before_provider_done_keeps_a_fully_heard_answer(voice):
+    s = start(voice)
+    push(voice, {"type": "response.output_audio.delta", "item_id": "a1", "delta": base64.b64encode(bytes(9600)).decode()})
+    route = f"/voice/v1/sessions/{s['id']}/control"
+    assert voice[2].post(route, headers=voice[6], json={"action": "played", "item_id": "a1", "audio_end_ms": 200}).status_code == 200
+    push(voice, {"type": "response.output_audio.done", "item_id": "a1"})
+    assert voice[2].app.state.voice.sessions[s["id"]].last_output_item is None
+
+
+def test_nested_voice_fields_and_web_policy_survive_older_client_saves(voice):
+    w, private, _, people, assistant, _, _, _ = voice
+    a, admin = people["alice"][1], people["admin"][1]
+    assistant["voice"]["web_search"] = True
+    assert private.put("/api/assistants/" + assistant["id"], headers=a, json=assistant).status_code == 200
+    assistant["voice"].pop("web_search")
+    assert private.put("/api/assistants/" + assistant["id"], headers=a, json=assistant).json()["voice"]["web_search"] is True
+    policy = private.get("/api/admin/voice/policy", headers=admin).json()
+    policy["public_web_search_enabled"] = True
+    assert private.put("/api/admin/voice/policy", headers=admin, json=policy).status_code == 200
+    policy.pop("public_web_search_enabled")
+    assert private.put("/api/admin/voice/policy", headers=admin, json=policy).json()["public_web_search_enabled"] is True
+    start(voice)
+    assert "search_web" in {t["name"] for t in voice[7][-1].sent[0]["session"]["tools"]}
+
+
+def test_tool_result_creates_a_spoken_continuation_without_blocking_audio_reader(voice):
+    s = start(voice)
+    gateway, peer = voice[2].app.state.voice, voice[7][-1]
+    called = []
+    async def execute(name, arguments):
+        called.append((name, arguments))
+        return {"result": 42}
+    gateway.tools.execute = execute
+    push(voice, {"type": "input_audio_buffer.speech_started", "item_id": "u1"})
+    push(voice, {"type": "input_audio_buffer.speech_stopped", "item_id": "u1"})
+    push(voice, {"type": "input_audio_buffer.committed", "item_id": "u1"})
+    push(voice, {"type": "response.created", "response": {"id": "r1"}})
+    push(voice, {"type": "response.done", "response": {"id": "r1", "status": "completed", "output": [
+        {"type": "function_call", "name": "calculate", "call_id": "c1", "arguments": '{"expression":"6*7"}'}]}})
+    assert called == [("calculate", {"expression": "6*7"})]
+    outputs = [e["item"] for e in peer.sent if e["type"] == "conversation.item.create"]
+    assert outputs[-1]["type"] == "function_call_output" and json.loads(outputs[-1]["output"])["result"] == 42
+    assert len([e for e in peer.sent if e["type"] == "response.create"]) == 2
+    assert gateway.sessions[s["id"]].state != "ended"
+
+
+def test_new_question_cancels_slow_search_and_still_gets_its_own_response(voice):
+    s = start(voice)
+    gateway, peer = voice[2].app.state.voice, voice[7][-1]
+    async def execute(*_):
+        await asyncio.sleep(60)
+        return {"text": "Stale result must not be spoken"}
+    gateway.tools.execute = execute
+    push(voice, {"type": "input_audio_buffer.speech_started", "item_id": "u1"})
+    push(voice, {"type": "input_audio_buffer.speech_stopped", "item_id": "u1"})
+    push(voice, {"type": "input_audio_buffer.committed", "item_id": "u1"})
+    push(voice, {"type": "response.created", "response": {"id": "r1"}})
+    push(voice, {"type": "response.done", "response": {"id": "r1", "status": "completed", "output": [
+        {"type": "function_call", "name": "calculate", "call_id": "c1", "arguments": '{"expression":"1+1"}'}]}})
+    assert gateway.sessions[s["id"]].tool_task
+    push(voice, {"type": "input_audio_buffer.speech_started", "item_id": "u2"})
+    push(voice, {"type": "input_audio_buffer.speech_stopped", "item_id": "u2"})
+    push(voice, {"type": "input_audio_buffer.committed", "item_id": "u2"})
+    assert len([e for e in peer.sent if e["type"] == "response.create"]) == 2
+    assert gateway.sessions[s["id"]].tool_task is None
+
+
+def test_search_citations_survive_caption_updates_and_history(voice):
+    s = start(voice)
+    session = voice[2].app.state.voice.sessions[s["id"]]
+    session.sources = [{"title": "Official source", "url": "https://example.org/source"}]
+    push(voice, {"type": "response.output_audio_transcript.delta", "item_id": "a1", "delta": "Current "})
+    push(voice, {"type": "response.output_audio_transcript.done", "item_id": "a1", "transcript": "Current result"})
+    detail = VoiceStore(voice[0]).conversation(s["conversation_id"], voice[3]["alice"][0]["user"]["id"])
+    assert detail["turns"][0]["sources"] == session.sources
+
+
+def test_tool_session_end_cancels_pending_work_and_saves_only_safe_counters(voice):
+    s = start(voice)
+    gateway = voice[2].app.state.voice
+    async def execute(*_):
+        await asyncio.sleep(60)
+        return {"text": "Never retained"}
+    gateway.tools.execute = execute
+    push(voice, {"type": "response.done", "response": {"id": "r1", "status": "completed", "output": [
+        {"type": "function_call", "name": "calculate", "call_id": "c1", "arguments": '{"expression":"1+1"}'}]}})
+    assert gateway.sessions[s["id"]].tool_task
+    voice[2].post(f"/voice/v1/sessions/{s['id']}/control", headers=voice[6], json={"action": "end"})
+    voice[2].portal.call(asyncio.sleep, 0.01)
+    assert gateway.sessions[s["id"]].tool_task is None
+    detail = VoiceStore(voice[0]).conversation(s["conversation_id"], voice[3]["alice"][0]["user"]["id"])
+    assert detail["diagnostics"]["tool_calls"] == 1
+    assert "expression" not in json.dumps(detail) and "Never retained" not in json.dumps(detail)
 
 
 def test_bounded_output_stops_slow_watch(voice):

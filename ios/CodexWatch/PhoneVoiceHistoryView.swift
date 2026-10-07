@@ -50,6 +50,9 @@ struct PhoneVoiceConversationView: View {
                         VStack(alignment: .leading, spacing: 5) {
                             Text(turn.role == "user" ? "You" : "Assistant").font(.caption.bold()).foregroundStyle(ScribeTheme.red)
                             Text(turn.text).privacySensitive().textSelection(.enabled)
+                            ForEach(turn.sources ?? []) { source in
+                                if let url = source.link { Link(source.title, destination: url).font(.footnote) }
+                            }
                             if turn.interrupted { Text("Interrupted reply · some words may not have been played").font(.caption).foregroundStyle(ScribeTheme.muted) }
                             else if !turn.final { Text("Incomplete turn").font(.caption).foregroundStyle(ScribeTheme.muted) }
                         }

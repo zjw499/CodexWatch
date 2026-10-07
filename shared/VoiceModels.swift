@@ -5,6 +5,18 @@ struct VoiceAssistantSettings: Codable, Equatable {
     var enabled = false
     var model = "gpt-realtime-2.1"
     var voice = "marin"
+    var tools_enabled = true
+    var web_search = false
+    init() { }
+    enum CodingKeys: String, CodingKey { case enabled, model, voice, tools_enabled, web_search }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        model = try c.decodeIfPresent(String.self, forKey: .model) ?? "gpt-realtime-2.1"
+        voice = try c.decodeIfPresent(String.self, forKey: .voice) ?? "marin"
+        tools_enabled = try c.decodeIfPresent(Bool.self, forKey: .tools_enabled) ?? true
+        web_search = try c.decodeIfPresent(Bool.self, forKey: .web_search) ?? false
+    }
 }
 
 struct VoiceAssistantDescriptor: Codable, Identifiable, Equatable {
@@ -12,6 +24,8 @@ struct VoiceAssistantDescriptor: Codable, Identifiable, Equatable {
     let name: String
     let model: String
     let voice: String
+    var tools_enabled: Bool? = nil
+    var web_search: Bool? = nil
 }
 
 struct VoiceConfiguration: Codable, Equatable {
@@ -24,6 +38,7 @@ struct VoiceConfiguration: Codable, Equatable {
     let voices: [String]
     let session_seconds: Int
     let idle_seconds: Int
+    var public_web_search_enabled: Bool? = nil
 }
 
 struct VoiceDeviceCredential: Codable {
@@ -39,12 +54,24 @@ struct VoiceDeviceCredential: Codable {
     }
 }
 
+struct VoiceSource: Codable, Identifiable, Equatable {
+    let title: String
+    let url: String
+    var id: String { url }
+    var link: URL? {
+        guard let value = URL(string: url), value.scheme == "https", value.host != nil,
+              value.user == nil, value.password == nil else { return nil }
+        return value
+    }
+}
+
 struct VoiceTurn: Codable, Identifiable, Equatable {
     let id: String
     let role: String
     let text: String
     let final: Bool
     let interrupted: Bool
+    var sources: [VoiceSource]? = nil
 }
 
 struct VoiceConversation: Codable, Identifiable {
@@ -68,6 +95,7 @@ struct VoiceSessionInfo: Decodable {
     let assistant_id: String
     let assistant_name: String
     let state: String
+    var web_search: Bool? = nil
 }
 
 struct VoiceSessionRequest: Encodable {
@@ -103,6 +131,7 @@ struct VoicePolicy: Codable {
     var session_seconds = 600
     var idle_seconds = 120
     var max_active_sessions: Int? = 1
+    var public_web_search_enabled: Bool? = false
     var organization_id = ""
     var project_id = ""
 }

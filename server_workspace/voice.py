@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from .workspace import Workspace, digest, fail, identifier
 from .voice_diagnostics import DiagnosticReport, DiagnosticStore
 from .voice_stream import PacedVoiceEvents, VoiceStreamOverflow
+from .voice_tools import CONVERSATION_INSTRUCTIONS, VoiceTools, definitions
 
 
 class VoicePolicy(BaseModel):
@@ -29,6 +30,7 @@ class VoicePolicy(BaseModel):
     session_seconds: int = Field(default=600, ge=60, le=3600)
     idle_seconds: int = Field(default=120, ge=30, le=600)
     max_active_sessions: int = Field(default=1, ge=1, le=16)
+    public_web_search_enabled: bool = False
     organization_id: str = ""
     project_id: str = ""
 
@@ -94,7 +96,8 @@ class VoiceStore:
             voice = data.get("voice") or {}
             if voice.get("enabled") and voice.get("model") in self.w.config.voice_models and voice.get("voice") in self.w.config.voice_voices:
                 # Instructions are read only by the PC when creating a provider session.
-                result.append({"id": row["id"], "name": data["name"], "model": voice["model"], "voice": voice["voice"]})
+                result.append({"id": row["id"], "name": data["name"], "model": voice["model"], "voice": voice["voice"],
+                               "tools_enabled": voice.get("tools_enabled", True), "web_search": voice.get("web_search", False)})
         return result
 
     def repair_default(self, owner: str):
@@ -113,7 +116,8 @@ class VoiceStore:
         return {"version": 1, "enabled": self.available(owner), "gateway_url": self.w.config.voice_gateway_url,
                 "default_assistant_id": self.repair_default(owner), "assistants": self.profiles(owner),
                 "models": self.w.config.voice_models, "voices": self.w.config.voice_voices,
-                "session_seconds": policy.session_seconds, "idle_seconds": policy.idle_seconds}
+                "session_seconds": policy.session_seconds, "idle_seconds": policy.idle_seconds,
+                "public_web_search_enabled": policy.public_web_search_enabled}
 
     def provision(self, user, device_id: str):
         identifier(device_id)
@@ -321,6 +325,8 @@ def install_private_routes(app, workspace, account, admin):
         body.project_id = workspace.config.project_id
         with workspace.db() as db:
             workspace.require_session(db, user)
+            if "public_web_search_enabled" not in body.model_fields_set:
+                body.public_web_search_enabled = store.policy().public_web_search_enabled
             db.execute("INSERT OR REPLACE INTO voice_policy VALUES(1,?)", (workspace.encode(body.model_dump()),))
             workspace.audit(db, user["id"], "voice-policy-updated", workspace.config.project_id)
         return body.model_dump()
@@ -375,11 +381,30 @@ class VoiceSession:
         self.output_done = set()
         self.blocked_output = set()
         self.turns = {}
+        self.epoch = 0
+        self.speaking_user = False
+        self.pending_reply = False
+        self.response_pending = False
+        self.request_epoch = 0
+        self.active_response = None
+        self.response_epochs = {}
+        self.completed_responses = set()
+        self.seen_inputs = set()
+        self.tool_calls = set()
+        self.tool_task = None
+        self.sources = []
+        self.played_ms = {}
+        self.truncated_ms = {}
+        self.tool_definitions = definitions(profile, self.store.policy())
+        self.turn_tool_count = 0
+        self.metrics = {"speech_starts": 0, "committed_turns": 0, "responses_requested": 0,
+                        "responses_completed": 0, "tool_calls": 0, "tool_failures": 0, "interrupts": 0}
         self.reader = self.monitor = None
 
     def info(self):
         return {"version": 1, "id": self.id, "conversation_id": self.conversation_id,
-                "assistant_id": self.profile["id"], "assistant_name": self.profile["name"], "state": self.state}
+                "assistant_id": self.profile["id"], "assistant_name": self.profile["name"], "state": self.state,
+                "web_search": any(d["name"] == "search_web" for d in self.tool_definitions)}
 
     async def emit(self, kind, **fields):
         if self.state == "ended" and kind != "ended":
@@ -395,11 +420,12 @@ class VoiceSession:
             transcription = "gpt-4o-mini-transcribe" if "gpt-4o-mini-transcribe" in self.store.w.config.transcription_models else self.store.w.config.transcription_models[0]
             await self.peer.send({"type": "session.update", "session": {
                 "type": "realtime", "model": self.profile["model"], "output_modalities": ["audio"],
-                "instructions": self.profile["instructions"], "tools": [], "tool_choice": "none", "max_output_tokens": 1024,
+                "instructions": CONVERSATION_INSTRUCTIONS + "\nCustom assistant instructions:\n" + self.profile["instructions"],
+                "tools": self.tool_definitions, "tool_choice": "auto" if self.tool_definitions else "none", "max_output_tokens": 1024,
                 "audio": {"input": {"format": {"type": "audio/pcm", "rate": 24000},
                                     "transcription": {"model": transcription},
                                     "turn_detection": {"type": "semantic_vad", "eagerness": "medium",
-                                                       "create_response": True, "interrupt_response": True}},
+                                                       "create_response": False, "interrupt_response": True}},
                           "output": {"format": {"type": "audio/pcm", "rate": 24000}, "voice": self.profile["voice"]}}}})
             # Most recent complete text turns; interrupted answers are not represented as heard.
             budget = 24000
@@ -428,8 +454,88 @@ class VoiceSession:
         if final is not None:
             turn["final"] = final
         turn["interrupted"] = turn["interrupted"] or interrupted
+        if role == "assistant" and self.sources and not turn["interrupted"]:
+            turn["sources"] = list(self.sources)
         self.store.save_turn(self.conversation_id, dict(turn))
         return dict(turn)
+
+    async def respond_if_ready(self):
+        # One explicit response per committed user turn (or tool continuation).
+        # VAD still detects/commits audio, but never races us to create a reply.
+        if (self.state in {"connecting", "ended"} or not self.pending_reply or self.speaking_user
+                or self.active_response or self.response_pending or self.tool_task):
+            return
+        self.pending_reply = False
+        self.response_pending = True
+        self.request_epoch = self.epoch
+        self.metrics["responses_requested"] += 1
+        self.state = "thinking"
+        await self.emit("state", state=self.state)
+        request = {"type": "response.create", "event_id": "reply_" + uuid.uuid4().hex}
+        if self.turn_tool_count >= 4 or self.metrics["tool_calls"] >= 32:
+            request["response"] = {"tool_choice": "none"}
+        await self.peer.send(request)
+
+    async def run_tools(self, calls, epoch):
+        try:
+            for call in calls:
+                call_id, name = call.get("call_id"), call.get("name")
+                if not call_id or call_id in self.tool_calls:
+                    continue
+                self.tool_calls.add(call_id)
+                self.metrics["tool_calls"] += 1
+                self.turn_tool_count += 1
+                allowed = {d["name"] for d in definitions(self.profile, self.store.policy())}
+                self.store.authenticate_hash(self.user["device_hash"])
+                self.store.require_available(self.user["id"])
+                self.store.conversation(self.conversation_id, self.user["id"])
+                await self.emit("tool", message={"search_web": "Searching the web…", "calculate": "Calculating…",
+                                                "current_time": "Checking the time…"}.get(name, "Checking…"))
+                try:
+                    args = json.loads(call.get("arguments", "{}"))
+                    result = (await asyncio.wait_for(self.gateway.tools.execute(name, args), 25)
+                              if name in allowed and len(call.get("arguments", "")) <= 4096
+                              and self.turn_tool_count <= 4 and self.metrics["tool_calls"] <= 32
+                              else {"error": "This tool is unavailable for this assistant"})
+                except asyncio.CancelledError:
+                    # Close the old tool call in context, but do not speak its
+                    # result over the user's newer question.
+                    if self.state != "ended":
+                        with suppress(Exception):
+                            remaining = [call] + [c for c in calls if c.get("call_id") and c["call_id"] not in self.tool_calls]
+                            for pending in remaining:
+                                self.tool_calls.add(pending["call_id"])
+                                await self.peer.send({"type": "conversation.item.create", "item": {
+                                    "type": "function_call_output", "call_id": pending["call_id"],
+                                    "output": json.dumps({"error": "Cancelled by the user's newer turn"})}})
+                    raise
+                except Exception:
+                    result = {"error": "The tool could not finish. Explain briefly and continue conversing."}
+                if self.state == "ended" or epoch != self.epoch:
+                    return
+                self.store.authenticate_hash(self.user["device_hash"])
+                self.store.require_available(self.user["id"])
+                self.store.conversation(self.conversation_id, self.user["id"])
+                if result.get("error"):
+                    self.metrics["tool_failures"] += 1
+                self.sources.extend(s for s in result.get("sources", [])
+                                    if s["url"] not in [old["url"] for old in self.sources])
+                self.sources = self.sources[:8]
+                self.activity = time.monotonic()
+                await self.peer.send({"type": "conversation.item.create", "item": {
+                    "type": "function_call_output", "call_id": call_id,
+                    "output": json.dumps(result, ensure_ascii=False)}})
+            if self.state != "ended" and epoch == self.epoch:
+                self.pending_reply = True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await self.end("Voice access ended. Open Scribe Pilot on your iPhone.")
+        finally:
+            if self.tool_task is asyncio.current_task():
+                self.tool_task = None
+            if self.state != "ended":
+                await self.respond_if_ready()
 
     async def read_provider(self):
         try:
@@ -437,23 +543,48 @@ class VoiceSession:
                 event = await self.peer.receive()
                 kind = event.get("type")
                 item = event.get("item_id")
+                response_id = event.get("response_id")
+                stale = response_id and self.response_epochs.get(response_id, self.epoch) != self.epoch
                 if kind == "session.updated":
                     self.state = "listening"
                     await self.emit("state", state=self.state)
                 elif kind == "input_audio_buffer.speech_started":
                     self.activity = time.monotonic()
+                    self.metrics["speech_starts"] += 1
+                    self.epoch += 1
+                    self.speaking_user = True
+                    self.pending_reply = False
+                    self.sources = []
+                    self.turn_tool_count = 0
+                    if self.tool_task:
+                        self.tool_task.cancel()
+                    await self.emit("tool", message="")
                     if item:
                         turn = self.save(item, "user")
                         await self.emit("turn", turn=turn)
                     if self.last_output_item:
+                        self.metrics["interrupts"] += 1
                         self.blocked_output.add(self.last_output_item)
                         self.events.discard_audio(self.last_output_item)
                         await self.emit("interrupt", item_id=self.last_output_item)
                     self.state = "listening"
                     await self.emit("state", state=self.state)
                 elif kind == "input_audio_buffer.speech_stopped":
+                    self.speaking_user = False
                     self.state = "thinking"
                     await self.emit("state", state=self.state)
+                elif kind == "input_audio_buffer.committed" and item:
+                    if item not in self.seen_inputs:
+                        self.seen_inputs.add(item)
+                        self.metrics["committed_turns"] += 1
+                        self.pending_reply = True
+                elif kind == "response.created":
+                    response_id = event.get("response", {}).get("id")
+                    self.response_pending = False
+                    self.active_response = response_id
+                    self.response_epochs[response_id] = self.request_epoch
+                    if self.speaking_user or self.request_epoch != self.epoch:
+                        await self.peer.send({"type": "response.cancel", "response_id": response_id})
                 elif kind == "conversation.item.input_audio_transcription.completed" and item:
                     turn = self.save(item, "user", event.get("transcript", ""), final=True)
                     await self.emit("turn", turn=turn)
@@ -461,7 +592,7 @@ class VoiceSession:
                     turn = self.save(item, "user", "[Speech could not be transcribed]", final=False)
                     await self.emit("turn", turn=turn)
                 elif kind == "response.output_audio.delta" and item:
-                    if item in self.blocked_output:
+                    if stale or item in self.blocked_output:
                         continue
                     self.last_output_item = item
                     self.output_bytes[item] = self.output_bytes.get(item, 0) + len(base64.b64decode(event["delta"], validate=True))
@@ -471,24 +602,59 @@ class VoiceSession:
                     self.state = "speaking"
                     await self.emit("audio", item_id=item, audio=event["delta"])
                 elif kind == "response.output_audio_transcript.delta" and item:
+                    if stale or item in self.blocked_output:
+                        continue
                     old = self.turns.get(item, {}).get("text", "")
                     turn = self.save(item, "assistant", old + event.get("delta", ""))
                     await self.emit("turn", turn=turn)
                 elif kind == "response.output_audio_transcript.done" and item:
+                    if stale or item in self.blocked_output:
+                        continue
                     turn = self.save(item, "assistant", event.get("transcript", ""), final=True)
                     await self.emit("turn", turn=turn)
+                elif kind == "response.output_audio.done" and item:
+                    self.output_done.add(item)
+                    self.confirm_played(item)
                 elif kind == "response.done":
-                    if self.last_output_item:
+                    response = event.get("response", {})
+                    rid = response.get("id")
+                    if rid and rid in self.completed_responses:
+                        continue
+                    if rid:
+                        self.completed_responses.add(rid)
+                    response_epoch = self.response_epochs.get(rid, self.epoch)
+                    if not rid or rid == self.active_response:
+                        self.active_response = None
+                        self.response_pending = False
+                    for output in response.get("output", []):
+                        if output.get("id") in self.output_bytes:
+                            self.output_done.add(output["id"])
+                            self.confirm_played(output["id"])
+                    if not response.get("output") and self.last_output_item and not rid:
                         self.output_done.add(self.last_output_item)
-                    if event.get("response", {}).get("status") == "failed":
+                        self.confirm_played(self.last_output_item)
+                    if response_epoch != self.epoch:
+                        await self.respond_if_ready()
+                        continue
+                    if response.get("status") == "failed":
                         await self.end("The assistant could not respond. Start a new conversation.")
                     else:
-                        self.state = "listening"
-                        await self.emit("state", state=self.state)
+                        self.metrics["responses_completed"] += 1
+                        calls = [o for o in response.get("output", []) if o.get("type") == "function_call"]
+                        if calls and response.get("status") == "completed":
+                            # Bounded work runs separately so audio, heartbeat,
+                            # and barge-in events remain responsive during search.
+                            self.state = "thinking"
+                            self.tool_task = asyncio.create_task(self.run_tools(calls, self.epoch))
+                        elif not self.speaking_user and not self.pending_reply:
+                            self.state = "listening"
+                            await self.emit("tool", message="")
+                            await self.emit("state", state=self.state)
                 elif kind == "error":
                     # Harmless cancellation/truncation races must not expose provider errors.
                     if event.get("error", {}).get("code") not in {"response_cancel_not_active", "conversation_already_truncated"}:
                         await self.end("The voice service could not continue. Start a new conversation.")
+                await self.respond_if_ready()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -544,6 +710,14 @@ class VoiceSession:
             self.sequence += 1
             return {"ok": True, "next_sequence": self.sequence}
 
+    def confirm_played(self, item):
+        total = self.output_bytes.get(item, 0) / 48
+        if item in self.output_done and self.played_ms.get(item, -1) >= total - 5:
+            if self.last_output_item == item:
+                self.last_output_item = None
+            return True
+        return False
+
     async def control(self, body):
         self.touched = time.monotonic()
         if body.action == "end":
@@ -551,27 +725,28 @@ class VoiceSession:
         elif body.action == "heartbeat":
             pass
         elif body.action == "played":
-            if body.item_id == self.last_output_item and body.item_id in self.output_done:
-                total = self.output_bytes.get(body.item_id, 0) / 48
-                if body.audio_end_ms >= total - 5:
-                    self.last_output_item = None
+            if body.item_id in self.output_bytes:
+                self.played_ms[body.item_id] = max(self.played_ms.get(body.item_id, 0), body.audio_end_ms)
+                self.confirm_played(body.item_id)
         elif body.action == "mute":
             self.muted = body.muted
             if self.peer and self.muted:
                 await self.peer.send({"type": "input_audio_buffer.clear"})
         elif body.action == "interrupt":
-            if body.item_id != self.last_output_item:
+            if body.item_id not in self.output_bytes:
                 fail(422, "Unknown playback item")
             total = self.output_bytes.get(body.item_id, 0) / 48
-            if body.item_id in self.output_done and body.audio_end_ms >= total - 5:
-                self.last_output_item = None
-            else:
+            self.played_ms[body.item_id] = max(self.played_ms.get(body.item_id, 0), body.audio_end_ms)
+            if not self.confirm_played(body.item_id) and body.item_id not in self.truncated_ms:
                 self.blocked_output.add(body.item_id)
                 self.events.discard_audio(body.item_id)
                 turn = self.save(body.item_id, "assistant", interrupted=True)
                 await self.emit("turn", turn=turn)
                 await self.peer.send({"type": "conversation.item.truncate", "item_id": body.item_id,
                                       "content_index": 0, "audio_end_ms": min(body.audio_end_ms, int(total))})
+                self.truncated_ms[body.item_id] = min(body.audio_end_ms, int(total))
+                if self.last_output_item == body.item_id:
+                    self.last_output_item = None
         else:
             fail(422, "Unknown voice control")
         return {"ok": True}
@@ -587,7 +762,7 @@ class VoiceSession:
             unheard.add(self.last_output_item)
         for item in unheard:
             self.save(item, "assistant", interrupted=True)
-        for task in (self.reader, self.monitor):
+        for task in (self.reader, self.monitor, self.tool_task):
             if task and task is not asyncio.current_task():
                 task.cancel()
         with self.store.w.db() as db:
@@ -595,6 +770,13 @@ class VoiceSession:
             db.execute("UPDATE voice_conversations SET state='ended',updated=? WHERE id=? AND deleted=0",
                        (time.time(), self.conversation_id))
             self.store.w.audit(db, self.user["id"], "voice-session-ended", self.id)
+            # Only counters, no speech, queries, results, or provider payloads.
+            row = db.execute("SELECT content FROM voice_conversations WHERE id=? AND deleted=0", (self.conversation_id,)).fetchone()
+            if row:
+                data = self.store.w.decode(row[0])
+                data["diagnostics"] = dict(self.metrics)
+                db.execute("UPDATE voice_conversations SET content=? WHERE id=? AND deleted=0",
+                           (self.store.w.encode(data), self.conversation_id))
         self.events.clear()
         await self.emit("ended", message=message)
         if self.peer:
@@ -606,6 +788,7 @@ class VoiceGateway:
     def __init__(self, workspace, peer_factory=None):
         self.store = VoiceStore(workspace)
         self.peer_factory = peer_factory or OpenAIRealtimePeer.open
+        self.tools = VoiceTools(workspace)
         self.sessions = {}
         self.lock = asyncio.Lock()
 

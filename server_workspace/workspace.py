@@ -484,6 +484,8 @@ class VoiceAssistantBody(BaseModel):
     enabled: bool = False
     model: str = Field(default="gpt-realtime-2.1", max_length=80)
     voice: str = Field(default="marin", max_length=40)
+    tools_enabled: bool = True
+    web_search: bool = False
 
 
 class AssistantBody(BaseModel):
@@ -662,7 +664,10 @@ def create_app(workspace: Workspace, run_worker: bool = True):
                 voice = body.voice or VoiceAssistantBody()
                 if voice.model not in workspace.config.voice_models or voice.voice not in workspace.config.voice_voices:
                     fail(422, "Choose an approved voice and voice model")
-                value["voice"] = voice.model_dump()
+                # Also preserve nested fields omitted by pre-tools clients.
+                previous = (workspace.decode(row["content"]).get("voice") or {}) if row else {}
+                merged = {**previous, **voice.model_dump(exclude_unset=True)} if body.voice is not None else voice.model_dump()
+                value["voice"] = VoiceAssistantBody.model_validate(merged).model_dump()
             elif row:
                 value["voice"] = workspace.decode(row["content"]).get("voice", VoiceAssistantBody().model_dump())
             else:

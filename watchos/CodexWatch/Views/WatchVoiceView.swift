@@ -41,10 +41,12 @@ struct WatchVoiceView: View {
         ScrollView {
             VStack(spacing: 10) {
                 Text(voice.assistantName).font(.headline).lineLimit(2)
+                if voice.usesPublicWeb { Text("Public topics · Web enabled").font(.caption2).foregroundStyle(ScribeTheme.muted) }
                 Label(voice.state.capitalized, systemImage: voice.muted ? "mic.slash.fill" : "waveform")
                     .font(.caption.bold()).foregroundStyle(ScribeTheme.red)
                     .accessibilityLabel("Voice status: \(voice.state)")
                 if let message = voice.message { Text(message).font(.caption).foregroundStyle(ScribeTheme.muted) }
+                if let tool = voice.toolMessage { Text(tool).font(.caption).foregroundStyle(ScribeTheme.muted) }
                 if voice.isActive {
                     HStack {
                         Button { voice.toggleMute() } label: { Image(systemName: voice.muted ? "mic.fill" : "mic.slash.fill") }
@@ -67,6 +69,9 @@ struct WatchVoiceView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(turn.role == "user" ? "You" : "Assistant").font(.caption2.bold()).foregroundStyle(ScribeTheme.muted)
                         Text(turn.text).font(.caption).privacySensitive().lineLimit(6)
+                        ForEach(turn.sources ?? []) { source in
+                            if let url = source.link { Link(source.title, destination: url).font(.caption2) }
+                        }
                         if turn.interrupted { Text("Interrupted reply").font(.caption2).foregroundStyle(ScribeTheme.muted) }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -123,6 +128,9 @@ struct WatchVoiceHistoryDetailView: View {
                     VStack(alignment: .leading) {
                         Text(turn.role == "user" ? "You" : "Assistant").font(.caption.bold()).foregroundStyle(ScribeTheme.red)
                         Text(turn.text).font(.caption).privacySensitive()
+                        ForEach(turn.sources ?? []) { source in
+                            if let url = source.link { Link(source.title, destination: url).font(.caption2) }
+                        }
                         if turn.interrupted { Text("Interrupted reply").font(.caption2).foregroundStyle(ScribeTheme.muted) }
                     }
                 }
