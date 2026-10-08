@@ -7,8 +7,9 @@ struct VoiceAssistantSettings: Codable, Equatable {
     var voice = "marin"
     var tools_enabled = true
     var web_search = false
+    var knowledge_public = false
     init() { }
-    enum CodingKeys: String, CodingKey { case enabled, model, voice, tools_enabled, web_search }
+    enum CodingKeys: String, CodingKey { case enabled, model, voice, tools_enabled, web_search, knowledge_public }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
@@ -16,6 +17,7 @@ struct VoiceAssistantSettings: Codable, Equatable {
         voice = try c.decodeIfPresent(String.self, forKey: .voice) ?? "marin"
         tools_enabled = try c.decodeIfPresent(Bool.self, forKey: .tools_enabled) ?? true
         web_search = try c.decodeIfPresent(Bool.self, forKey: .web_search) ?? false
+        knowledge_public = try c.decodeIfPresent(Bool.self, forKey: .knowledge_public) ?? false
     }
 }
 
@@ -26,6 +28,8 @@ struct VoiceAssistantDescriptor: Codable, Identifiable, Equatable {
     let voice: String
     var tools_enabled: Bool? = nil
     var web_search: Bool? = nil
+    var knowledge_file_count: Int? = nil
+    var knowledge_public: Bool? = nil
 }
 
 struct VoiceConfiguration: Codable, Equatable {
@@ -57,6 +61,9 @@ struct VoiceDeviceCredential: Codable {
 struct VoiceSource: Codable, Identifiable, Equatable {
     let title: String
     let url: String
+    var kind: String? = nil
+    var file_id: String? = nil
+    var location: String? = nil
     var id: String { url }
     var link: URL? {
         guard let value = URL(string: url), value.scheme == "https", value.host != nil,

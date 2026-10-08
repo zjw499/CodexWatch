@@ -136,6 +136,12 @@ class Workspace:
                   role TEXT NOT NULL, expires REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS assistants (id TEXT PRIMARY KEY, owner TEXT NOT NULL, content BLOB NOT NULL);
+                CREATE TABLE IF NOT EXISTS assistant_knowledge (id TEXT PRIMARY KEY, owner TEXT NOT NULL,
+                  assistant_id TEXT NOT NULL, state TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
+                  created REAL NOT NULL, updated REAL NOT NULL, content BLOB NOT NULL, file BLOB);
+                CREATE INDEX IF NOT EXISTS assistant_knowledge_owner ON assistant_knowledge(owner,assistant_id);
+                CREATE TABLE IF NOT EXISTS assistant_knowledge_state (owner TEXT NOT NULL, assistant_id TEXT NOT NULL,
+                  epoch INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(owner,assistant_id));
                 CREATE TABLE IF NOT EXISTS recordings (id TEXT PRIMARY KEY, owner TEXT NOT NULL, state TEXT NOT NULL,
                   deleted INTEGER NOT NULL DEFAULT 0, generation INTEGER NOT NULL DEFAULT 0,
                   created REAL NOT NULL, updated REAL NOT NULL, content BLOB NOT NULL);
@@ -486,6 +492,7 @@ class VoiceAssistantBody(BaseModel):
     voice: str = Field(default="marin", max_length=40)
     tools_enabled: bool = True
     web_search: bool = False
+    knowledge_public: bool = False
 
 
 class AssistantBody(BaseModel):
@@ -647,7 +654,9 @@ def create_app(workspace: Workspace, run_worker: bool = True):
     @app.get("/api/assistants")
     def assistants(user=Depends(account)):
         with workspace.db() as db:
-            return {"assistants": [{"id": row["id"], **workspace.decode(row["content"])} for row in db.execute("SELECT * FROM assistants WHERE owner=? ORDER BY rowid", (user["id"],))]}
+            return {"assistants": [{"id": row["id"], **workspace.decode(row["content"]),
+                "knowledge_file_count": db.execute("SELECT COUNT(*) FROM assistant_knowledge WHERE owner=? AND assistant_id=? AND deleted=0 AND state='ready'", (user["id"], row["id"])).fetchone()[0]}
+                for row in db.execute("SELECT * FROM assistants WHERE owner=? ORDER BY rowid", (user["id"],))]}
 
     @app.put("/api/assistants/{assistant_id}")
     def save_assistant(assistant_id: str, body: AssistantBody, user=Depends(account)):
@@ -681,6 +690,8 @@ def create_app(workspace: Workspace, run_worker: bool = True):
     @app.delete("/api/assistants/{assistant_id}")
     def delete_assistant(assistant_id: str, user=Depends(account)):
         with workspace.db() as db:
+            from .knowledge import KnowledgeStore
+            KnowledgeStore(workspace).remove(db, user["id"], assistant_id)
             db.execute("DELETE FROM assistants WHERE id=? AND owner=?", (assistant_id, user["id"]))
         from .voice import VoiceStore
         VoiceStore(workspace).repair_default(user["id"])
@@ -873,4 +884,6 @@ def create_app(workspace: Workspace, run_worker: bool = True):
 
     from .voice import install_private_routes
     install_private_routes(app, workspace, account, admin)
+    from .knowledge import install_routes
+    install_routes(app, workspace, account)
     return app

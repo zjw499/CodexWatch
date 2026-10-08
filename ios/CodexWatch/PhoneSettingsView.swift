@@ -123,6 +123,7 @@ struct PhoneSettingsView: View {
                         Text(assistant.model).font(.caption).foregroundStyle(ScribeTheme.muted)
                     }
                 }
+                .accessibilityIdentifier("assistant-editor-\(assistant.id)")
             }
             Button { editingAssistant = WorkspaceAssistant(id: UUID().uuidString, name: "", instructions: "", model: workspace.generationModels.first ?? "gpt-4.1-mini") } label: {
                 Label("Create assistant", systemImage: "plus.circle")
@@ -177,6 +178,20 @@ struct PhoneAssistantEditor: View {
                 Text("Describe this assistant's purpose, tone, and instructions. These also apply when you enable Watch voice conversations.")
                     .font(.footnote).foregroundStyle(ScribeTheme.muted)
             }
+            Section("Knowledge files") {
+                if let saved = workspace.assistants.first(where: { $0.id == assistant.id }) {
+                    NavigationLink {
+                        PhoneKnowledgeFilesView(assistantID: assistant.id, assistantName: assistant.name)
+                    } label: {
+                        Label("Manage files · \(saved.knowledge_file_count ?? 0)", systemImage: "doc.text")
+                    }
+                    .accessibilityIdentifier("assistant-knowledge-files")
+                } else {
+                    Text("Save this assistant before adding files.")
+                }
+                Text("Upload reference files for Watch voice conversations. The assistant finds relevant passages and shows file sources in History.")
+                    .font(.footnote).foregroundStyle(ScribeTheme.muted)
+            }
             Section("Watch voice") {
                 Toggle("Enable voice conversations", isOn: $assistant.voiceSettings.enabled)
                 if assistant.voiceSettings.enabled {
@@ -189,6 +204,9 @@ struct PhoneAssistantEditor: View {
                         Toggle("Search the public web", isOn: $assistant.voiceSettings.web_search)
                             .accessibilityIdentifier("assistant-web-search-toggle")
                         if assistant.voiceSettings.web_search {
+                            Toggle("Knowledge files contain public information only", isOn: $assistant.voiceSettings.knowledge_public)
+                            Text("Files are private by default, which pauses public web search for conversations using them. Enable this only for public, non-sensitive reference material. A conversation that already used private knowledge keeps web search paused.")
+                                .font(.footnote).foregroundStyle(ScribeTheme.muted)
                             Text("Use this assistant for public, non-sensitive topics. Live web search is outside the organization's BAA. Recording content is never included in search.")
                                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
                             if workspace.voiceConfiguration?.public_web_search_enabled != true {

@@ -71,6 +71,7 @@ struct WatchVoiceView: View {
                         Text(turn.text).font(.caption).privacySensitive().lineLimit(6)
                         ForEach(turn.sources ?? []) { source in
                             if let url = source.link { Link(source.title, destination: url).font(.caption2) }
+                            else { Label(source.title, systemImage: "doc.text").font(.caption2).privacySensitive() }
                         }
                         if turn.interrupted { Text("Interrupted reply").font(.caption2).foregroundStyle(ScribeTheme.muted) }
                     }.frame(maxWidth: .infinity, alignment: .leading)
@@ -130,6 +131,7 @@ struct WatchVoiceHistoryDetailView: View {
                         Text(turn.text).font(.caption).privacySensitive()
                         ForEach(turn.sources ?? []) { source in
                             if let url = source.link { Link(source.title, destination: url).font(.caption2) }
+                            else { Label(source.title, systemImage: "doc.text").font(.caption2).privacySensitive() }
                         }
                         if turn.interrupted { Text("Interrupted reply").font(.caption2).foregroundStyle(ScribeTheme.muted) }
                     }

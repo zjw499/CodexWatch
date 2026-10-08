@@ -19,6 +19,7 @@ from .workspace import Workspace, digest, fail, identifier
 from .voice_diagnostics import DiagnosticReport, DiagnosticStore
 from .voice_stream import PacedVoiceEvents, VoiceStreamOverflow
 from .voice_tools import CONVERSATION_INSTRUCTIONS, VoiceTools, definitions
+from .knowledge import KnowledgeStore
 
 
 class VoicePolicy(BaseModel):
@@ -90,6 +91,7 @@ class VoiceStore:
     def profiles(self, owner: str):
         with self.w.db() as db:
             rows = db.execute("SELECT id,content FROM assistants WHERE owner=? ORDER BY rowid", (owner,)).fetchall()
+            counts = {r[0]: r[1] for r in db.execute("SELECT assistant_id,COUNT(*) FROM assistant_knowledge WHERE owner=? AND deleted=0 AND state='ready' GROUP BY assistant_id", (owner,))}
         result = []
         for row in rows:
             data = self.w.decode(row["content"])
@@ -97,7 +99,8 @@ class VoiceStore:
             if voice.get("enabled") and voice.get("model") in self.w.config.voice_models and voice.get("voice") in self.w.config.voice_voices:
                 # Instructions are read only by the PC when creating a provider session.
                 result.append({"id": row["id"], "name": data["name"], "model": voice["model"], "voice": voice["voice"],
-                               "tools_enabled": voice.get("tools_enabled", True), "web_search": voice.get("web_search", False)})
+                               "tools_enabled": voice.get("tools_enabled", True), "web_search": voice.get("web_search", False),
+                               "knowledge_file_count": counts.get(row["id"], 0), "knowledge_public": voice.get("knowledge_public", False)})
         return result
 
     def repair_default(self, owner: str):
@@ -362,7 +365,17 @@ class VoiceSession:
         self.id = sid
         self.user = user
         self.conversation_id = conversation["id"]
-        self.profile = profile
+        self.knowledge = KnowledgeStore(self.store.w)
+        self.knowledge_ids, self.knowledge_epoch = self.knowledge.snapshot(user["id"], profile["id"])
+        private = bool(conversation.get("private_knowledge", False) or (self.knowledge_ids and not profile.get("knowledge_public", False)))
+        self.profile = {**profile, "knowledge_file_count": len(self.knowledge_ids), "context_private": private}
+        if private:
+            with self.store.w.db() as db:
+                row = db.execute("SELECT content FROM voice_conversations WHERE id=? AND owner=? AND deleted=0", (self.conversation_id, user["id"])).fetchone()
+                if row:
+                    data = self.store.w.decode(row[0])
+                    data["private_knowledge"] = True
+                    db.execute("UPDATE voice_conversations SET content=? WHERE id=?", (self.store.w.encode(data), self.conversation_id))
         self.history = conversation["turns"]
         self.state = "connecting"
         self.peer = None
@@ -397,7 +410,7 @@ class VoiceSession:
         self.sources = []
         self.played_ms = {}
         self.truncated_ms = {}
-        self.tool_definitions = definitions(profile, self.store.policy())
+        self.tool_definitions = definitions(self.profile, self.store.policy())
         self.turn_tool_count = 0
         self.metrics = {"speech_starts": 0, "committed_turns": 0, "responses_requested": 0,
                         "responses_completed": 0, "tool_calls": 0, "tool_failures": 0, "interrupts": 0,
@@ -493,11 +506,15 @@ class VoiceSession:
                 self.store.authenticate_hash(self.user["device_hash"])
                 self.store.require_available(self.user["id"])
                 self.store.conversation(self.conversation_id, self.user["id"])
+                if not self.knowledge.current(self.user["id"], self.profile["id"], self.knowledge_epoch):
+                    await self.end("An assistant knowledge file was removed. Start a new conversation.")
+                    return
                 await self.emit("tool", message={"search_web": "Searching the web…", "calculate": "Calculating…",
-                                                "current_time": "Checking the time…"}.get(name, "Checking…"))
+                                                "current_time": "Checking the time…", "search_knowledge": "Checking reference files…"}.get(name, "Checking…"))
                 try:
                     args = json.loads(call.get("arguments", "{}"))
-                    result = (await asyncio.wait_for(self.gateway.tools.execute(name, args), 25)
+                    context = {"knowledge_context": (self.user["id"], self.profile["id"], self.knowledge_ids)} if name == "search_knowledge" else {}
+                    result = (await asyncio.wait_for(self.gateway.tools.execute(name, args, **context), 25)
                               if name in allowed and len(call.get("arguments", "")) <= 4096
                               and self.turn_tool_count <= 4 and self.metrics["tool_calls"] <= 32
                               else {"error": "This tool is unavailable for this assistant"})
@@ -520,6 +537,9 @@ class VoiceSession:
                 self.store.authenticate_hash(self.user["device_hash"])
                 self.store.require_available(self.user["id"])
                 self.store.conversation(self.conversation_id, self.user["id"])
+                if not self.knowledge.current(self.user["id"], self.profile["id"], self.knowledge_epoch):
+                    await self.end("An assistant knowledge file was removed. Start a new conversation.")
+                    return
                 if result.get("error"):
                     self.metrics["tool_failures"] += 1
                 self.sources.extend(s for s in result.get("sources", [])
@@ -677,6 +697,9 @@ class VoiceSession:
                 self.store.conversation(self.conversation_id, self.user["id"])
                 if not any(p["id"] == self.profile["id"] for p in self.store.profiles(self.user["id"])):
                     await self.end("This assistant is no longer available.")
+                    return
+                if not self.knowledge.current(self.user["id"], self.profile["id"], self.knowledge_epoch):
+                    await self.end("An assistant knowledge file was removed. Start a new conversation.")
                     return
                 policy = self.store.policy()
                 now = time.monotonic()

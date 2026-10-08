@@ -52,6 +52,7 @@ struct PhoneVoiceConversationView: View {
                             Text(turn.text).privacySensitive().textSelection(.enabled)
                             ForEach(turn.sources ?? []) { source in
                                 if let url = source.link { Link(source.title, destination: url).font(.footnote) }
+                                else { Label(source.title, systemImage: "doc.text").font(.footnote).privacySensitive() }
                             }
                             if turn.interrupted { Text("Interrupted reply · some words may not have been played").font(.caption).foregroundStyle(ScribeTheme.muted) }
                             else if !turn.final { Text("Incomplete turn").font(.caption).foregroundStyle(ScribeTheme.muted) }

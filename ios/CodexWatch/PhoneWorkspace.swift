@@ -35,6 +35,7 @@ struct WorkspaceAssistant: Codable, Identifiable, Equatable {
     var instructions: String
     var model: String
     var voice: VoiceAssistantSettings?
+    var knowledge_file_count: Int? = nil
     var voiceSettings: VoiceAssistantSettings {
         get { voice ?? VoiceAssistantSettings() }
         set { voice = newValue }
@@ -469,6 +470,10 @@ final class PhoneWorkspace: ObservableObject {
         if base == nil && captured?.token != credential?.token { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else { throw WorkspaceError.server }
         guard (200..<300).contains(http.statusCode) else {
+            if path.hasPrefix("assistants/"), path.contains("/knowledge"), (400..<500).contains(http.statusCode),
+               let detail = try? JSONDecoder().decode(KnowledgeRequestFailure.self, from: data) {
+                throw WorkspaceError.status(http.statusCode, String(detail.detail.prefix(300)))
+            }
             let messages = [400: "This invitation is invalid or expired.", 401: "Sign in again.", 403: "Administrator access required.", 404: "This item is unavailable to your account.",
                 409: "The item changed or organization processing approval is incomplete. Refresh and try again.",
                 410: "This recording was removed.", 413: "This audio part is too large.",

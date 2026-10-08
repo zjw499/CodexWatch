@@ -108,4 +108,22 @@ final class ScribePilotUITests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
     }
+    func testSavedAssistantHasKnowledgeFileUploadControls() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-scribe-ui-preview"]
+        app.launch()
+        app.buttons["Open settings"].tap()
+        let assistant = app.buttons["assistant-editor-preview-assistant"]
+        if !assistant.isHittable { app.swipeUp() }
+        XCTAssertTrue(assistant.waitForExistence(timeout: 15))
+        assistant.tap()
+        let files = app.buttons["assistant-knowledge-files"]
+        if !files.isHittable { app.swipeUp() }
+        XCTAssertTrue(files.waitForExistence(timeout: 15))
+        files.tap()
+        XCTAssertTrue(app.buttons["knowledge-add-files"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["No knowledge files yet."].exists)
+        screenshot("phone-assistant-knowledge-files")
+    }
 }
