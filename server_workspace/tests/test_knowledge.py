@@ -476,11 +476,84 @@ def test_overlapping_chunks_from_same_pdf_page_still_collapse(setup):
     assert len(result["passages"]) == 2
 
 
+def test_source_heading_and_limit_across_chunk_boundary_are_returned_together(setup):
+    w, client, _, _, (alice, headers), _ = setup
+    aid = aid_for(client, headers)
+    body = "A1 Orbital launch\nFull-size vehicle\n" + "Complete the preflight inspection. " * 48
+    body += "\nLaunch ignition attempts: maximum three attempts."
+    upload(client, headers, aid, "limits", multiple_page_pdf(
+        body, "A2 Post orbital launch: ignition retries for a small vehicle are unrestricted."), "Limits.pdf")
+    result = KnowledgeStore(w).search(alice["user"]["id"], aid, ["limits"], "orbital launch ignition maximum attempts full-size vehicle")
+    passage = next(p for p in result["passages"] if p["location"] == "Page 1")
+    assert "A1 Orbital launch" in passage["text"] and "maximum three attempts" in passage["text"]
+    assert passage["complete"] and passage["next_offset"] is None
+    assert passage["source"] == "knowledge://limits#0"
+    assert "not an exhaustive review" in result["notice"]
+
+
+def test_combined_topic_outranks_unrelated_repeated_terms(setup):
+    w, client, _, _, (alice, headers), _ = setup
+    aid = aid_for(client, headers)
+    upload(client, headers, aid, "rank", multiple_page_pdf(
+        "Contents\nOrbit\nLaunch\nIgnition\nVehicle\nGarden\nCooking",
+        "A1 Orbital launch\nFull-size vehicle ignition: maximum three attempts.",
+        "Gardening\n" + "Maximum maximum maximum attempts attempts attempts. " * 30), "Limits.pdf")
+    result = KnowledgeStore(w).search(alice["user"]["id"], aid, ["rank"], "orbital launch ignition maximum attempts vehicle")
+    assert result["passages"][0]["location"] == "Page 2"
+
+
+def test_long_source_can_be_read_past_search_excerpt_with_stable_citation(setup):
+    w, client, _, _, (alice, headers), _ = setup
+    aid = aid_for(client, headers)
+    text = "A1 Orbital launch\n" + "Check the ignition equipment. " * 230 + "\nException: maximum three attempts."
+    upload(client, headers, aid, "long", pdf(text), "Limits.pdf")
+    store = KnowledgeStore(w)
+    owner = alice["user"]["id"]
+    result = store.search(owner, aid, ["long"], "orbital launch ignition")
+    passage = result["passages"][0]
+    assert not passage["complete"] and len(passage["text"]) == knowledge.PASSAGE_CHARACTERS
+    assert sum(len(p["text"]) for p in result["passages"]) <= knowledge.SEARCH_CHARACTERS
+    continuation = asyncio.run(VoiceTools(w).execute("read_knowledge", {"source": passage["source"], "offset": passage["next_offset"]}, knowledge_context=(owner, aid, ["long"])))
+    assert "maximum three attempts" in continuation["passages"][0]["text"]
+    assert continuation["passages"][0]["next_offset"] is None
+    assert continuation["sources"] == result["sources"]
+    assert continuation["passages"][0]["offset"] == knowledge.PASSAGE_CHARACTERS
+    assert not continuation["passages"][0]["complete"]
+    with w.db() as db:
+        data = w.decode(store.row(db, owner, aid, "long")["content"])
+    # Legacy links to later chunks still resolve to the same complete page.
+    assert store.read(owner, aid, ["long"], "knowledge://long#1")["passages"][0]["text"] == passage["text"]
+    data.pop("sections")
+    assert knowledge.reference_locations(data)[0]["text"] == text
+
+
+def test_read_source_enforces_snapshot_owner_and_deleted_file_boundaries(setup):
+    w, client, _, _, (alice, headers), (bob, _) = setup
+    aid = aid_for(client, headers)
+    upload(client, headers, aid, "source")
+    store = KnowledgeStore(w)
+    owner = alice["user"]["id"]
+    for source, offset in [("https://example.com", 0), ("knowledge://source#999", 0),
+                           ("knowledge://source#0", -1), ("knowledge://source#0", True),
+                           ("knowledge://source#0", 10000)]:
+        assert "error" in store.read(owner, aid, ["source"], source, offset)
+    assert "error" in store.read(owner, aid, [], "knowledge://source#0")
+    assert "error" in asyncio.run(VoiceTools(w).execute("read_knowledge", {"source": "knowledge://source#0", "owner": owner}, knowledge_context=(owner, aid, ["source"])))
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as foreign:
+        store.read(bob["user"]["id"], aid, ["source"], "knowledge://source#0")
+    assert foreign.value.status_code == 404
+    client.delete(f"/api/assistants/{aid}/knowledge/source", headers=headers)
+    with pytest.raises(HTTPException) as deleted:
+        store.read(owner, aid, ["source"], "knowledge://source#0")
+    assert deleted.value.status_code == 410
+
+
 def test_knowledge_is_independent_of_calculator_and_private_web_is_paused():
     policy = VoicePolicy(public_web_search_enabled=True)
     private = {"knowledge_file_count": 1, "web_search": True}
-    assert {d["name"] for d in definitions(private, policy)} == {"calculate", "current_time", "search_knowledge"}
-    assert {d["name"] for d in definitions({**private, "tools_enabled": False}, policy)} == {"search_knowledge"}
+    assert {d["name"] for d in definitions(private, policy)} == {"calculate", "current_time", "search_knowledge", "read_knowledge"}
+    assert {d["name"] for d in definitions({**private, "tools_enabled": False}, policy)} == {"search_knowledge", "read_knowledge"}
     assert "search_web" in {d["name"] for d in definitions({**private, "knowledge_public": True}, policy)}
     assert "search_web" not in {d["name"] for d in definitions({**private, "knowledge_public": True, "context_private": True}, policy)}
 
@@ -518,6 +591,13 @@ def test_voice_retrieves_files_and_continues_spoken_reply_with_history_source(vo
     assert conversation["private_knowledge"] is True
     assert public.get(f"/api/assistants/{assistant['id']}/knowledge", headers=voice[6]).status_code == 404
     assert private.get(f"/api/assistants/{assistant['id']}/knowledge", headers=voice[6]).status_code == 401
+    push(voice, {"type": "response.created", "response": {"id": "r2"}})
+    push(voice, {"type": "response.done", "response": {"id": "r2", "status": "completed", "output": [
+        {"type": "function_call", "name": "read_knowledge", "call_id": "k2", "arguments": '{"source":"knowledge://file-1#0"}'}]}})
+    public.portal.call(asyncio.sleep, 0.1)
+    outputs = [e["item"] for e in peers[-1].sent if e["type"] == "conversation.item.create"]
+    assert "violet" in outputs[-1]["output"] and outputs[-1]["call_id"] == "k2"
+    assert peers[-1].sent[-1]["type"] == "response.create"
 
 
 def test_removal_ends_active_voice_and_resume_keeps_private_context(voice):

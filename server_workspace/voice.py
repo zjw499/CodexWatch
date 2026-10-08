@@ -510,10 +510,11 @@ class VoiceSession:
                     await self.end("An assistant knowledge file was removed. Start a new conversation.")
                     return
                 await self.emit("tool", message={"search_web": "Searching the web…", "calculate": "Calculating…",
-                                                "current_time": "Checking the time…", "search_knowledge": "Checking reference files…"}.get(name, "Checking…"))
+                                                "current_time": "Checking the time…", "search_knowledge": "Checking reference files…",
+                                                "read_knowledge": "Reading reference page…"}.get(name, "Checking…"))
                 try:
                     args = json.loads(call.get("arguments", "{}"))
-                    context = {"knowledge_context": (self.user["id"], self.profile["id"], self.knowledge_ids)} if name == "search_knowledge" else {}
+                    context = {"knowledge_context": (self.user["id"], self.profile["id"], self.knowledge_ids)} if name in {"search_knowledge", "read_knowledge"} else {}
                     result = (await asyncio.wait_for(self.gateway.tools.execute(name, args, **context), 25)
                               if name in allowed and len(call.get("arguments", "")) <= 4096
                               and self.turn_tool_count <= 4 and self.metrics["tool_calls"] <= 32
