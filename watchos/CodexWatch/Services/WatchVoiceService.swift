@@ -32,6 +32,7 @@ final class WatchVoiceService: ObservableObject {
     private var captureWatchdog: Task<Void, Never>?
     private var captureTask: Task<Void, Never>?
     private var controlTask: Task<Void, Never>?
+    private let closing = VoiceSessionCloseBarrier()
     private var pendingControls = [VoiceControl]()
     private var lastRequestAt = Date()
     private var lastAudioAt: Date?
@@ -179,6 +180,8 @@ final class WatchVoiceService: ObservableObject {
         generation = UUID()
         let run = generation
         do {
+            await closing.wait()
+            guard generation == run, isActive else { return }
             let saved = try access()
             credential = saved
             let granted = await withCheckedContinuation { continuation in
@@ -437,7 +440,7 @@ final class WatchVoiceService: ObservableObject {
         captureTask?.cancel(); captureTask = nil
         streamTask = nil; uploadTask = nil; heartbeatTask = nil; current = nil; credential = nil
         if notifyServer, let previous, let saved {
-            Task {
+            closing.close {
                 defer { previousStream?.cancel() }
                 // Deliver final playback acknowledgements before closing SSE;
                 // otherwise its close can tombstone a fully spoken reply first.

@@ -405,7 +405,7 @@ contain no audio, text, credentials, provider payloads or device identifiers.
 Deploy the extended strict receiver before distributing this pilot. Private review
 routes and the recording worker need no restart for this voice-only update.
 
-## Build 153: continuous reply playback and request jitter
+## Builds 153-154: continuous reply playback and request jitter
 
 Recent build 152 reports identified upload-buffer overflow during brief request
 stalls. Healthy capture and received reply bytes did not establish audible
@@ -435,6 +435,10 @@ distinguish generated, handed-to-stream and acknowledged audio per assistant
 turn; no raw audio, speech, query, credential or provider payload enters logs.
 Older clients/reports remain compatible. Recording workers and private APIs need
 no restart for the separately supervised voice-only deployment.
+
+Build 154 also waits for final playback acknowledgements and End before creating
+a new conversation. Repeated fresh launches cannot race the previous session's
+single active-conversation slot while its HTTP close is still in flight.
 
 Native tests render PCM through AVAudioEngine across empty queues, later replies,
 short tails, interruptions and tool continuations. These tests and synthetic
