@@ -41,7 +41,7 @@ on:
       build_number:
         description: Existing build number to check when check_only is true
         required: false
-        default: "153"
+        default: "154"
       diagnose_only:
         description: Print the App Store Connect app and latest visible builds without polling
         required: false
