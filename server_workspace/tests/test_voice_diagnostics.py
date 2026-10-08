@@ -63,6 +63,27 @@ def test_diagnostics_are_encrypted_owner_scoped_and_audited_on_admin_review(voic
     assert public.post("/voice/v1/diagnostics", headers=alice, json=body).status_code == 401
 
 
+@pytest.mark.parametrize("cause", ["user-end", "view-dismissed", "app-background", "audio-interruption"])
+def test_watch_close_causes_are_fixed_owner_scoped_and_do_not_change_older_retries(voice, cause):
+    body = report(); body["kind"] = "voice-session"
+    body["transport"] = {"endReason": "closed"}
+    assert upload(voice, body).status_code == 200
+    assert "closeCause" not in DiagnosticStore(voice[0]).local_review("alice")["report"]["transport"]
+    assert upload(voice, body).status_code == 200
+    body["request_id"] = str(uuid.uuid4())
+    body["transport"]["closeCause"] = cause
+    assert upload(voice, body).status_code == 200
+    stored = DiagnosticStore(voice[0]).local_review("alice")["report"]
+    assert stored["transport"]["closeCause"] == cause
+    alice, bobby = [voice[3][name][1] for name in ("alice", "bobby")]
+    path = "/api/voice/diagnostics/" + body["request_id"]
+    assert voice[1].get(path, headers=alice).status_code == 200
+    assert voice[1].get(path, headers=bobby).status_code == 404
+    body["request_id"] = str(uuid.uuid4())
+    body["transport"]["closeCause"] = "PRIVATE_PARSER_PAYLOAD"
+    assert upload(voice, body).status_code == 422
+
+
 def test_lost_ack_is_idempotent_and_speaker_feedback_cannot_modify_counters(voice):
     body = report(); body["kind"] = "audio-test"
     assert upload(voice, body).status_code == 200

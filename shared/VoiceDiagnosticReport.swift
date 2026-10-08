@@ -21,6 +21,11 @@ struct VoiceTransportDiagnostic: Codable, Sendable {
     enum EndReason: String, Codable, Sendable {
         case closed, network, serverEnded = "server-ended", uploadBacklog = "upload-backlog", playbackBacklog = "playback-backlog"
     }
+    enum CloseCause: String, Codable, Sendable {
+        case userEnd = "user-end", viewDismissed = "view-dismissed", appBackground = "app-background"
+        case audioInterruption = "audio-interruption", audioReset = "audio-reset", audioRoute = "audio-route"
+        case accountChange = "account-change", accessChange = "access-change", startupFailure = "startup-failure"
+    }
     var endReason = EndReason.closed
     var uploadedBytes = 0
     var uploadRequests = 0
@@ -36,6 +41,7 @@ struct VoiceTransportDiagnostic: Codable, Sendable {
     var controlFailures: Int?
     var audioRetries: Int?
     var maxAudioGapMs: Int?
+    var closeCause: CloseCause?
 }
 
 struct VoiceDiagnosticReceipt: Codable {

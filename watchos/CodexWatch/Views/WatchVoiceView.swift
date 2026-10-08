@@ -79,11 +79,22 @@ struct WatchVoiceView: View {
             }.padding(.horizontal, 6)
         }
         .background(ScribeTheme.background).tint(ScribeTheme.red)
-        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { voice.end(); voice.isPresented = false } } }
-        .onAppear { voice.setVoiceScreenReady(scenePhase == .active && !isLuminanceReduced) }
-        .onChange(of: scenePhase) { _, phase in voice.setVoiceScreenReady(phase == .active && !isLuminanceReduced) }
-        .onChange(of: isLuminanceReduced) { _, reduced in voice.setVoiceScreenReady(scenePhase == .active && !reduced) }
-        .onDisappear { voice.setVoiceScreenReady(false); voice.end() }
+        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { voice.end(closeCause: .viewDismissed); voice.isPresented = false } } }
+        .onAppear { updateVoiceScreen() }
+        .onChange(of: scenePhase) { _, _ in updateVoiceScreen() }
+        .onChange(of: isLuminanceReduced) { _, _ in updateVoiceScreen() }
+        .onDisappear { voice.updateVoiceScreen(visible: false, phase: .inactive, dimmed: isLuminanceReduced) }
+    }
+
+    private func updateVoiceScreen() {
+        let phase: VoiceScreenLifecycle.Phase
+        switch scenePhase {
+        case .active: phase = .active
+        case .inactive: phase = .inactive
+        case .background: phase = .background
+        @unknown default: phase = .background
+        }
+        voice.updateVoiceScreen(visible: true, phase: phase, dimmed: isLuminanceReduced)
     }
 }
 

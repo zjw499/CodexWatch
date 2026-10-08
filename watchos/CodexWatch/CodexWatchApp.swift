@@ -46,7 +46,7 @@ struct CodexWatchApp: App {
             .background(ScribeTheme.background)
             .preferredColorScheme(.dark)
             .onChange(of: scenePhase) { _, phase in
-                if phase == .background { voice.end(message: "Conversation ended when Scribe Pilot left the foreground.") }
+                if phase == .background { voice.end(message: "Conversation ended when Scribe Pilot left the foreground.", closeCause: .appBackground) }
                 guard phase == .active else { return }
                 WatchVoiceDiagnosticReporter.shared.retry()
                 Task {

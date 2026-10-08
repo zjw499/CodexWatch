@@ -44,7 +44,8 @@ final class WatchVoiceService: ObservableObject {
     private var observers: [NSObjectProtocol] = []
     private var desiredState = "listening"
     private var lastAssistantID: String?
-    private var voiceScreenReady = false
+    private var voiceScreen = VoiceScreenLifecycle()
+    private var voiceScreenReady: Bool { voiceScreen.canStartCapture }
     private var providerReady = false
     private var captureStarted = false
 
@@ -76,16 +77,16 @@ final class WatchVoiceService: ObservableObject {
                 guard VoiceAudioStatus.interruptionBegan(note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) else { return }
                 Task { @MainActor in
                     guard let self, self.captureStarted else { return }
-                    self.end(message: "Watch audio was interrupted. Completed text was saved.")
+                    self.end(message: "Watch audio was interrupted. Completed text was saved.", closeCause: .audioInterruption)
                 }
             })
         observers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification,
-            object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.end(message: "Watch audio restarted. Start a new conversation.") } })
+            object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.end(message: "Watch audio restarted. Start a new conversation.", closeCause: .audioReset) } })
         observers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification,
             object: nil, queue: .main) { [weak self] note in
                 let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
                 guard raw == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue else { return }
-                Task { @MainActor in self?.end(message: "The audio route disconnected. Start a new conversation.") }
+                Task { @MainActor in self?.end(message: "The audio route disconnected. Start a new conversation.", closeCause: .audioRoute) }
             })
     }
 
@@ -99,7 +100,7 @@ final class WatchVoiceService: ObservableObject {
         let oldOwner = VoiceDescriptorCache.read()?.owner
         if owner == nil || oldOwner != owner {
             WatchVoiceDiagnosticReporter.shared.accountChanged(owner)
-            end(message: "Your account changed.")
+            end(message: "Your account changed.", closeCause: .accountChange)
             VoiceKeychain.clear(); VoiceDescriptorCache.clear(); configuration = nil; turns = []; isPresented = false
             lastAssistantID = nil
             WatchShortcutCommandRouter.clearPendingVoiceCommand()
@@ -112,13 +113,13 @@ final class WatchVoiceService: ObservableObject {
         }
         guard let config = configuration else { return finishSetup(.needsSetup) }
         guard config.enabled else {
-            end(message: "Watch voice is currently disabled."); VoiceKeychain.clear()
+            end(message: "Watch voice is currently disabled.", closeCause: .accessChange); VoiceKeychain.clear()
             return finishSetup(.disabled)
         }
         if let credentialData {
             guard let saved = try? JSONDecoder().decode(VoiceDeviceCredential.self, from: credentialData), saved.valid,
                   saved.owner_id == owner, saved.gateway_url == config.gateway_url else { return finishSetup(.needsSetup) }
-            if let current = credential, current.token != saved.token { end(message: "Watch voice access was updated.") }
+            if let current = credential, current.token != saved.token { end(message: "Watch voice access was updated.", closeCause: .accessChange) }
             do {
                 try VoiceKeychain.save(saved)
                 guard VoiceKeychain.read()?.token == saved.token else { throw VoiceError.setup }
@@ -234,7 +235,7 @@ final class WatchVoiceService: ObservableObject {
                     }
                 }
             }
-        } catch { if generation == run { end(message: error.localizedDescription) } }
+        } catch { if generation == run { end(message: error.localizedDescription, closeCause: .startupFailure) } }
     }
 
     func showLaunchError(_ message: String) {
@@ -244,9 +245,13 @@ final class WatchVoiceService: ObservableObject {
     }
     func newConversation() async { await open(assistantID: lastAssistantID) }
 
-    func setVoiceScreenReady(_ ready: Bool) {
-        voiceScreenReady = ready
-        if !ready, captureStarted || captureTask != nil { end(message: "Conversation ended when the Watch screen became inactive."); return }
+    func updateVoiceScreen(visible: Bool, phase: VoiceScreenLifecycle.Phase, dimmed: Bool) {
+        voiceScreen = VoiceScreenLifecycle(isVisible: visible, phase: phase, isDimmed: dimmed)
+        if !voiceScreen.canContinueCapture {
+            end(message: phase == .background ? "Conversation ended when Scribe Pilot left the foreground." : "Conversation ended when the voice screen was closed.",
+                closeCause: phase == .background ? .appBackground : .viewDismissed)
+            return
+        }
         beginCaptureIfReady()
     }
 
@@ -254,8 +259,9 @@ final class WatchVoiceService: ObservableObject {
         guard voiceScreenReady, providerReady, isActive, !captureStarted, captureTask == nil else { return }
         let run = generation
         captureTask = Task { [weak self] in
-            guard let self, self.generation == run, self.isActive, self.voiceScreenReady else { return }
+            guard let self else { return }
             defer { if self.generation == run { self.captureTask = nil } }
+            guard self.generation == run, self.isActive, self.voiceScreenReady else { return }
             do {
                 try Task.checkCancellation()
                 try await self.audio.start { [weak self] packet in
@@ -270,7 +276,9 @@ final class WatchVoiceService: ObservableObject {
                         self.enqueueAudio(packet)
                     }
                 }
-                guard self.generation == run, self.isActive, self.voiceScreenReady else { return }
+                // Startup can finish after the display dims. Keep that capture;
+                // waking the display must not start the microphone a second time.
+                guard self.generation == run, self.isActive, self.voiceScreen.canContinueCapture else { return }
                 self.captureStarted = true
                 self.state = self.muted ? "muted" : self.desiredState
                 self.captureWatchdog = Task { [weak self] in
@@ -414,7 +422,8 @@ final class WatchVoiceService: ObservableObject {
     }
 
     func end(message: String = "Conversation ended.", notifyServer: Bool = true,
-             reason: VoiceTransportDiagnostic.EndReason = .closed, diagnostic: Bool = true) {
+             reason: VoiceTransportDiagnostic.EndReason = .closed, diagnostic: Bool = true,
+             closeCause: VoiceTransportDiagnostic.CloseCause = .userEnd) {
         guard isActive else { return }
         let previous = current, saved = credential
         let interruptions = audio.pendingPlaybackItems.map { VoiceControl(action: "interrupt", item_id: $0, audio_end_ms: audio.playedMilliseconds(item: $0)) }
@@ -422,6 +431,7 @@ final class WatchVoiceService: ObservableObject {
         let previousStream = streamTask
         if diagnostic {
             transport.endReason = reason
+            transport.closeCause = reason == .closed ? closeCause : nil
             transport.pendingUploadBytes = pendingAudio.bytes; transport.peakUploadBytes = pendingAudio.peakBytes
             transport.playbackFrames = min(96000, audio.pendingPlaybackFrames)
             transport.peakPlaybackFrames = min(96000, audio.peakPlaybackFrames)

@@ -22,6 +22,10 @@ final class VoiceDiagnosticReportTests: XCTestCase {
         value.transport?.replyPlayback = VoiceReplyPlaybackDiagnostic(scheduledFrames: 9600, completedFrames: 4800, completedItems: 1)
         let withPlayback = try JSONDecoder().decode(VoiceDiagnosticReport.self, from: JSONEncoder().encode(value))
         XCTAssertEqual(withPlayback.transport?.replyPlayback?.completedFrames, 4800)
+        XCTAssertNil(withPlayback.transport?.closeCause)
+        value.transport?.closeCause = .appBackground
+        let withCloseCause = try JSONDecoder().decode(VoiceDiagnosticReport.self, from: JSONEncoder().encode(value))
+        XCTAssertEqual(withCloseCause.transport?.closeCause, .appBackground)
     }
 
     private func report() -> VoiceDiagnosticReport {

@@ -93,6 +93,8 @@ class Transport(SafeBody):
     controlFailures: int | None = Field(default=None, ge=0, le=100000)
     audioRetries: int | None = Field(default=None, ge=0, le=100000)
     maxAudioGapMs: int | None = Field(default=None, ge=0, le=60000)
+    closeCause: Literal["user-end", "view-dismissed", "app-background", "audio-interruption",
+                        "audio-reset", "audio-route", "account-change", "access-change", "startup-failure"] | None = None
 
     @model_validator(mode='after')
     def valid_session_id(self):
@@ -149,7 +151,7 @@ class DiagnosticStore:
         if report.transport is None:
             value.pop("transport")  # Keep older reports' idempotency comparison unchanged.
         else:
-            for key in ('sessionID', 'replyPlayback', 'controlFailures', 'audioRetries', 'maxAudioGapMs'):
+            for key in ('sessionID', 'replyPlayback', 'controlFailures', 'audioRetries', 'maxAudioGapMs', 'closeCause'):
                 if value['transport'].get(key) is None: value['transport'].pop(key, None)
         now = time.time()
         with self.w.db() as db:
