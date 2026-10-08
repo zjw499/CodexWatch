@@ -396,7 +396,7 @@ order. Provider listening is deferred until buffered audio has been sent, while
 interrupt/end controls remain prompt. Watch playback/truncation still uses actual
 heard progress as required by [Realtime interruption handling](https://developers.openai.com/api/docs/guides/realtime-conversations#interruption-and-truncation).
 
-The next Watch pilot combines queued microphone packets into uploads of at most
+The build 151 Watch pilot combined queued microphone packets into uploads of at most
 one second, retaining byte/sequence identity on a lost-ack retry. Unsent audio
 remains bounded to two seconds, with one request in flight. It sends safe capture,
 upload timing/byte-count and playback queue reports at conversation end; NET-01,
@@ -404,3 +404,40 @@ NET-02 and NET-03 distinguish upload, Watch playback and PC output limits. Repor
 contain no audio, text, credentials, provider payloads or device identifiers.
 Deploy the extended strict receiver before distributing this pilot. Private review
 routes and the recording worker need no restart for this voice-only update.
+
+## Build 153: continuous reply playback and request jitter
+
+Recent build 152 reports identified upload-buffer overflow during brief request
+stalls. Healthy capture and received reply bytes did not establish audible
+playback. The earlier reply player paused whenever a packet queue emptied and
+scheduled the next packet at a sampled player time, which could already be past
+when the audio thread handled it.
+
+`VoiceReplyPlayer` queues contiguous PCM with native immediate/append scheduling,
+keeps the player clock running between packets and replies, and uses a bounded
+half-second startup buffer for jitter. Provider `audio_done` markers follow their
+own queued PCM; each reply, including a tool preamble, acknowledges its own
+completed playback. Interrupted/stopped node callbacks cannot count discarded
+samples as played. Delayed interrupts for older replies cannot stop newer audio.
+
+Microphone requests now combine at least 400 ms and at most one second. The
+in-memory upload bound is eight seconds, with one serial upload and one identical
+sequence/byte retry. A three-second request deadline and ten-second control
+grace tolerate a transient lost acknowledgement while audio still flows; access
+errors stop immediately. The PC disconnect grace is fifteen seconds, while its
+authorization/revocation checks still run every second. Capture never silently
+restarts after actual stream loss. SSE uses a separate URLSession connection pool.
+
+Automatic owner-scoped reports include scheduled/completed reply frames, item
+completion counts, buffer gaps, control failures, retries and within-reply arrival
+gaps. They bind a report to its owner's session. Encrypted conversation counters
+distinguish generated, handed-to-stream and acknowledged audio per assistant
+turn; no raw audio, speech, query, credential or provider payload enters logs.
+Older clients/reports remain compatible. Recording workers and private APIs need
+no restart for the separately supervised voice-only deployment.
+
+Native tests render PCM through AVAudioEngine across empty queues, later replies,
+short tails, interruptions and tool continuations. These tests and synthetic
+spoken API checks do not establish physical Watch speaker audibility, echo
+quality, independent networking or conversational quality. TestFlight device
+acceptance remains necessary.
