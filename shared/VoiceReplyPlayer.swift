@@ -93,7 +93,8 @@ final class VoiceReplyPlayer {
 
     private var renderFrame: Int64 {
         guard player.isPlaying, let render = player.lastRenderTime,
-              let time = player.playerTime(forNodeTime: render) else { return 0 }
+              render.isSampleTimeValid || render.isHostTimeValid,
+              let time = player.playerTime(forNodeTime: render), time.isSampleTimeValid else { return 0 }
         return max(0, time.sampleTime)
     }
     private var audibleFrame: Int64 { max(0, renderFrame - Int64(ceil(outputLatency() * 24000))) }

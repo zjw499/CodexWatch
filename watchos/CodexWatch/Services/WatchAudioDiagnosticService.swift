@@ -232,7 +232,10 @@ final class WatchAudioDiagnosticService: ObservableObject {
             result.peakLevel = meter.values.peak
             result.conversionFailed = statistics.conversionErrors > 0
             if let player = graph?.player, let render = player.lastRenderTime,
-               let time = player.playerTime(forNodeTime: render) { result.renderedFrames = max(0, time.sampleTime) }
+               render.isSampleTimeValid || render.isHostTimeValid,
+               let time = player.playerTime(forNodeTime: render), time.isSampleTimeValid {
+                result.renderedFrames = max(0, time.sampleTime)
+            }
         } catch is CancellationError {
             throw CancellationError()
         } catch {

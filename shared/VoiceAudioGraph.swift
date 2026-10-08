@@ -32,7 +32,8 @@ final class VoiceAudioGraph {
 
     var outputClockFrames: Int64 {
         guard let outputClock, let render = outputClock.lastRenderTime,
-              let time = outputClock.playerTime(forNodeTime: render) else { return 0 }
+              render.isSampleTimeValid || render.isHostTimeValid,
+              let time = outputClock.playerTime(forNodeTime: render), time.isSampleTimeValid else { return 0 }
         return max(0, time.sampleTime)
     }
 }

@@ -405,7 +405,7 @@ contain no audio, text, credentials, provider payloads or device identifiers.
 Deploy the extended strict receiver before distributing this pilot. Private review
 routes and the recording worker need no restart for this voice-only update.
 
-## Builds 153-155: continuous reply playback and request jitter
+## Builds 153-156: continuous reply playback and request jitter
 
 Recent build 152 reports identified upload-buffer overflow during brief request
 stalls. Healthy capture and received reply bytes did not establish audible
@@ -444,6 +444,11 @@ Build 155 repairs a Swift closure capture error in that close handling and uses
 `dataRendered` callbacks in offline rendering tests. Production continues to use
 `dataPlayedBack`, which accounts for downstream/device playback latency and is
 only applicable to device rendering.
+
+Build 156 guards invalid node/sample clock values before querying playback
+progress. The native interruption and tool-continuation rendering tests exposed
+this brief transition immediately after playback starts or restarts. Builds
+153-155 did not pass their release gates and were not distributed.
 
 Native tests render PCM through AVAudioEngine across empty queues, later replies,
 short tails, interruptions and tool continuations. These tests and synthetic
