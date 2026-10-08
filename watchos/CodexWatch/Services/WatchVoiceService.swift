@@ -440,7 +440,7 @@ final class WatchVoiceService: ObservableObject {
         captureTask?.cancel(); captureTask = nil
         streamTask = nil; uploadTask = nil; heartbeatTask = nil; current = nil; credential = nil
         if notifyServer, let previous, let saved {
-            closing.close {
+            closing.close { [client] in
                 defer { previousStream?.cancel() }
                 // Deliver final playback acknowledgements before closing SSE;
                 // otherwise its close can tombstone a fully spoken reply first.

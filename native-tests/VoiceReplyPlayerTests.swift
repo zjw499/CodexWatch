@@ -11,7 +11,9 @@ final class VoiceReplyPlayerTests: XCTestCase {
         try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 4800)
         try engine.start()
         let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: 4800))
-        return (engine, VoiceReplyPlayer(player: player), buffer)
+        // Offline rendering has no audio device. Its completion point is
+        // dataRendered; production defaults to latency-aware dataPlayedBack.
+        return (engine, VoiceReplyPlayer(player: player, completionType: .dataRendered), buffer)
     }
 
     private func pcm(_ sample: Int16, frames: Int = 4800) -> Data {

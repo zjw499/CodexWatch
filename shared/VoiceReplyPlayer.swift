@@ -22,6 +22,7 @@ final class VoiceReplyPlayer {
     private var notified = Set<String>()
     private var heard = [String: Int64]()
     private let outputLatency: () -> Double
+    private let completionType: AVAudioPlayerNodeCompletionCallbackType
     private(set) var outputItem: String?
     private(set) var peakFrames: Int64 = 0
     private(set) var diagnostic = VoiceReplyPlaybackDiagnostic()
@@ -31,8 +32,9 @@ final class VoiceReplyPlayer {
     var pendingFrames: Int64 { ledger.remainingFrames(audibleFrame: audibleFrame) }
     var pendingItems: [String] { Array(Set(ledger.pending.map { $0.item })) }
 
-    init(player: AVAudioPlayerNode, outputLatency: @escaping () -> Double = { 0 }) {
-        self.player = player; self.outputLatency = outputLatency
+    init(player: AVAudioPlayerNode, outputLatency: @escaping () -> Double = { 0 },
+         completionType: AVAudioPlayerNodeCompletionCallbackType = .dataPlayedBack) {
+        self.player = player; self.outputLatency = outputLatency; self.completionType = completionType
     }
 
     func append(_ data: Data, item: String) throws {
@@ -51,7 +53,7 @@ final class VoiceReplyPlayer {
         outputItem = item; peakFrames = max(peakFrames, pendingFrames)
         diagnostic.scheduledFrames += segment.frames
         let run = generation
-        player.scheduleBuffer(buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack) { [weak self] _ in
+        player.scheduleBuffer(buffer, at: nil, options: [], completionCallbackType: completionType) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.generation == run else { return }
                 self.ledger.complete(segment.id)
