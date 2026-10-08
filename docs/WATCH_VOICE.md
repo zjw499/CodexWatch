@@ -2,7 +2,7 @@
 
 Scribe Pilot now has a separate Watch voice conversation flow. Existing assistants
 gain optional `voice` settings: enabled, approved Realtime model, voice, local
-calculations/time, and public web search.
+calculations/time, public web search, and uploaded reference knowledge.
 Recording-result models and recording-grounded follow-up chats retain their roles.
 Old client saves preserve omitted voice settings. Old profiles default to voice off.
 
@@ -194,6 +194,54 @@ keeps its reservation until the callback completes and the session is deactivate
 preventing a late callback from stopping a new activity. An existing recovered meeting
 retains priority. Wrist lowering, app inactivity, interruption, audio-service reset
 and route disconnection stop the test without automatic restart.
+
+## Assistant knowledge files
+
+In iPhone Settings, open an existing assistant and choose **Knowledge files > Manage
+files > Add files**. Save a new assistant before attaching files. Upload PDF, Word
+(.docx), UTF-8 text, Markdown, or CSV; preview the extracted text, or swipe a file
+to remove it. Limits are 10 MB per file, 20 files and 50 MB per assistant, 500000
+extracted characters, and 250 PDF pages. Scanned PDFs require a selectable text
+layer. Images, legacy .doc, spreadsheets and password-protected documents are not
+supported by this version.
+
+Start a new Watch voice conversation after uploads finish. The assistant can
+search relevant passages even when calculations/time are disabled. It receives
+only bounded excerpts from this assistant's files. Captions and History label the
+filename and page, paragraph, row or line range. Relevant passages are ranked
+locally by keywords; the assistant can try different terms, and must say when
+files do not establish the answer. Preview text allows users to verify extraction
+before relying on it; this version does not perform OCR or use an external index.
+
+Files are private by default. Public web search is paused when private knowledge
+is attached or present in resumed context. To combine uploaded **public,
+non-sensitive** reference material with web search, explicitly enable **Knowledge
+files contain public information only** in the assistant editor, then save and
+start a fresh conversation. A conversation that previously loaded private
+knowledge keeps web search paused even if the files or setting change.
+
+Original files, filenames, hashes, extracted text and passages use the workspace's
+existing encryption. No plaintext search index or extraction temporary file is
+created. Extraction uses a bounded disposable process; PDF decompression and Word
+archive/XML parsing have additional limits. File content is untrusted evidence,
+never model instructions. The authenticated iPhone alone manages files through
+owner-bound `/api/assistants/{id}/knowledge` routes; public Watch credentials
+cannot upload files. Audit events contain identifiers and action names only.
+
+Uploads reserve a stable request/file ID, size and hash, then stream the raw body.
+Retrying an acknowledged or lost-acknowledgement upload is idempotent. Expiry,
+account changes, removal and assistant deletion are rechecked after extraction.
+Removal erases encrypted file/text blobs and leaves a tombstone to prevent delayed
+uploads from restoring them. Removal ends active voice sessions for that
+assistant, including pending retrieval, within the existing authorization checks.
+Saved conversation answers remain until their owner deletes the conversation;
+removing a file does not rewrite History or existing encrypted backups.
+
+The PC's private API and separate voice gateway both need this additive update.
+Back up the database and check that transcription and voice are quiescent before
+restarting them. The recording schema and job recovery behavior are unchanged.
+Build 157 extends the authorized TestFlight pilot; physical Watch acceptance of
+file-based spoken answers remains pending.
 
 ## Runtime and API
 
