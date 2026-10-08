@@ -307,10 +307,11 @@ class KnowledgeStore:
         ranked.sort(key=lambda r: r[0], reverse=True)
         passages, sources, seen = [], [], set()
         for _, file_id, filename, index, chunk in ranked:
-            # Adjacent overlapping chunks can otherwise dominate the context.
-            if any((file_id, i) in seen for i in (index - 1, index, index + 1)):
+            # Only chunks from the same source location overlap. Neighboring
+            # PDF pages (or distinct OCR sections) can contain different facts.
+            if any((file_id, i, chunk["location"]) in seen for i in (index - 1, index, index + 1)):
                 continue
-            seen.add((file_id, index))
+            seen.add((file_id, index, chunk["location"]))
             source = {"url": f"knowledge://{file_id}#{index}", "title": f"{filename} · {chunk['location']}",
                       "kind": "knowledge", "file_id": file_id, "location": chunk["location"]}
             passages.append({"filename": filename, "location": chunk["location"], "text": chunk["text"]})

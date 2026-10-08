@@ -429,6 +429,53 @@ def test_retrieval_is_scoped_ranked_bounded_and_cites_passages(setup):
     assert "error" in asyncio.run(VoiceTools(w).execute("search_knowledge", {"query": "Orbit", "owner": "bobby"}, knowledge_context=(alice["user"]["id"], aid, ids)))
 
 
+def multiple_page_pdf(*texts):
+    from pypdf import PdfReader, PdfWriter
+    writer = PdfWriter()
+    for text in texts:
+        writer.append(PdfReader(io.BytesIO(pdf(text))))
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def test_adjacent_pdf_pages_can_both_supply_reference_facts(setup):
+    w, client, _, _, (alice, headers), _ = setup
+    aid = aid_for(client, headers)
+    upload(client, headers, aid, "pages", multiple_page_pdf(
+        "Orbital safety: the start word is violet.",
+        "Orbital safety: the stop word is cedar."), "Safety.pdf")
+    result = KnowledgeStore(w).search(alice["user"]["id"], aid, ["pages"], "orbital safety")
+    assert {p["location"] for p in result["passages"]} == {"Page 1", "Page 2"}
+    assert "violet" in result["passages"][0]["text"]
+    assert any("cedar" in p["text"] for p in result["passages"])
+
+
+def test_native_pdf_text_and_adjacent_ocr_can_both_supply_reference_facts(setup):
+    w, client, _, _, (alice, headers), _ = setup
+    aid = aid_for(client, headers)
+    upload(client, headers, aid, "ocr", pdf("Orbital safety: start with violet."), "Safety.pdf")
+    with w.db() as db:
+        row = KnowledgeStore(w).row(db, alice["user"]["id"], aid, "ocr")
+        data = w.decode(row["content"])
+        data["chunks"].append({"text": "Orbital safety diagram: stop with cedar.", "location": "Page 1 (OCR)"})
+        db.execute("UPDATE assistant_knowledge SET content=? WHERE id='ocr'", (w.encode(data),))
+    result = KnowledgeStore(w).search(alice["user"]["id"], aid, ["ocr"], "orbital safety")
+    assert {p["location"] for p in result["passages"]} == {"Page 1", "Page 1 (OCR)"}
+
+
+def test_overlapping_chunks_from_same_pdf_page_still_collapse(setup):
+    w, client, _, _, (alice, headers), _ = setup
+    aid = aid_for(client, headers)
+    upload(client, headers, aid, "overlap", multiple_page_pdf(
+        "Orbital safety violet. " * 110,
+        "Orbital safety cedar."), "Safety.pdf")
+    result = KnowledgeStore(w).search(alice["user"]["id"], aid, ["overlap"], "orbital safety")
+    assert [p["location"] for p in result["passages"]].count("Page 1") == 1
+    assert any(p["location"] == "Page 2" for p in result["passages"])
+    assert len(result["passages"]) == 2
+
+
 def test_knowledge_is_independent_of_calculator_and_private_web_is_paused():
     policy = VoicePolicy(public_web_search_enabled=True)
     private = {"knowledge_file_count": 1, "web_search": True}
