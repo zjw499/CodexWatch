@@ -31,6 +31,11 @@ final class WatchVoiceService: ObservableObject {
     private var heartbeatTask: Task<Void, Never>?
     private var captureWatchdog: Task<Void, Never>?
     private var captureTask: Task<Void, Never>?
+    private var controlTask: Task<Void, Never>?
+    private var pendingControls = [VoiceControl]()
+    private var lastRequestAt = Date()
+    private var lastAudioAt: Date?
+    private var lastAudioItem: String?
     private var pendingAudio = VoiceUploadBuffer()
     private var transport = VoiceTransportDiagnostic()
     private var sequence = 0
@@ -54,10 +59,16 @@ final class WatchVoiceService: ObservableObject {
             guard let self, self.isActive else { return }
             self.endAudioFailure(message: "Watch audio stopped after its configuration changed (AUDIO-01). Start a new conversation.")
         }
-        audio.onPlaybackFinished = { [weak self] in
+        audio.onPlaybackFinished = { [weak self] item, milliseconds in
+            guard let self, self.isActive else { return }
+            self.queueControl(VoiceControl(action: "played", item_id: item, audio_end_ms: milliseconds))
+        }
+        audio.onPlaybackDrained = { [weak self] in
             guard let self, self.isActive else { return }
             self.state = self.muted ? "muted" : self.desiredState
-            if self.desiredState == "listening" { self.acknowledgePlayback() }
+            if self.current?.playback_markers != true, self.desiredState == "listening", let item = self.audio.outputItem {
+                self.audio.finishPlayback(item: item)
+            }
         }
         observers.append(NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification,
             object: nil, queue: .main) { [weak self] note in
@@ -164,6 +175,7 @@ final class WatchVoiceService: ObservableObject {
         providerReady = false; captureStarted = false
         microphoneLevel = 0; capturedBatches = 0; uploadedBatches = 0; receivedAudio = false
         pendingAudio = VoiceUploadBuffer(); transport = VoiceTransportDiagnostic()
+        pendingControls = []; lastRequestAt = Date(); lastAudioAt = nil; lastAudioItem = nil
         generation = UUID()
         let run = generation
         do {
@@ -189,6 +201,7 @@ final class WatchVoiceService: ObservableObject {
             }
             guard info.version == 1, info.state != "ended", VoiceWire.validID(info.id) else { throw VoiceError.connection }
             current = info; assistantName = info.assistant_name; lastAssistantID = info.assistant_id; sequence = 0
+            transport.sessionID = info.id
             usesPublicWeb = info.web_search == true
             streamTask = Task { [weak self] in
                 guard let self else { return }
@@ -197,7 +210,7 @@ final class WatchVoiceService: ObservableObject {
                         guard let self, self.generation == run, self.isActive else { return }
                         try await self.receive(event, run: run)
                     }
-                    if self.generation == run, self.isActive { self.end(message: "The voice connection ended. Completed text was saved.") }
+                    if self.generation == run, self.isActive { self.end(message: "The voice connection ended. Completed text was saved.", reason: .network) }
                 } catch is CancellationError { }
                 catch { if self.generation == run { self.end(message: error.localizedDescription, reason: Self.transportReason(error)) } }
             }
@@ -207,8 +220,15 @@ final class WatchVoiceService: ObservableObject {
                         try await Task.sleep(for: .seconds(2))
                         guard let self, self.generation == run, self.isActive else { return }
                         try await self.client.control(VoiceControl(action: "heartbeat"), sessionID: info.id, credential: saved)
+                        if self.generation == run { self.lastRequestAt = Date() }
                     } catch is CancellationError { return }
-                    catch { if let self, self.generation == run { self.end(message: error.localizedDescription, reason: .network) }; return }
+                    catch {
+                        guard let self, self.generation == run else { return }
+                        self.transport.controlFailures = (self.transport.controlFailures ?? 0) + 1
+                        if VoiceConnectionPolicy.endAfterControlFailure(error, secondsSinceContact: Date().timeIntervalSince(self.lastRequestAt)) {
+                            self.end(message: error.localizedDescription, reason: .network); return
+                        }
+                    }
                 }
             }
         } catch { if generation == run { end(message: error.localizedDescription) } }
@@ -283,23 +303,26 @@ final class WatchVoiceService: ObservableObject {
             desiredState = event.state ?? "listening"
             if desiredState == "listening" { providerReady = true; beginCaptureIfReady() }
             state = captureStarted ? (muted ? "muted" : (audio.hasPendingPlayback ? "speaking" : desiredState)) : "connecting"
-            if desiredState == "listening", !audio.hasPendingPlayback { acknowledgePlayback() }
+            if desiredState == "listening", current?.playback_markers != true, let item = audio.outputItem { audio.finishPlayback(item: item) }
         case "tool": toolMessage = event.message?.isEmpty == false ? event.message : nil
         case "audio":
             guard let encoded = event.audio, let item = event.item_id, let data = Data(base64Encoded: encoded) else { throw VoiceError.connection }
             transport.receivedAudioBytes += data.count
+            if lastAudioItem == item, let lastAudioAt {
+                transport.maxAudioGapMs = max(transport.maxAudioGapMs ?? 0, min(60000, Int(Date().timeIntervalSince(lastAudioAt) * 1000)))
+            }
+            lastAudioItem = item; lastAudioAt = Date()
             try audio.play(data, item: item)
             receivedAudio = true
             state = "speaking"
+        case "audio_done":
+            if let item = event.item_id { audio.finishPlayback(item: item) }
         case "interrupt":
-            guard let item = event.item_id, let current, let credential else { return }
+            guard let item = event.item_id else { return }
             let milliseconds = audio.interrupt(item: item)
             // A slow control acknowledgement must not block incoming captions
             // or the answer to the next question on the event stream.
-            Task {
-                do { try await client.control(VoiceControl(action: "interrupt", item_id: item, audio_end_ms: milliseconds), sessionID: current.id, credential: credential) }
-                catch { if generation == run { end(message: error.localizedDescription, reason: .network) } }
-            }
+            queueControl(VoiceControl(action: "interrupt", item_id: item, audio_end_ms: milliseconds))
         case "turn":
             if let turn = event.turn {
                 if let index = turns.firstIndex(where: { $0.id == turn.id }) { turns[index] = turn }
@@ -321,14 +344,21 @@ final class WatchVoiceService: ObservableObject {
             do {
                 while self.generation == run, self.isActive, !self.pendingAudio.isEmpty {
                     try Task.checkCancellation()
+                    // Avoid a separate HTTP round trip for every 200 ms packet.
+                    while self.pendingAudio.bytes < VoiceUploadBuffer.minimumBatchBytes {
+                        try await Task.sleep(for: .milliseconds(50))
+                        guard self.generation == run, self.isActive, !self.pendingAudio.isEmpty else { return }
+                    }
                     guard let batch = self.pendingAudio.take() else { break }
                     guard let current = self.current, let credential = self.credential else { throw VoiceError.setup }
                     let began = Date()
-                    try await self.client.audio(batch, sequence: self.sequence, sessionID: current.id, credential: credential)
+                    let retries = try await self.client.audio(batch, sequence: self.sequence, sessionID: current.id, credential: credential)
                     guard self.generation == run else { return }
                     self.transport.lastUploadMs = min(60000, max(0, Int(Date().timeIntervalSince(began) * 1000)))
                     self.transport.maxUploadMs = max(self.transport.maxUploadMs, self.transport.lastUploadMs)
                     self.transport.uploadRequests += 1; self.transport.uploadedBytes += batch.count
+                    self.transport.audioRetries = (self.transport.audioRetries ?? 0) + retries
+                    self.lastRequestAt = Date()
                     self.sequence += 1
                     self.uploadedBatches += batch.count / 9600
                 }
@@ -337,12 +367,31 @@ final class WatchVoiceService: ObservableObject {
         }
     }
 
-    private func acknowledgePlayback() {
-        guard isActive, let current, let credential, let item = audio.outputItem else { return }
-        let milliseconds = audio.playedMilliseconds(item: item), run = generation
-        Task {
-            do { try await client.control(VoiceControl(action: "played", item_id: item, audio_end_ms: milliseconds), sessionID: current.id, credential: credential) }
-            catch { if generation == run { end(message: error.localizedDescription) } }
+    private func queueControl(_ control: VoiceControl) {
+        guard isActive else { return }
+        pendingControls.append(control)
+        guard pendingControls.count <= 64 else { end(message: VoiceError.connection.localizedDescription, reason: .network); return }
+        guard controlTask == nil else { return }
+        let run = generation
+        controlTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.generation == run { self.controlTask = nil } }
+            while self.generation == run, self.isActive, let control = self.pendingControls.first,
+                  let current = self.current, let credential = self.credential {
+                do {
+                    try await self.client.control(control, sessionID: current.id, credential: credential)
+                    guard self.generation == run else { return }
+                    self.lastRequestAt = Date(); self.pendingControls.removeFirst()
+                } catch is CancellationError { return }
+                catch {
+                    guard self.generation == run else { return }
+                    self.transport.controlFailures = (self.transport.controlFailures ?? 0) + 1
+                    if VoiceConnectionPolicy.endAfterControlFailure(error, secondsSinceContact: Date().timeIntervalSince(self.lastRequestAt)) {
+                        self.end(message: error.localizedDescription, reason: .network); return
+                    }
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                }
+            }
         }
     }
 
@@ -352,7 +401,7 @@ final class WatchVoiceService: ObservableObject {
         let value = muted, run = generation
         Task {
             do { try await client.control(VoiceControl(action: "mute", muted: value), sessionID: current.id, credential: credential) }
-            catch { if generation == run { end(message: error.localizedDescription) } }
+            catch { if generation == run { end(message: error.localizedDescription, reason: .network) } }
         }
     }
 
@@ -365,13 +414,15 @@ final class WatchVoiceService: ObservableObject {
              reason: VoiceTransportDiagnostic.EndReason = .closed, diagnostic: Bool = true) {
         guard isActive else { return }
         let previous = current, saved = credential
-        let item = audio.hasPendingPlayback ? audio.outputItem : nil
-        let milliseconds = item.map { audio.playedMilliseconds(item: $0) }
+        let interruptions = audio.pendingPlaybackItems.map { VoiceControl(action: "interrupt", item_id: $0, audio_end_ms: audio.playedMilliseconds(item: $0)) }
+        let finalControls = pendingControls + interruptions
+        let previousStream = streamTask
         if diagnostic {
             transport.endReason = reason
             transport.pendingUploadBytes = pendingAudio.bytes; transport.peakUploadBytes = pendingAudio.peakBytes
             transport.playbackFrames = min(96000, audio.pendingPlaybackFrames)
             transport.peakPlaybackFrames = min(96000, audio.peakPlaybackFrames)
+            transport.replyPlayback = audio.playbackDiagnostic
             var report = WatchVoiceDiagnosticReporter.report(kind: .voiceSession, completed: reason == .closed,
                 results: [audio.diagnosticResult])
             report.transport = transport
@@ -381,17 +432,23 @@ final class WatchVoiceService: ObservableObject {
         providerReady = false; captureStarted = false
         microphoneLevel = 0
         audio.stop(); pendingAudio.clear()
-        streamTask?.cancel(); uploadTask?.cancel(); heartbeatTask?.cancel(); captureWatchdog?.cancel(); captureWatchdog = nil
+        uploadTask?.cancel(); heartbeatTask?.cancel(); controlTask?.cancel(); controlTask = nil
+        pendingControls = []; captureWatchdog?.cancel(); captureWatchdog = nil
         captureTask?.cancel(); captureTask = nil
         streamTask = nil; uploadTask = nil; heartbeatTask = nil; current = nil; credential = nil
         if notifyServer, let previous, let saved {
             Task {
-                if let item, let milliseconds {
-                    try? await client.control(VoiceControl(action: "interrupt", item_id: item, audio_end_ms: milliseconds), sessionID: previous.id, credential: saved)
+                defer { previousStream?.cancel() }
+                // Deliver final playback acknowledgements before closing SSE;
+                // otherwise its close can tombstone a fully spoken reply first.
+                let began = Date()
+                for control in finalControls {
+                    if Date().timeIntervalSince(began) > 2 { break }
+                    try? await client.control(control, sessionID: previous.id, credential: saved)
                 }
                 try? await client.control(VoiceControl(action: "end"), sessionID: previous.id, credential: saved)
             }
-        }
+        } else { previousStream?.cancel() }
     }
 
     func history(offset: Int = 0) async throws -> [VoiceConversation] {

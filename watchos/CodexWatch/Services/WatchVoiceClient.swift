@@ -10,6 +10,7 @@ private final class VoiceNetworkDelegate: NSObject, URLSessionTaskDelegate {
 final class WatchVoiceClient {
     private let delegate = VoiceNetworkDelegate()
     private let session: URLSession
+    private let streamSession: URLSession
     init() {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil; config.httpCookieStorage = nil
@@ -17,6 +18,13 @@ final class WatchVoiceClient {
         config.timeoutIntervalForRequest = 10
         config.timeoutIntervalForResource = 3700
         session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        // A long-lived SSE request has its own connection pool and timeout.
+        let streamConfig = URLSessionConfiguration.ephemeral
+        streamConfig.urlCache = nil; streamConfig.httpCookieStorage = nil
+        streamConfig.requestCachePolicy = .reloadIgnoringLocalCacheData
+        streamConfig.timeoutIntervalForRequest = 10
+        streamConfig.timeoutIntervalForResource = 3700
+        streamSession = URLSession(configuration: streamConfig, delegate: delegate, delegateQueue: nil)
     }
     private func request(_ path: String, credential: VoiceDeviceCredential, method: String, data: Data?, audio: Bool) throws -> URLRequest {
         guard credential.valid, let base = VoiceWire.gatewayURL(credential.gateway_url),
@@ -45,26 +53,45 @@ final class WatchVoiceClient {
             return try await send("diagnostics", credential: credential, method: "POST", data: data)
         }
     }
-    func audio(_ data: Data, sequence: Int, sessionID: String, credential: VoiceDeviceCredential) async throws {
+    func audio(_ data: Data, sequence: Int, sessionID: String, credential: VoiceDeviceCredential) async throws -> Int {
         guard VoiceWire.validID(sessionID) else { throw VoiceError.connection }
-        let request = try request("sessions/\(sessionID)/audio?sequence=\(sequence)", credential: credential, method: "POST", data: data, audio: true)
+        var request = try request("sessions/\(sessionID)/audio?sequence=\(sequence)", credential: credential, method: "POST", data: data, audio: true)
+        request.timeoutInterval = VoiceConnectionPolicy.requestTimeout
         // One retry with identical bytes/sequence handles a lost HTTP acknowledgement.
-        do {
-            let (_, response) = try await session.data(for: request); try check(response)
-        } catch let error as URLError where [.timedOut, .networkConnectionLost].contains(error.code) {
-            try Task.checkCancellation()
-            let (_, response) = try await session.data(for: request); try check(response)
+        for attempt in 0...1 {
+            do {
+                let (body, response) = try await session.data(for: request); try check(response)
+                let receipt = try JSONDecoder().decode(VoiceAudioReceipt.self, from: body)
+                guard receipt.ok, receipt.next_sequence == sequence + 1 else { throw VoiceError.connection }
+                return attempt
+            } catch {
+                guard attempt == 0, VoiceConnectionPolicy.transient(error) else { throw error }
+                try await Task.sleep(for: .milliseconds(150))
+            }
         }
+        throw VoiceError.connection
     }
     func control(_ control: VoiceControl, sessionID: String, credential: VoiceDeviceCredential) async throws {
         guard VoiceWire.validID(sessionID) else { throw VoiceError.connection }
-        let _: VoiceOK = try await send("sessions/\(sessionID)/control", credential: credential, method: "POST", data: JSONEncoder().encode(control))
+        var request = try request("sessions/\(sessionID)/control", credential: credential, method: "POST",
+                                  data: JSONEncoder().encode(control), audio: false)
+        request.timeoutInterval = VoiceConnectionPolicy.requestTimeout
+        for attempt in 0...1 {
+            do {
+                let (body, response) = try await session.data(for: request); try check(response)
+                guard try JSONDecoder().decode(VoiceOK.self, from: body).ok else { throw VoiceError.connection }
+                return
+            } catch {
+                guard attempt == 0, VoiceConnectionPolicy.transient(error) else { throw error }
+                try await Task.sleep(for: .milliseconds(150))
+            }
+        }
     }
     func stream(sessionID: String, credential: VoiceDeviceCredential, receive: @escaping @MainActor (VoiceEvent) async throws -> Void) async throws {
         guard VoiceWire.validID(sessionID) else { throw VoiceError.connection }
         var request = try request("sessions/\(sessionID)/events", credential: credential, method: "GET", data: nil, audio: false)
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        let (bytes, response) = try await session.bytes(for: request)
+        let (bytes, response) = try await streamSession.bytes(for: request)
         try check(response)
         for try await line in bytes.lines {
             try Task.checkCancellation()
@@ -78,3 +105,4 @@ final class WatchVoiceClient {
 }
 
 struct VoiceOK: Decodable { let ok: Bool }
+private struct VoiceAudioReceipt: Decodable { let ok: Bool; let next_sequence: Int }

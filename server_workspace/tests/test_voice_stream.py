@@ -75,3 +75,32 @@ def test_provider_completion_waits_for_buffered_audio_but_interrupt_does_not():
         assert (await stream.get())["type"] == "audio"
         assert (await stream.get())["state"] == "listening"
     asyncio.run(prove())
+
+
+def test_each_reply_completion_follows_its_pcm_before_the_next_tool_reply():
+    async def prove():
+        now = [0.0]
+        stream = PacedVoiceEvents(clock=lambda: now[0])
+        for item in ('preamble', 'answer'):
+            stream.put('audio', item_id=item, audio=base64.b64encode(bytes(19200)).decode())
+            stream.put('audio_done', item_id=item)
+        received = []
+        for _ in range(6):
+            event = await asyncio.wait_for(stream.get(), 0.1)
+            received.append((event['type'], event['item_id']))
+            now[0] = stream.next_audio_at
+        assert received == [('audio', 'preamble'), ('audio', 'preamble'), ('audio_done', 'preamble'),
+                            ('audio', 'answer'), ('audio', 'answer'), ('audio_done', 'answer')]
+    asyncio.run(prove())
+
+
+def test_interrupt_removes_a_buffered_reply_completion_too():
+    async def prove():
+        stream = PacedVoiceEvents()
+        stream.put('audio', item_id='old', audio=base64.b64encode(bytes(9600)).decode())
+        stream.put('audio_done', item_id='old')
+        assert stream.discard_audio('old') == 9600
+        stream.put('interrupt', item_id='old')
+        assert (await stream.get())['type'] == 'interrupt'
+        assert not stream.audio and not stream.controls
+    asyncio.run(prove())

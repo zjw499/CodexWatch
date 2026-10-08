@@ -69,17 +69,39 @@ class Result(SafeBody):
     events: list[EngineEvent] = Field(default_factory=list, max_length=12)
 
 
+class ReplyPlayback(SafeBody):
+    scheduledFrames: int = Field(default=0, ge=0, le=2000000000)
+    completedFrames: int = Field(default=0, ge=0, le=2000000000)
+    completedItems: int = Field(default=0, ge=0, le=100000)
+    starts: int = Field(default=0, ge=0, le=100000)
+    underruns: int = Field(default=0, ge=0, le=100000)
+
+
 class Transport(SafeBody):
     endReason: Literal["closed", "network", "server-ended", "upload-backlog", "playback-backlog"]
     uploadedBytes: int = Field(default=0, ge=0, le=2000000000)
     uploadRequests: int = Field(default=0, ge=0, le=100000)
-    pendingUploadBytes: int = Field(default=0, ge=0, le=96000)
-    peakUploadBytes: int = Field(default=0, ge=0, le=96000)
+    pendingUploadBytes: int = Field(default=0, ge=0, le=384000)
+    peakUploadBytes: int = Field(default=0, ge=0, le=384000)
     lastUploadMs: int = Field(default=0, ge=0, le=60000)
     maxUploadMs: int = Field(default=0, ge=0, le=60000)
     receivedAudioBytes: int = Field(default=0, ge=0, le=2000000000)
     playbackFrames: int = Field(default=0, ge=0, le=96000)
     peakPlaybackFrames: int = Field(default=0, ge=0, le=96000)
+    sessionID: str | None = Field(default=None, pattern=r"^[0-9a-fA-F-]{36}$")
+    replyPlayback: ReplyPlayback | None = None
+    controlFailures: int | None = Field(default=None, ge=0, le=100000)
+    audioRetries: int | None = Field(default=None, ge=0, le=100000)
+    maxAudioGapMs: int | None = Field(default=None, ge=0, le=60000)
+
+    @model_validator(mode='after')
+    def valid_session_id(self):
+        if self.sessionID is not None:
+            try:
+                if str(UUID(self.sessionID)).lower() != self.sessionID.lower(): raise ValueError()
+            except ValueError:
+                raise ValueError('A voice session UUID is required') from None
+        return self
 
 
 class DiagnosticReport(SafeBody):
@@ -126,11 +148,18 @@ class DiagnosticStore:
         value = report.model_dump()
         if report.transport is None:
             value.pop("transport")  # Keep older reports' idempotency comparison unchanged.
+        else:
+            for key in ('sessionID', 'replyPlayback', 'controlFailures', 'audioRetries', 'maxAudioGapMs'):
+                if value['transport'].get(key) is None: value['transport'].pop(key, None)
         now = time.time()
         with self.w.db() as db:
             # Validate the credential again inside the same transaction as the write.
             from .voice import VoiceStore
             VoiceStore(self.w).authenticate_hash(owner["device_hash"])
+            if report.transport and report.transport.sessionID:
+                session = db.execute('SELECT 1 FROM voice_sessions WHERE id=? AND owner=?',
+                                     (report.transport.sessionID, owner['id'])).fetchone()
+                if not session: fail(422, 'Diagnostic session unavailable')
             row = db.execute("SELECT * FROM voice_diagnostics WHERE owner=? AND id=?",
                              (owner["id"], report.request_id)).fetchone()
             revision = report.revision

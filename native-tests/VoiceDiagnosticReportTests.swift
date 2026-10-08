@@ -17,6 +17,11 @@ final class VoiceDiagnosticReportTests: XCTestCase {
         XCTAssertEqual(decoded.transport?.endReason, .uploadBacklog)
         XCTAssertEqual(decoded.transport?.maxUploadMs, 600)
         XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("transcript"))
+        XCTAssertNil(decoded.transport?.replyPlayback)
+        value.transport?.sessionID = UUID().uuidString
+        value.transport?.replyPlayback = VoiceReplyPlaybackDiagnostic(scheduledFrames: 9600, completedFrames: 4800, completedItems: 1)
+        let withPlayback = try JSONDecoder().decode(VoiceDiagnosticReport.self, from: JSONEncoder().encode(value))
+        XCTAssertEqual(withPlayback.transport?.replyPlayback?.completedFrames, 4800)
     }
 
     private func report() -> VoiceDiagnosticReport {

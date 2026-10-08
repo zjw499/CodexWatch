@@ -70,6 +70,11 @@ private struct PhoneVoiceDiagnosticDetailView: View {
                         Text("Unsent \(transport.pendingUploadBytes) bytes · Peak \(transport.peakUploadBytes)")
                         Text("Received \(transport.receivedAudioBytes) reply bytes")
                         Text("Playback queued \(transport.playbackFrames) frames · Peak \(transport.peakPlaybackFrames)")
+                        if let playback = transport.replyPlayback {
+                            Text("Reply frames scheduled \(playback.scheduledFrames) · Completed \(playback.completedFrames)")
+                            Text("Spoken replies completed \(playback.completedItems) · Buffer gaps \(playback.underruns)")
+                        }
+                        if let gap = transport.maxAudioGapMs { Text("Longest gap within a reply: \(gap) ms") }
                     }
                 }
                 ForEach(report.results) { result in

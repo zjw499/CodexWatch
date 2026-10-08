@@ -53,10 +53,14 @@ class PacedVoiceEvents:
         self.wake.set()
 
     def discard_audio(self, item):
+        discarded = sum(len(data) for key, data in self.audio if key == item)
         self.audio = deque((key, data) for key, data in self.audio if key != item)
+        self.controls = deque(event for event in self.controls
+                              if not (event['type'] == 'audio_done' and event['item_id'] == item))
         self.audio_bytes = sum(len(data) for _, data in self.audio)
         self.next_audio_at = self.clock()
         self.wake.set()
+        return discarded
 
     def clear(self):
         self.controls.clear()
@@ -72,6 +76,10 @@ class PacedVoiceEvents:
                 # listening behind queued audio so older clients do not send a
                 # new playback acknowledgement for every 200 ms fragment.
                 if event["type"] == "state" and event["state"] == "listening" and self.audio:
+                    continue
+                # Completion belongs behind its own PCM, even when another
+                # reply/tool continuation is already queued.
+                if event["type"] == "audio_done" and any(key == event["item_id"] for key, _ in self.audio):
                     continue
                 del self.controls[index]
                 return event

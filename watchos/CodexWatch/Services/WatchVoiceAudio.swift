@@ -8,13 +8,15 @@ final class WatchVoiceAudio {
     private var inputReceiver: VoiceInputReceiver?
     private var inputSink: AVAudioSinkNode?
     private var graph: VoiceAudioGraph?
-    private var playback = VoicePlaybackLedger()
-    private var playbackGeneration = UUID()
-    var outputItem: String?
-    var onPlaybackFinished: (() -> Void)?
-    var hasPendingPlayback: Bool { !playback.pending.isEmpty }
-    var pendingPlaybackFrames: Int64 { playback.remainingFrames(audibleFrame: audibleFrames()) }
-    private(set) var peakPlaybackFrames: Int64 = 0
+    private var reply: VoiceReplyPlayer?
+    var outputItem: String? { reply?.outputItem }
+    var onPlaybackFinished: ((String, Int) -> Void)?
+    var onPlaybackDrained: (() -> Void)?
+    var hasPendingPlayback: Bool { reply?.hasPending == true }
+    var pendingPlaybackFrames: Int64 { reply?.pendingFrames ?? 0 }
+    var peakPlaybackFrames: Int64 { reply?.peakFrames ?? 0 }
+    var playbackDiagnostic: VoiceReplyPlaybackDiagnostic { reply?.diagnostic ?? VoiceReplyPlaybackDiagnostic() }
+    var pendingPlaybackItems: [String] { reply?.pendingItems ?? [] }
     private var configurationObserver: NSObjectProtocol?
     private var startupGeneration = UUID()
     private var attemptGeneration = UUID()
@@ -48,7 +50,6 @@ final class WatchVoiceAudio {
         startupGeneration = UUID()
         let run = startupGeneration
         started = false; startedAt = Date(); attempt = 1; configurationChanges = 0; events = []
-        peakPlaybackFrames = 0
         initialSnapshot = VoiceAudioDiagnosticSnapshot(); lastSnapshot = initialSnapshot
         lastStatistics = VoiceCaptureStatistics(); lastRenderedFrames = 0
         let session = AVAudioSession.sharedInstance()
@@ -71,6 +72,10 @@ final class WatchVoiceAudio {
                 guard output.sampleRate > 0, output.channelCount > 0 else { throw VoiceAudioStartupError(stage: stage) }
                 let graph = try VoiceAudioGraph(engine: engine, keepOutputActive: true)
                 self.graph = graph; self.player = graph.player
+                let reply = VoiceReplyPlayer(player: graph.player, outputLatency: { AVAudioSession.sharedInstance().outputLatency })
+                reply.onItemFinished = { [weak self] item, ms in self?.onPlaybackFinished?(item, ms) }
+                reply.onDrained = { [weak self] in self?.onPlaybackDrained?() }
+                self.reply = reply
                 stage = .microphone
                 let hardware = engine.inputNode.inputFormat(forBus: 0)
                 let input = engine.inputNode.outputFormat(forBus: 0)
@@ -145,51 +150,15 @@ final class WatchVoiceAudio {
     }
 
     func play(_ data: Data, item: String) throws {
-        guard !data.isEmpty, data.count % 2 == 0, data.count <= 192000,
-              let player, let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(data.count / 2)),
-              let samples = buffer.floatChannelData?[0] else { throw VoiceError.audioRoute }
-        buffer.frameLength = buffer.frameCapacity
-        guard let segment = playback.schedule(item: item, frames: Int64(buffer.frameLength),
-                                             renderFrame: renderFrames(), audibleFrame: audibleFrames()) else { throw VoiceError.playbackBacklog }
-        peakPlaybackFrames = max(peakPlaybackFrames, pendingPlaybackFrames)
-        data.withUnsafeBytes { raw in
-            for index in 0..<Int(buffer.frameLength) {
-                let sample = Int16(littleEndian: raw.loadUnaligned(fromByteOffset: index * 2, as: Int16.self))
-                samples[index] = Float(sample) / 32768
-            }
-        }
-        outputItem = item
-        let generation = playbackGeneration
-        player.scheduleBuffer(buffer, at: AVAudioTime(sampleTime: segment.start, atRate: 24000), options: [],
-                              completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.playbackGeneration == generation else { return }
-                self.playback.complete(segment.id)
-                if self.playback.pending.isEmpty { self.player?.pause(); self.onPlaybackFinished?() }
-            }
-        }
-        if !player.isPlaying { player.play() }
+        guard let reply else { throw VoiceError.audioRoute }
+        try reply.append(data, item: item)
     }
-
-    private func renderFrames() -> Int64 {
-        guard let player, let render = player.lastRenderTime, let time = player.playerTime(forNodeTime: render) else { return 0 }
-        return time.sampleTime
-    }
-    private func audibleFrames() -> Int64 {
-        max(0, renderFrames() - Int64(ceil(AVAudioSession.sharedInstance().outputLatency * 24000)))
-    }
+    func finishPlayback(item: String) { reply?.finish(item: item) }
     func playedMilliseconds(item: String) -> Int {
-        let frames = playback.playedFrames(item: item, audibleFrame: audibleFrames())
-        return Int(frames * 1000 / 24000)
+        reply?.playedMilliseconds(item: item) ?? 0
     }
     func interrupt(item: String) -> Int {
-        let milliseconds = playedMilliseconds(item: item)
-        // An earlier item's delayed interrupt must not stop a newer reply.
-        guard outputItem == item else { return milliseconds }
-        playbackGeneration = UUID(); player?.stop()
-        playback.reset(); outputItem = nil
-        return milliseconds
+        reply?.interrupt(item: item) ?? 0
     }
     private func stopEngine() {
         if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
@@ -199,13 +168,13 @@ final class WatchVoiceAudio {
         lastSnapshot = diagnosticSnapshot; lastStatistics = captureStatistics
         lastRenderedFrames = outputClockFrames
         graph?.stopOutputClock(); engine?.stop(); inputReceiver?.clearStoppedInput()
+        reply?.stop(); reply = nil
         player?.stop(); inputSink = nil; inputReceiver = nil; graph = nil; player = nil; engine = nil
     }
 
     func stop() {
-        startupGeneration = UUID(); started = false; playbackGeneration = UUID()
+        startupGeneration = UUID(); started = false
         stopEngine()
-        playback.reset(); outputItem = nil
         try? AVAudioSession.sharedInstance().setActive(false)
     }
 

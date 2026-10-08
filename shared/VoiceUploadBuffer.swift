@@ -1,14 +1,16 @@
 import Foundation
 
-// Keep capture bounded while combining backlog into at most one second per
-// request. Serial HTTP acknowledgements need not arrive every 200 ms.
+// Brief relay/network stalls must not kill a healthy conversation. Keep at most
+// eight seconds in memory, and send 400 ms to one second per serial request.
 struct VoiceUploadBuffer {
+    static let limit = 8 * 48000
+    static let minimumBatchBytes = 19200
     private var packets = [Data]()
     private(set) var bytes = 0
     private(set) var peakBytes = 0
     var isEmpty: Bool { packets.isEmpty }
     mutating func append(_ data: Data) -> Bool {
-        guard !data.isEmpty, data.count % 2 == 0, data.count <= 48000, bytes + data.count <= 96000 else { return false }
+        guard !data.isEmpty, data.count % 2 == 0, data.count <= 48000, bytes + data.count <= Self.limit else { return false }
         packets.append(data); bytes += data.count; peakBytes = max(peakBytes, bytes)
         return true
     }

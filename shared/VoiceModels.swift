@@ -96,6 +96,7 @@ struct VoiceSessionInfo: Decodable {
     let assistant_name: String
     let state: String
     var web_search: Bool? = nil
+    var playback_markers: Bool? = nil
 }
 
 struct VoiceSessionRequest: Encodable {

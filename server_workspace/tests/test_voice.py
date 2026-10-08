@@ -507,6 +507,56 @@ def test_tool_session_end_cancels_pending_work_and_saves_only_safe_counters(voic
     assert "expression" not in json.dumps(detail) and "Never retained" not in json.dumps(detail)
 
 
+def test_tool_preamble_and_final_answer_require_independent_playback_confirmations(voice):
+    s = start(voice)
+    session = voice[2].app.state.voice.sessions[s['id']]
+    assert s['playback_markers'] is True
+    for item in ('preamble', 'answer'):
+        push(voice, {'type': 'response.output_audio.delta', 'item_id': item, 'delta': base64.b64encode(bytes(9600)).decode()})
+        push(voice, {'type': 'response.output_audio_transcript.done', 'item_id': item, 'transcript': 'Synthetic reply'})
+        push(voice, {'type': 'response.output_audio.done', 'item_id': item})
+        push(voice, {'type': 'response.output_audio.done', 'item_id': item})
+    assert len([e for e in session.events.controls if e['type'] == 'audio_done']) == 2
+    for _ in range(2):
+        assert voice[2].post(f"/voice/v1/sessions/{s['id']}/control", headers=voice[6],
+            json={'action': 'played', 'item_id': 'answer', 'audio_end_ms': 200}).status_code == 200
+    assert session.metrics['playback_confirmations'] == 1
+    voice[2].post(f"/voice/v1/sessions/{s['id']}/control", headers=voice[6], json={'action': 'end'})
+    data = VoiceStore(voice[0]).conversation(s['conversation_id'], voice[3]['alice'][0]['user']['id'])
+    assert [t['interrupted'] for t in data['turns']] == [True, False]
+    assert data['diagnostics']['playback'] == [
+        {'turn_index': 0, 'generated_bytes': 9600, 'streamed_bytes': 0, 'played_ms': 0, 'provider_finished': True, 'confirmed': False},
+        {'turn_index': 1, 'generated_bytes': 9600, 'streamed_bytes': 0, 'played_ms': 200, 'provider_finished': True, 'confirmed': True}]
+
+
+def test_barge_in_discards_all_unheard_tool_audio_and_keeps_heard_preamble(voice):
+    s = start(voice)
+    session = voice[2].app.state.voice.sessions[s['id']]
+    for item in ('heard', 'unheard-preamble', 'unheard-answer'):
+        push(voice, {'type': 'response.output_audio.delta', 'item_id': item, 'delta': base64.b64encode(bytes(9600)).decode()})
+        push(voice, {'type': 'response.output_audio.done', 'item_id': item})
+    voice[2].post(f"/voice/v1/sessions/{s['id']}/control", headers=voice[6],
+                 json={'action': 'played', 'item_id': 'heard', 'audio_end_ms': 200})
+    # Treat the acknowledged packet as already handed to the HTTP stream.
+    session.events.discard_audio('heard')
+    push(voice, {'type': 'input_audio_buffer.speech_started', 'item_id': 'next-user'})
+    assert session.events.audio_bytes == 0
+    assert session.blocked_output == {'unheard-preamble', 'unheard-answer'}
+    assert {e['item_id'] for e in session.events.controls if e['type'] == 'interrupt'} == session.blocked_output
+
+
+def test_brief_request_stall_has_grace_but_real_disconnect_ends_session(voice):
+    s = start(voice)
+    session = voice[2].app.state.voice.sessions[s['id']]
+    session.attached = True
+    session.touched = time.monotonic() - 8.2
+    voice[2].portal.call(asyncio.sleep, 1.1)
+    assert session.state != 'ended'
+    session.touched = time.monotonic() - 16
+    voice[2].portal.call(asyncio.sleep, 1.1)
+    assert session.state == 'ended' and voice[7][-1].closed
+
+
 def test_bounded_output_stops_slow_watch(voice):
     s = start(voice)
     push(voice, {"type": "response.output_audio.delta", "item_id": "a1", "delta": base64.b64encode(bytes(1440002)).decode()})

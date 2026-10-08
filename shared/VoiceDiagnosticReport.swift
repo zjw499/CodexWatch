@@ -31,6 +31,11 @@ struct VoiceTransportDiagnostic: Codable, Sendable {
     var receivedAudioBytes = 0
     var playbackFrames: Int64 = 0
     var peakPlaybackFrames: Int64 = 0
+    var sessionID: String?
+    var replyPlayback: VoiceReplyPlaybackDiagnostic?
+    var controlFailures: Int?
+    var audioRetries: Int?
+    var maxAudioGapMs: Int?
 }
 
 struct VoiceDiagnosticReceipt: Codable {

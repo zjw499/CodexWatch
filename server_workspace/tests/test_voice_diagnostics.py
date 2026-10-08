@@ -6,6 +6,7 @@ import pytest
 
 from server_workspace.tests.test_voice import voice  # isolated authenticated fixture
 from server_workspace.voice_diagnostics import DiagnosticStore
+from server_workspace.tests.test_voice import start
 
 
 def report():
@@ -21,6 +22,23 @@ def report():
 
 def upload(v, body):
     return v[2].post("/voice/v1/diagnostics", headers=v[6], json=body)
+
+
+def test_reply_playback_counters_are_safe_owner_bound_and_old_retries_still_match(voice):
+    body = report(); body['kind'] = 'voice-session'
+    body['transport'] = {'endReason': 'closed', 'peakUploadBytes': 192000}
+    assert upload(voice, body).status_code == 200
+    assert upload(voice, body).status_code == 200
+    body['request_id'] = str(uuid.uuid4())
+    body['transport'].update({'sessionID': str(uuid.uuid4()), 'replyPlayback': {
+        'scheduledFrames': 9600, 'completedFrames': 4800, 'completedItems': 1}, 'maxAudioGapMs': 1700})
+    assert upload(voice, body).status_code == 422
+    session = start(voice)
+    body['transport']['sessionID'] = session['id']
+    assert upload(voice, body).status_code == 200
+    body['request_id'] = str(uuid.uuid4())
+    body['transport']['replyPlayback']['transcript'] = 'Must never be accepted'
+    assert upload(voice, body).status_code == 422
 
 
 def test_diagnostics_are_encrypted_owner_scoped_and_audited_on_admin_review(voice):

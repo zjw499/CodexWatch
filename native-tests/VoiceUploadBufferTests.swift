@@ -21,10 +21,9 @@ final class VoiceUploadBufferTests: XCTestCase {
 
     func testOneSecondRequestLimitAndBoundedPendingCapture() throws {
         var buffer = VoiceUploadBuffer()
-        for _ in 0..<10 { XCTAssertTrue(buffer.append(Data(repeating: 1, count: 9600))) }
+        for _ in 0..<40 { XCTAssertTrue(buffer.append(Data(repeating: 1, count: 9600))) }
         XCTAssertFalse(buffer.append(Data(repeating: 2, count: 9600)))
-        XCTAssertEqual(try XCTUnwrap(buffer.take()).count, 48000)
-        XCTAssertEqual(try XCTUnwrap(buffer.take()).count, 48000)
+        for _ in 0..<8 { XCTAssertEqual(try XCTUnwrap(buffer.take()).count, 48000) }
         XCTAssertNil(buffer.take())
         XCTAssertFalse(buffer.append(Data(repeating: 1, count: 48002)))
         XCTAssertFalse(buffer.append(Data(repeating: 1, count: 1)))
@@ -36,5 +35,20 @@ final class VoiceUploadBufferTests: XCTestCase {
         buffer.clear(); XCTAssertNil(buffer.take())
         XCTAssertTrue(buffer.append(Data(repeating: 2, count: 9600)))
         XCTAssertEqual(try XCTUnwrap(buffer.take()), Data(repeating: 2, count: 9600))
+    }
+
+    func testBriefRelayStallPreservesCaptureThenDrainsInBoundedOrderedRequests() throws {
+        var buffer = VoiceUploadBuffer(), expected = Data(), sent = Data()
+        // The real Watch's 1.7-second delay can occur with another request
+        // already pending. The old two-second queue dropped this capture.
+        for index in 0..<17 {
+            let packet = Data(repeating: UInt8(index), count: 9600)
+            expected.append(packet); XCTAssertTrue(buffer.append(packet))
+        }
+        while let batch = buffer.take() {
+            XCTAssertLessThanOrEqual(batch.count, 48000); sent.append(batch)
+        }
+        XCTAssertEqual(sent, expected)
+        XCTAssertEqual(buffer.peakBytes, 163200)
     }
 }

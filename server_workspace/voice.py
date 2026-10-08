@@ -379,6 +379,8 @@ class VoiceSession:
         self.last_output_item = None
         self.output_bytes = {}
         self.output_done = set()
+        self.streamed_bytes = {}
+        self.playback_confirmed = set()
         self.blocked_output = set()
         self.turns = {}
         self.epoch = 0
@@ -398,13 +400,15 @@ class VoiceSession:
         self.tool_definitions = definitions(profile, self.store.policy())
         self.turn_tool_count = 0
         self.metrics = {"speech_starts": 0, "committed_turns": 0, "responses_requested": 0,
-                        "responses_completed": 0, "tool_calls": 0, "tool_failures": 0, "interrupts": 0}
+                        "responses_completed": 0, "tool_calls": 0, "tool_failures": 0, "interrupts": 0,
+                        "responses_cancelled": 0, "responses_incomplete": 0, "generated_audio_bytes": 0,
+                        "discarded_audio_bytes": 0, "playback_confirmations": 0}
         self.reader = self.monitor = None
 
     def info(self):
         return {"version": 1, "id": self.id, "conversation_id": self.conversation_id,
                 "assistant_id": self.profile["id"], "assistant_name": self.profile["name"], "state": self.state,
-                "web_search": any(d["name"] == "search_web" for d in self.tool_definitions)}
+                "web_search": any(d["name"] == "search_web" for d in self.tool_definitions), "playback_markers": True}
 
     async def emit(self, kind, **fields):
         if self.state == "ended" and kind != "ended":
@@ -562,11 +566,13 @@ class VoiceSession:
                     if item:
                         turn = self.save(item, "user")
                         await self.emit("turn", turn=turn)
-                    if self.last_output_item:
+                    unheard = [key for key in self.output_bytes if key not in self.playback_confirmed and key not in self.blocked_output]
+                    if unheard:
                         self.metrics["interrupts"] += 1
-                        self.blocked_output.add(self.last_output_item)
-                        self.events.discard_audio(self.last_output_item)
-                        await self.emit("interrupt", item_id=self.last_output_item)
+                        for key in unheard:
+                            self.blocked_output.add(key)
+                            self.metrics["discarded_audio_bytes"] += self.events.discard_audio(key)
+                            await self.emit("interrupt", item_id=key)
                     self.state = "listening"
                     await self.emit("state", state=self.state)
                 elif kind == "input_audio_buffer.speech_stopped":
@@ -592,10 +598,13 @@ class VoiceSession:
                     turn = self.save(item, "user", "[Speech could not be transcribed]", final=False)
                     await self.emit("turn", turn=turn)
                 elif kind == "response.output_audio.delta" and item:
+                    count = len(base64.b64decode(event["delta"], validate=True))
+                    self.metrics["generated_audio_bytes"] += count
                     if stale or item in self.blocked_output:
+                        self.metrics["discarded_audio_bytes"] += count
                         continue
                     self.last_output_item = item
-                    self.output_bytes[item] = self.output_bytes.get(item, 0) + len(base64.b64decode(event["delta"], validate=True))
+                    self.output_bytes[item] = self.output_bytes.get(item, 0) + count
                     self.activity = time.monotonic()
                     if self.state != "speaking":
                         await self.emit("state", state="speaking")
@@ -613,8 +622,7 @@ class VoiceSession:
                     turn = self.save(item, "assistant", event.get("transcript", ""), final=True)
                     await self.emit("turn", turn=turn)
                 elif kind == "response.output_audio.done" and item:
-                    self.output_done.add(item)
-                    self.confirm_played(item)
+                    await self.finish_output(item)
                 elif kind == "response.done":
                     response = event.get("response", {})
                     rid = response.get("id")
@@ -628,11 +636,11 @@ class VoiceSession:
                         self.response_pending = False
                     for output in response.get("output", []):
                         if output.get("id") in self.output_bytes:
-                            self.output_done.add(output["id"])
-                            self.confirm_played(output["id"])
+                            await self.finish_output(output["id"])
                     if not response.get("output") and self.last_output_item and not rid:
-                        self.output_done.add(self.last_output_item)
-                        self.confirm_played(self.last_output_item)
+                        await self.finish_output(self.last_output_item)
+                    if response.get("status") == "cancelled": self.metrics["responses_cancelled"] += 1
+                    if response.get("status") == "incomplete": self.metrics["responses_incomplete"] += 1
                     if response_epoch != self.epoch:
                         await self.respond_if_ready()
                         continue
@@ -676,7 +684,7 @@ class VoiceSession:
                     await self.end("Conversation time limit reached. Start a new conversation.")
                 elif now - self.activity >= policy.idle_seconds:
                     await self.end("Conversation ended after inactivity.")
-                elif now - self.touched > (8 if self.attached else 12):
+                elif now - self.touched > 15:
                     await self.end("The Watch disconnected. Completed text was saved.")
                 elif self.state == "connecting" and now - self.started > 10:
                     await self.end("The voice service did not become ready. Try again.")
@@ -710,9 +718,22 @@ class VoiceSession:
             self.sequence += 1
             return {"ok": True, "next_sequence": self.sequence}
 
+    async def finish_output(self, item):
+        if item in self.output_done:
+            return
+        self.output_done.add(item)
+        self.confirm_played(item)
+        if item in self.output_bytes and item not in self.blocked_output:
+            await self.emit("audio_done", item_id=item)
+
     def confirm_played(self, item):
         total = self.output_bytes.get(item, 0) / 48
+        if total <= 0:
+            return False
         if item in self.output_done and self.played_ms.get(item, -1) >= total - 5:
+            if item not in self.playback_confirmed:
+                self.playback_confirmed.add(item)
+                self.metrics["playback_confirmations"] += 1
             if self.last_output_item == item:
                 self.last_output_item = None
             return True
@@ -739,7 +760,7 @@ class VoiceSession:
             self.played_ms[body.item_id] = max(self.played_ms.get(body.item_id, 0), body.audio_end_ms)
             if not self.confirm_played(body.item_id) and body.item_id not in self.truncated_ms:
                 self.blocked_output.add(body.item_id)
-                self.events.discard_audio(body.item_id)
+                self.metrics["discarded_audio_bytes"] += self.events.discard_audio(body.item_id)
                 turn = self.save(body.item_id, "assistant", interrupted=True)
                 await self.emit("turn", turn=turn)
                 await self.peer.send({"type": "conversation.item.truncate", "item_id": body.item_id,
@@ -758,8 +779,7 @@ class VoiceSession:
         self.ended_at = time.monotonic()
         # A completed provider transcript does not prove the Watch heard its audio.
         unheard = {item for item, turn in self.turns.items() if turn["role"] == "assistant" and not turn["final"]}
-        if self.last_output_item:
-            unheard.add(self.last_output_item)
+        unheard.update(item for item in self.output_bytes if item not in self.playback_confirmed)
         for item in unheard:
             self.save(item, "assistant", interrupted=True)
         for task in (self.reader, self.monitor, self.tool_task):
@@ -775,6 +795,12 @@ class VoiceSession:
             if row:
                 data = self.store.w.decode(row[0])
                 data["diagnostics"] = dict(self.metrics)
+                data["diagnostics"]["playback"] = [
+                    {"turn_index": index, "generated_bytes": self.output_bytes.get(item, 0),
+                     "streamed_bytes": self.streamed_bytes.get(item, 0),
+                     "played_ms": min(self.played_ms.get(item, 0), self.output_bytes.get(item, 0) // 48),
+                     "provider_finished": item in self.output_done, "confirmed": item in self.playback_confirmed}
+                    for index, (item, turn) in enumerate(self.turns.items()) if turn["role"] == "assistant"]
                 db.execute("UPDATE voice_conversations SET content=? WHERE id=? AND deleted=0",
                            (self.store.w.encode(data), self.conversation_id))
         self.events.clear()
@@ -951,6 +977,9 @@ def create_voice_app(workspace, peer_factory=None):
                         yield ": heartbeat\n\n"
                         continue
                     session.event_id += 1
+                    if event['type'] == 'audio':
+                        item = event['item_id']
+                        session.streamed_bytes[item] = session.streamed_bytes.get(item, 0) + len(base64.b64decode(event['audio']))
                     event = {"version": 1, "id": session.event_id, **event}
                     yield "id: " + str(event["id"]) + "\ndata: " + json.dumps(event, separators=(",", ":")) + "\n\n"
                     if event["type"] == "ended":
