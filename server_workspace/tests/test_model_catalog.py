@@ -16,7 +16,7 @@ def provider(tmp_path, monkeypatch, handler):
     return value
 
 
-@pytest.mark.parametrize("model", ["gpt-4.1-mini", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini", "gpt-5.4-nano"])
+@pytest.mark.parametrize("model", ["gpt-4.1-mini", "gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini", "gpt-5.4-nano"])
 def test_generation_preserves_privacy_and_gives_reasoning_room_for_a_final_answer(tmp_path, monkeypatch, model):
     def response(request):
         body = json.loads(request.read())
@@ -77,3 +77,18 @@ def test_approved_models_reach_processing_and_unknown_models_are_rejected(setup)
     assert "Audio segment 1" in record["transcript"] and "Audio segment 2" in record["transcript"]
     assert any(call[0] == "generate" and call[1] == "gpt-6-astra" for call in p.calls)
     assert client.post("/api/recordings/recording-1/process", headers=a, json={**body, "transcription_model": "unapproved"}).status_code == 422
+
+
+def test_requested_sol_model_stays_pending_until_project_access_is_approved(setup):
+    w, client, _, _, (_, a), _ = setup
+    me = client.get("/api/me", headers=a).json()
+    assert me["pending_generation_models"] == ["gpt-6.1-sol"]
+    assert "gpt-6.1-sol" not in me["generation_models"]
+    assistant = client.get("/api/assistants", headers=a).json()["assistants"][0]
+    path = "/api/assistants/" + assistant["id"]
+    assistant["model"] = "gpt-6.1-sol"
+    assert client.put(path, headers=a, json=assistant).status_code == 422
+    # Once centrally approved, exact model ID works without client substitution.
+    w.config.generation_models += ("gpt-6.1-sol",)
+    assert client.get("/api/me", headers=a).json()["pending_generation_models"] == []
+    assert client.put(path, headers=a, json=assistant).status_code == 200

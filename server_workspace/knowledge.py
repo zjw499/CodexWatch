@@ -11,6 +11,7 @@ import json
 import math
 from pathlib import Path
 import re
+import secrets
 import sys
 import time
 import unicodedata
@@ -26,11 +27,14 @@ MAX_DOCX_EXPANDED_BYTES = 200 * 1024 * 1024
 MAX_DOCX_XML_BYTES = 20 * 1024 * 1024
 EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv"}
 CHUNK_SIZE = 1600
+UPLOAD_CHUNK_BYTES = 1024 * 1024
 METADATA_COLUMNS = "id,owner,assistant_id,state,deleted,created,updated,content"
 
 
 class ExtractionError(ValueError):
-    pass
+    def __init__(self, message, code="FILE_READ_FAILED"):
+        super().__init__(message)
+        self.code = code
 
 
 def clean_text(text):
@@ -60,9 +64,11 @@ def extract(raw, extension):
             from pypdf import PdfReader, Configuration
             # A second bound on compressed content, before page parsing.
             Configuration.zlib_maximum_output_length = 5 * 1024 * 1024
-            reader = PdfReader(io.BytesIO(raw), strict=True)
+            # Recover common cross-reference defects, as ordinary PDF viewers do.
+            # Isolation, time, page, decompression and text bounds still apply.
+            reader = PdfReader(io.BytesIO(raw), strict=False)
             if reader.is_encrypted:
-                raise ExtractionError("Remove the PDF password before uploading")
+                raise ExtractionError("Remove the PDF password before uploading", "PDF_PASSWORD")
             if len(reader.pages) > MAX_PDF_PAGES:
                 raise ExtractionError("PDFs can have up to 1000 pages. Split this file")
             for index, page in enumerate(reader.pages):
@@ -117,7 +123,7 @@ def extract(raw, extension):
         # Parser messages may contain document text; never forward them.
         raise ExtractionError("This file could not be read. Export a new PDF, Word, or UTF-8 text file") from None
     if not sections:
-        raise ExtractionError("No readable text was found. Scanned PDFs need a text layer; images are not supported")
+        raise ExtractionError("No readable text was found. Scanned PDFs need a text layer; images are not supported", "FILE_NO_TEXT")
     chunks, block = [], []
     size = 0
 
@@ -153,12 +159,12 @@ async def extract_isolated(raw, extension):
         output, _ = await asyncio.wait_for(process.communicate(raw), 60)
         result = json.loads(output)
         if process.returncode or "error" in result:
-            raise ExtractionError(result.get("error", "This file could not be read"))
+            raise ExtractionError(result.get("error", "This file could not be read"), result.get("code", "FILE_READ_FAILED"))
         return result
     except ExtractionError:
         raise
     except (TimeoutError, ValueError):
-        raise ExtractionError("This file could not be read in time. Export a simpler file") from None
+        raise ExtractionError("This file could not be read in time. Export a simpler file", "FILE_READ_TIMEOUT") from None
     finally:
         if process.returncode is None:
             process.kill()
@@ -201,7 +207,48 @@ class KnowledgeStore:
         data = self.w.decode(row["content"])
         return {"id": row["id"], "filename": data["filename"], "bytes": data["bytes"],
                 "state": row["state"], "characters": data.get("characters", 0),
+                "upload_version": 1, "chunk_bytes": UPLOAD_CHUNK_BYTES,
+                "uploaded_bytes": data["bytes"] if row["state"] == "ready" else data.get("uploaded_bytes", 0),
+                "error_code": data.get("error_code"), "error_message": data.get("error_message"),
                 "created": row["created"], "updated": row["updated"]}
+
+    def failure(self, owner, assistant_id, file_id, user, message, code, ticket=None):
+        with self.w.db() as db:
+            self.w.require_session(db, user)
+            row = self.row(db, owner, assistant_id, file_id)
+            if row["state"] == "ready":
+                return
+            value = self.w.decode(row["content"])
+            if (ticket is not None and value.get("read_ticket") != ticket) or (ticket is None and row["state"] == "reading"):
+                return
+            value.update(error_code=code, error_message=message)
+            value.pop("read_ticket", None)
+            db.execute("UPDATE assistant_knowledge SET state='failed',content=?,updated=? WHERE id=?",
+                       (self.w.encode(value), time.time(), file_id))
+            self.w.audit(db, owner, "knowledge-upload-failed", file_id)
+
+    def assemble(self, owner, assistant_id, file_id):
+        from .workspace import fail
+        with self.w.db() as db:
+            row = self.row(db, owner, assistant_id, file_id)
+            value = self.w.decode(row["content"])
+            if value.get("uploaded_bytes", 0) != value["bytes"]:
+                fail(409, "The upload is incomplete. Resume it by choosing the same file")
+        raw = bytearray()
+        for index in range(math.ceil(value["bytes"] / UPLOAD_CHUNK_BYTES)):
+            # Release the workspace lock before decrypting each bounded batch.
+            with self.w.db() as db:
+                self.row(db, owner, assistant_id, file_id)
+                part = db.execute("SELECT bytes,hash,content FROM assistant_knowledge_chunks WHERE file_id=? AND idx=?", (file_id, index)).fetchone()
+            if not part:
+                fail(409, "The upload is incomplete. Resume it by choosing the same file")
+            content = self.w.cipher.open(part["content"])
+            if len(content) != part["bytes"] or hashlib.sha256(part["content"]).hexdigest() != part["hash"]:
+                fail(422, "The saved upload could not be verified. Remove it and upload again")
+            raw.extend(content)
+        if len(raw) != value["bytes"] or hashlib.sha256(raw).hexdigest() != value["sha256"]:
+            fail(422, "The file upload could not be verified. Remove it and upload again")
+        return bytes(raw)
 
     def snapshot(self, owner, assistant_id):
         with self.w.db() as db:
@@ -222,6 +269,7 @@ class KnowledgeStore:
         changed = db.execute("UPDATE assistant_knowledge SET deleted=1,state='deleted',content=?,file=NULL,updated=? WHERE owner=? AND assistant_id=? AND deleted=0" + clause,
                              (self.w.encode({}), time.time(), owner, assistant_id, *values)).rowcount
         if changed:
+            db.execute("DELETE FROM assistant_knowledge_chunks WHERE file_id IN (SELECT id FROM assistant_knowledge WHERE owner=? AND assistant_id=? AND deleted=1)", (owner, assistant_id))
             db.execute("INSERT INTO assistant_knowledge_state VALUES(?,?,1) ON CONFLICT(owner,assistant_id) DO UPDATE SET epoch=epoch+1", (owner, assistant_id))
 
     def search(self, owner, assistant_id, file_ids, query):
@@ -269,6 +317,7 @@ class KnowledgeStore:
 def install_routes(app, workspace, account):
     from fastapi import Depends, Request
     from pydantic import BaseModel, Field
+    from starlette.requests import ClientDisconnect
     from .workspace import fail, identifier
     store = KnowledgeStore(workspace)
 
@@ -302,7 +351,7 @@ def install_routes(app, workspace, account):
                 old = store.row(db, user["id"], assistant_id, file_id)
                 prior = workspace.decode(old["content"])
                 if any(prior[k] != value[k] for k in ("filename", "bytes", "sha256")):
-                    fail(409, "This upload ID is already used for another file")
+                    fail(409, "Choose the original file to resume this upload, or add the different file separately")
                 return store.descriptor(old)
             rows = db.execute("SELECT content FROM assistant_knowledge WHERE owner=? AND assistant_id=? AND deleted=0", (user["id"], assistant_id)).fetchall()
             if len(rows) >= MAX_FILES or sum(workspace.decode(r[0])["bytes"] for r in rows) + body.bytes > MAX_ASSISTANT_BYTES:
@@ -313,37 +362,124 @@ def install_routes(app, workspace, account):
             workspace.audit(db, user["id"], "knowledge-upload-started", file_id)
             return store.descriptor(store.row(db, user["id"], assistant_id, file_id))
 
-    @app.put("/api/assistants/{assistant_id}/knowledge/{file_id}/content")
-    async def upload(assistant_id: str, file_id: str, request: Request, user=Depends(account)):
+    async def read_and_commit(assistant_id, file_id, raw, user):
         with workspace.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            workspace.require_session(db, user)
             row = store.row(db, user["id"], assistant_id, file_id)
             value = workspace.decode(row["content"])
-        # Raw streaming avoids multipart's plaintext disk spool.
-        raw = bytearray()
-        async for chunk in request.stream():
-            if len(raw) + len(chunk) > min(MAX_BYTES, value["bytes"]):
-                fail(413, "This file exceeds its upload size. Choose a file up to 100 MB")
-            raw.extend(chunk)
-        if len(raw) != value["bytes"] or hashlib.sha256(raw).hexdigest() != value["sha256"]:
-            fail(422, "The file upload was incomplete. Try again")
-        with workspace.db() as db:
-            workspace.require_session(db, user)
-            latest = store.row(db, user["id"], assistant_id, file_id)
-            if latest["state"] == "ready":
-                return store.descriptor(latest)
+            if row["state"] == "ready":
+                return store.descriptor(row)
+            if row["state"] == "reading" and time.time() - row["updated"] < 90:
+                fail(409, "This file is being read. Wait a moment, then retry")
+            ticket = secrets.token_hex(16)
+            value.update(read_ticket=ticket)
+            value.pop("error_code", None); value.pop("error_message", None)
+            db.execute("UPDATE assistant_knowledge SET state='reading',content=?,updated=? WHERE id=?",
+                       (workspace.encode(value), time.time(), file_id))
         try:
-            extracted = await extract_isolated(bytes(raw), Path(value["filename"]).suffix.lower())
+            extracted = await extract_isolated(raw, Path(value["filename"]).suffix.lower())
+            sealed = await asyncio.to_thread(workspace.cipher.seal, raw)
         except ExtractionError as error:
+            store.failure(user["id"], assistant_id, file_id, user, str(error), error.code, ticket)
             fail(422, str(error))
+        except asyncio.CancelledError:
+            store.failure(user["id"], assistant_id, file_id, user, "File reading was interrupted. Retry this upload", "FILE_READ_INTERRUPTED", ticket)
+            raise
+        except Exception:
+            # Neither worker faults nor parser payloads belong in errors or logs.
+            message = "The PC could not read this file. Your upload is saved; retry file reading"
+            store.failure(user["id"], assistant_id, file_id, user, message, "FILE_READER_UNAVAILABLE", ticket)
+            fail(503, message)
         with workspace.db() as db:
             db.execute("BEGIN IMMEDIATE")
             workspace.require_session(db, user)
             latest = store.row(db, user["id"], assistant_id, file_id)
             if latest["state"] != "ready":
+                if workspace.decode(latest["content"]).get("read_ticket") != ticket:
+                    fail(409, "This upload changed while being read. Refresh and retry")
+                value.pop("read_ticket", None)
                 db.execute("UPDATE assistant_knowledge SET state='ready',content=?,file=?,updated=? WHERE id=?",
-                           (workspace.encode({**value, **extracted}), workspace.cipher.seal(bytes(raw)), time.time(), file_id))
+                           (workspace.encode({**value, **extracted}), sealed, time.time(), file_id))
+                db.execute("DELETE FROM assistant_knowledge_chunks WHERE file_id=?", (file_id,))
                 workspace.audit(db, user["id"], "knowledge-upload-completed", file_id)
             return store.descriptor(store.row(db, user["id"], assistant_id, file_id))
+
+    async def receive(request, size, assistant_id, file_id, user):
+        # Raw streaming avoids multipart's plaintext disk spool.
+        raw = bytearray()
+        try:
+            async for chunk in request.stream():
+                if len(raw) + len(chunk) > size:
+                    fail(413, "This upload batch exceeds its declared size")
+                raw.extend(chunk)
+        except ClientDisconnect:
+            message = "The connection interrupted this upload. Resume it by choosing the same file"
+            store.failure(user["id"], assistant_id, file_id, user, message, "UPLOAD_DISCONNECTED")
+            fail(400, message)
+        if len(raw) != size:
+            message = "The file upload was incomplete. Resume it by choosing the same file"
+            store.failure(user["id"], assistant_id, file_id, user, message, "UPLOAD_INCOMPLETE")
+            fail(422, message)
+        return bytes(raw)
+
+    @app.put("/api/assistants/{assistant_id}/knowledge/{file_id}/chunks/{index}")
+    async def chunk(assistant_id: str, file_id: str, index: int, request: Request, user=Depends(account)):
+        with workspace.db() as db:
+            row = store.row(db, user["id"], assistant_id, file_id)
+            value = workspace.decode(row["content"])
+            if row["state"] == "ready":
+                return store.descriptor(row)
+        if index < 0 or index >= math.ceil(value["bytes"] / UPLOAD_CHUNK_BYTES):
+            fail(422, "Invalid upload batch number")
+        size = min(UPLOAD_CHUNK_BYTES, value["bytes"] - index * UPLOAD_CHUNK_BYTES)
+        raw = await receive(request, size, assistant_id, file_id, user)
+        sealed = await asyncio.to_thread(workspace.cipher.seal, raw)
+        with workspace.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            workspace.require_session(db, user)
+            latest = store.row(db, user["id"], assistant_id, file_id)
+            if latest["state"] == "ready":
+                return store.descriptor(latest)
+            value = workspace.decode(latest["content"])
+            old = db.execute("SELECT content FROM assistant_knowledge_chunks WHERE file_id=? AND idx=?", (file_id, index)).fetchone()
+            if old:
+                if workspace.cipher.open(old[0]) != raw:
+                    fail(409, "This upload batch changed. Choose the original file")
+                return store.descriptor(latest)
+            if latest["state"] == "reading" or index * UPLOAD_CHUNK_BYTES != value.get("uploaded_bytes", 0):
+                fail(409, "Resume from the last saved upload batch")
+            # Hash sealed bytes only; plaintext fingerprints stay in protected metadata.
+            db.execute("INSERT INTO assistant_knowledge_chunks VALUES(?,?,?,?,?)",
+                       (file_id, index, len(raw), hashlib.sha256(sealed).hexdigest(), sealed))
+            value.update(uploaded_bytes=(index * UPLOAD_CHUNK_BYTES + len(raw)))
+            value.pop("error_code", None); value.pop("error_message", None)
+            db.execute("UPDATE assistant_knowledge SET state='uploading',content=?,updated=? WHERE id=?",
+                       (workspace.encode(value), time.time(), file_id))
+            return store.descriptor(store.row(db, user["id"], assistant_id, file_id))
+
+    @app.post("/api/assistants/{assistant_id}/knowledge/{file_id}/complete")
+    async def complete(assistant_id: str, file_id: str, user=Depends(account)):
+        with workspace.db() as db:
+            workspace.require_session(db, user)
+            row = store.row(db, user["id"], assistant_id, file_id)
+            if row["state"] == "ready":
+                return store.descriptor(row)
+        raw = await asyncio.to_thread(store.assemble, user["id"], assistant_id, file_id)
+        return await read_and_commit(assistant_id, file_id, raw, user)
+
+    @app.put("/api/assistants/{assistant_id}/knowledge/{file_id}/content")
+    async def upload(assistant_id: str, file_id: str, request: Request, user=Depends(account)):
+        # Keep old clients compatible while new clients send resumable batches.
+        with workspace.db() as db:
+            row = store.row(db, user["id"], assistant_id, file_id)
+            value = workspace.decode(row["content"])
+            if row["state"] == "ready":
+                return store.descriptor(row)
+        raw = await receive(request, min(MAX_BYTES, value["bytes"]), assistant_id, file_id, user)
+        if len(raw) != value["bytes"] or hashlib.sha256(raw).hexdigest() != value["sha256"]:
+            fail(422, "The file upload was incomplete. Try again")
+        return await read_and_commit(assistant_id, file_id, raw, user)
 
     @app.get("/api/assistants/{assistant_id}/knowledge/{file_id}")
     def preview(assistant_id: str, file_id: str, offset: int = 0, user=Depends(account)):
@@ -375,6 +511,6 @@ if __name__ == "__main__" and len(sys.argv) == 3 and sys.argv[1] == "--extract":
     try:
         result = extract(sys.stdin.buffer.read(MAX_BYTES + 1), sys.argv[2])
     except ExtractionError as error:
-        print(json.dumps({"error": str(error)}))
+        print(json.dumps({"error": str(error), "code": error.code}))
         sys.exit(1)
     print(json.dumps(result, ensure_ascii=True))

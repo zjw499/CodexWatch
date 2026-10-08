@@ -13,6 +13,8 @@ from server_workspace.tests.test_workspace import setup
 from server_workspace.tests.test_voice import voice, start, push
 from server_workspace.voice import VoicePolicy, VoiceStore
 from server_workspace.voice_tools import CONVERSATION_INSTRUCTIONS, definitions, VoiceTools
+from server_workspace.workspace import Workspace, create_app
+from fastapi.testclient import TestClient
 
 
 def begin(client, headers, aid, fid, raw, filename="reference.txt"):
@@ -51,6 +53,146 @@ def docx(xml=None):
     with zipfile.ZipFile(result, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("word/document.xml", xml or '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Orbit launch word is violet.</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>The backup word is indigo.</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>')
     return result.getvalue()
+
+
+def send_chunks(client, headers, path, raw, start=0):
+    size = knowledge.UPLOAD_CHUNK_BYTES
+    for offset in range(start, len(raw), size):
+        response = client.put(path + f"/chunks/{offset // size}", headers=headers, content=raw[offset:offset + size])
+        assert response.status_code == 200, response.text
+        assert response.json()["uploaded_bytes"] == min(offset + size, len(raw))
+
+
+def test_pdf_reader_recovers_viewer_readable_cross_reference_defects():
+    import re
+    from pypdf import PdfReader
+    from pypdf.errors import PdfReadError
+    raw = pdf()
+    raw = re.sub(rb"startxref\n(\d+)", lambda m: b"startxref\n" + str(int(m[1]) + 1).encode(), raw)
+    with pytest.raises(PdfReadError):
+        PdfReader(io.BytesIO(raw), strict=True)
+    assert "violet" in json.dumps(extract(raw, ".pdf"))
+
+
+def test_upload_batches_resume_after_restart_and_lost_acknowledgement(setup):
+    w, client, _, _, (_, a), (_, b) = setup
+    aid = aid_for(client, a)
+    raw = pdf() + b"\n" * (2 * knowledge.UPLOAD_CHUNK_BYTES)
+    path = f"/api/assistants/{aid}/knowledge/resume"
+    assert begin(client, a, aid, "resume", raw, "Large.pdf").json()["upload_version"] == 1
+    first = raw[:knowledge.UPLOAD_CHUNK_BYTES]
+    assert client.put(path + "/chunks/0", headers=a, content=first).status_code == 200
+    # Pretend that response never arrived: the identical batch is acknowledged once.
+    assert client.put(path + "/chunks/0", headers=a, content=first).json()["uploaded_bytes"] == len(first)
+    assert client.put(path + "/chunks/0", headers=a, content=b"x" * len(first)).status_code == 409
+    assert client.put(path + "/chunks/2", headers=a, content=raw[2 * len(first):]).status_code == 409
+    assert client.post(path + "/complete", headers=a).status_code == 409
+    assert client.put(path + "/chunks/0", headers=b, content=first).status_code == 404
+    assert client.post(path + "/complete", headers=b).status_code == 404
+    with w.db() as db:
+        part = db.execute("SELECT content,hash FROM assistant_knowledge_chunks WHERE file_id='resume'").fetchone()
+        assert part[0] != first and w.cipher.open(part[0]) == first
+        assert part[1] == hashlib.sha256(part[0]).hexdigest()  # No plaintext fingerprint.
+        db.execute("INSERT INTO recordings VALUES('untouched','owner','processing',0,0,1,1,?)", (w.encode({}),))
+    restarted = Workspace(w.config, w.cipher, w.provider, w.audio_preparer, recover_jobs=False)
+    client = TestClient(create_app(restarted, run_worker=False))
+    assert begin(client, a, aid, "resume", raw, "Large.pdf").json()["uploaded_bytes"] == len(first)
+    send_chunks(client, a, path, raw, len(first))
+    assert client.post(path + "/complete", headers=a).json()["state"] == "ready"
+    assert client.post(path + "/complete", headers=a).json()["state"] == "ready"
+    assert "violet" in client.get(path, headers=a).json()["text"]
+    with w.db() as db:
+        assert db.execute("SELECT COUNT(*) FROM assistant_knowledge_chunks WHERE file_id='resume'").fetchone()[0] == 0
+        assert db.execute("SELECT state FROM recordings WHERE id='untouched'").fetchone()[0] == "processing"
+
+
+def test_interrupted_batch_preserves_prior_progress_and_saves_safe_reason(setup):
+    w, client, _, _, (_, a), _ = setup
+    aid = aid_for(client, a)
+    raw = pdf() + b"\n" * knowledge.UPLOAD_CHUNK_BYTES
+    path = f"/api/assistants/{aid}/knowledge/disconnected"
+    begin(client, a, aid, "disconnected", raw, "Large.pdf")
+    send_chunks(client, a, path, raw[:knowledge.UPLOAD_CHUNK_BYTES])
+    async def disconnect():
+        calls = 0
+        async def receive():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return {"type": "http.request", "body": b"partial", "more_body": True}
+            return {"type": "http.disconnect"}
+        async def send(message):
+            pass
+        scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "PUT",
+                 "scheme": "http", "path": path + "/chunks/1", "raw_path": (path + "/chunks/1").encode(),
+                 "query_string": b"", "root_path": "", "client": ("synthetic", 123), "server": ("testserver", 80),
+                 "headers": [(b"authorization", a["Authorization"].encode())]}
+        await client.app(scope, receive, send)
+    asyncio.run(disconnect())
+    file = client.get(path, headers=a).json()["file"]
+    assert file["error_code"] == "UPLOAD_DISCONNECTED" and file["uploaded_bytes"] == knowledge.UPLOAD_CHUNK_BYTES
+    assert "Resume" not in file["error_message"] or "same file" in file["error_message"]
+    send_chunks(client, a, path, raw, knowledge.UPLOAD_CHUNK_BYTES)
+    assert client.post(path + "/complete", headers=a).json()["state"] == "ready"
+
+
+@pytest.mark.parametrize("change,status", [("remove", 410), ("signout", 401), ("assistant", 404)])
+def test_batch_finalization_rechecks_session_and_deletion(setup, monkeypatch, change, status):
+    w, client, _, _, (_, a), _ = setup
+    aid = aid_for(client, a)
+    raw = b"Synthetic reference text"
+    path = f"/api/assistants/{aid}/knowledge/inflight-batch"
+    begin(client, a, aid, "inflight-batch", raw)
+    send_chunks(client, a, path, raw)
+    async def delayed(content, extension):
+        if change == "signout":
+            with w.db() as db: db.execute("DELETE FROM sessions")
+        elif change == "assistant":
+            client.delete(f"/api/assistants/{aid}", headers=a)
+        else:
+            client.delete(path, headers=a)
+        return extract(content, extension)
+    monkeypatch.setattr(knowledge, "extract_isolated", delayed)
+    assert client.post(path + "/complete", headers=a).status_code == status
+    with w.db() as db:
+        assert db.execute("SELECT file FROM assistant_knowledge WHERE id='inflight-batch'").fetchone()[0] is None
+        if change != "signout":
+            assert db.execute("SELECT COUNT(*) FROM assistant_knowledge_chunks WHERE file_id='inflight-batch'").fetchone()[0] == 0
+
+
+def test_read_failure_is_saved_without_payload_and_retry_reuses_uploaded_bytes(setup, monkeypatch):
+    w, client, _, _, (_, a), _ = setup
+    aid = aid_for(client, a)
+    raw = pdf()
+    path = f"/api/assistants/{aid}/knowledge/reader"
+    begin(client, a, aid, "reader", raw, "Reference.pdf")
+    send_chunks(client, a, path, raw)
+    async def faulty(*args):
+        raise OSError("private-document-text-never-forwarded")
+    with monkeypatch.context() as patch:
+        patch.setattr(knowledge, "extract_isolated", faulty)
+        response = client.post(path + "/complete", headers=a)
+        assert response.status_code == 503 and "private-document-text" not in response.text
+    file = begin(client, a, aid, "reader", raw, "Reference.pdf").json()
+    assert file["error_code"] == "FILE_READER_UNAVAILABLE" and file["uploaded_bytes"] == len(raw)
+    assert client.post(path + "/complete", headers=a).json()["state"] == "ready"
+    assert client.get(path, headers=a).json()["file"]["error_code"] is None
+
+
+def test_deleted_upload_cannot_restore_encrypted_batches(setup):
+    w, client, _, _, (_, a), _ = setup
+    aid = aid_for(client, a)
+    raw = b"Synthetic reference"
+    path = f"/api/assistants/{aid}/knowledge/deleted-batch"
+    begin(client, a, aid, "deleted-batch", raw)
+    assert client.put(path + "/chunks/-1", headers=a, content=raw).status_code == 422
+    assert client.put(path + "/chunks/0", headers=a, content=raw + b"x").status_code == 413
+    send_chunks(client, a, path, raw)
+    assert client.delete(path, headers=a).status_code == 200
+    assert client.put(path + "/chunks/0", headers=a, content=raw).status_code == 410
+    assert client.post(path + "/complete", headers=a).status_code == 410
+    with w.db() as db:
+        assert db.execute("SELECT COUNT(*) FROM assistant_knowledge_chunks WHERE file_id='deleted-batch'").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("extension,raw,locator", [

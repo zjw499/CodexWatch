@@ -95,6 +95,8 @@ class WorkspaceConfig:
     generation_models: tuple[str, ...] = ("gpt-4.1-mini", "gpt-4.1", "gpt-4.1-nano", "gpt-6-astra",
                                            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
                                            "gpt-5.4-mini", "gpt-5.4-nano")
+    # Requested models stay visible without advertising unverified API access.
+    pending_generation_models: tuple[str, ...] = ("gpt-6.1-sol",)
     # Provisioning must be verified for the actual org/project, not inferred from a working key.
     baa_verified: bool = False
     retention_verified: bool = False
@@ -143,6 +145,9 @@ class Workspace:
                   assistant_id TEXT NOT NULL, state TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
                   created REAL NOT NULL, updated REAL NOT NULL, content BLOB NOT NULL, file BLOB);
                 CREATE INDEX IF NOT EXISTS assistant_knowledge_owner ON assistant_knowledge(owner,assistant_id);
+                CREATE TABLE IF NOT EXISTS assistant_knowledge_chunks (file_id TEXT NOT NULL,
+                  idx INTEGER NOT NULL, bytes INTEGER NOT NULL, hash TEXT NOT NULL,
+                  content BLOB NOT NULL, PRIMARY KEY(file_id,idx));
                 CREATE TABLE IF NOT EXISTS assistant_knowledge_state (owner TEXT NOT NULL, assistant_id TEXT NOT NULL,
                   epoch INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(owner,assistant_id));
                 CREATE TABLE IF NOT EXISTS recordings (id TEXT PRIMARY KEY, owner TEXT NOT NULL, state TEXT NOT NULL,
@@ -622,7 +627,8 @@ def create_app(workspace: Workspace, run_worker: bool = True):
     @app.get("/api/me")
     def me(user=Depends(account)):
         return {"user": {key: user[key] for key in ("id", "username", "role")}, "processing_enabled": workspace.processing_enabled,
-                "transcription_models": workspace.config.transcription_models, "generation_models": workspace.config.generation_models}
+                "transcription_models": workspace.config.transcription_models, "generation_models": workspace.config.generation_models,
+                "pending_generation_models": [m for m in workspace.config.pending_generation_models if m not in workspace.config.generation_models]}
 
     @app.get("/api/admin/users")
     def users(user=Depends(admin)):

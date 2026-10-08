@@ -64,6 +64,71 @@ final class KnowledgeUploadTests: XCTestCase {
         do { _ = try await workspace.knowledgeFiles("../other-owner"); XCTFail() }
         catch { XCTAssertEqual(requests, 1) }
     }
+    func testBatchedUploadRetriesLostAcknowledgementAndResumesOnlyMissingBytes() async throws {
+        let workspace = workspace()
+        let size = 1024 * 1024
+        let upload = KnowledgeUpload(id: "file-1", filename: "Large.pdf", data: Data(repeating: 65, count: size + 7), sha256: String(repeating: "a", count: 64))
+        var saved = 0, ready = false, interrupted = true
+        var batches: [Int] = [], attempts = 0, completions = 0
+        var progress: [Int] = []
+        func file() -> Data {
+            Data("{\"id\":\"file-1\",\"filename\":\"Large.pdf\",\"bytes\":\(size + 7),\"state\":\"\(ready ? "ready" : "uploading")\",\"characters\":0,\"upload_version\":1,\"chunk_bytes\":\(size),\"uploaded_bytes\":\(saved)}".utf8)
+        }
+        KnowledgeStub.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer synthetic-token")
+            let path = request.url!.path
+            XCTAssertFalse(path.hasSuffix("/content"))
+            if path.contains("/chunks/") {
+                let index = Int(path.split(separator: "/").last!)!
+                batches.append(index)
+                if index == 0 {
+                    saved = size
+                    if batches.count == 1 { throw URLError(.networkConnectionLost) }
+                } else {
+                    attempts += 1
+                    if interrupted { throw URLError(.networkConnectionLost) }
+                    saved = size + 7
+                }
+            } else if path.hasSuffix("/complete") {
+                completions += 1; ready = true
+                if completions == 1 { throw URLError(.networkConnectionLost) }
+            }
+            return (200, file())
+        }
+        do {
+            _ = try await workspace.uploadKnowledge(upload, assistantID: "notes") { progress.append($0.uploadedBytes) }
+            XCTFail("A sustained connection loss must stop after bounded retries")
+        } catch { XCTAssertTrue(error is URLError) }
+        XCTAssertEqual(attempts, 3)
+        XCTAssertEqual(batches, [0, 0, 1, 1, 1])
+        interrupted = false
+        let result = try await workspace.uploadKnowledge(upload, assistantID: "notes") { progress.append($0.uploadedBytes) }
+        XCTAssertEqual(result.state, "ready")
+        XCTAssertEqual(batches, [0, 0, 1, 1, 1, 1])
+        XCTAssertEqual(completions, 2)
+        XCTAssertTrue(progress.contains(size) && progress.contains(size + 7))
+    }
+    func testInvalidSavedOffsetDoesNotSendAnyFileBytes() async throws {
+        let workspace = workspace()
+        let upload = KnowledgeUpload(id: "file-1", filename: "Large.pdf", data: Data(repeating: 65, count: 2 * 1024 * 1024), sha256: String(repeating: "a", count: 64))
+        var requests = 0
+        KnowledgeStub.handler = { request in
+            requests += 1
+            XCTAssertFalse(request.url!.path.contains("/chunks/"))
+            return (200, Data(#"{"id":"file-1","filename":"Large.pdf","bytes":2097152,"state":"uploading","characters":0,"upload_version":1,"chunk_bytes":1048576,"uploaded_bytes":7}"#.utf8))
+        }
+        do { _ = try await workspace.uploadKnowledge(upload, assistantID: "notes"); XCTFail() }
+        catch { XCTAssertTrue(error is KnowledgeFileError) }
+        XCTAssertEqual(requests, 1)
+    }
+    func testSavedUploadProgressAndReaderFailureDecodeWithoutBreakingOldDescriptors() throws {
+        let old = try JSONDecoder().decode(KnowledgeFile.self, from: descriptor("uploading"))
+        XCTAssertNil(old.upload_version)
+        XCTAssertEqual(old.uploadedBytes, 0)
+        let failed = try JSONDecoder().decode(KnowledgeFile.self, from: Data(#"{"id":"file-1","filename":"Orbit.pdf","bytes":42,"state":"failed","characters":0,"upload_version":1,"chunk_bytes":1048576,"uploaded_bytes":42,"error_code":"FILE_NO_TEXT","error_message":"No readable text was found"}"#.utf8))
+        XCTAssertEqual(failed.uploadedBytes, 42)
+        XCTAssertEqual(failed.error_code, "FILE_NO_TEXT")
+    }
     func testFileReaderRejectsOversizedEmptyAndUnsupportedFilesAndHashesAcceptedText() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -73,6 +138,7 @@ final class KnowledgeUploadTests: XCTestCase {
         let accepted = try KnowledgeUpload.read(url)
         XCTAssertEqual(accepted.data, Data("hello".utf8))
         XCTAssertEqual(accepted.sha256, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+        XCTAssertEqual(try KnowledgeUpload.read(url, id: "existing-upload").id, "existing-upload")
         try Data().write(to: url)
         XCTAssertThrowsError(try KnowledgeUpload.read(url))
         // A sparse file checks the 100 MB guard without allocating its full body.

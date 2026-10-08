@@ -171,6 +171,7 @@ final class PhoneWorkspace: ObservableObject {
     @Published private(set) var assistants: [WorkspaceAssistant] = []
     @Published private(set) var transcriptionModels = ["gpt-4o-mini-transcribe", "gpt-4o-transcribe"]
     @Published private(set) var generationModels = ["gpt-4.1-mini", "gpt-4.1"]
+    @Published private(set) var pendingGenerationModels: [String] = []
     @Published var selectedAssistantID = ""
     @Published var transcriptionModel = "gpt-4o-transcribe"
     @Published var transcriptionContext = ""
@@ -184,6 +185,7 @@ final class PhoneWorkspace: ObservableObject {
         let processing_enabled: Bool
         let transcription_models: [String]
         let generation_models: [String]
+        let pending_generation_models: [String]?
     }
     struct Assistants: Decodable { let assistants: [WorkspaceAssistant] }
     struct Recordings: Decodable { let recordings: [WorkspaceRecording] }
@@ -244,7 +246,7 @@ final class PhoneWorkspace: ObservableObject {
         credential = result
         voiceConfiguration = nil; voiceMessage = nil
         try? WorkspaceKeychain.remove(account: "watch-voice")
-        processingEnabled = false; assistants = []
+        processingEnabled = false; assistants = []; pendingGenerationModels = []
         RecordingQueueStore.shared.setAccount(result.user.id)
         loadPreferences()
         loadAssistantCache()
@@ -261,7 +263,7 @@ final class PhoneWorkspace: ObservableObject {
         try WorkspaceKeychain.save(pending, account: "revocations")
         try WorkspaceKeychain.remove()
         PhoneOpenAIService.shared.configurationChanged()
-        credential = nil; processingEnabled = false; assistants = []; selectedAssistantID = ""; transcriptionContext = ""
+        credential = nil; processingEnabled = false; assistants = []; selectedAssistantID = ""; transcriptionContext = ""; pendingGenerationModels = []
         voiceConfiguration = nil; voiceMessage = nil
         try? WorkspaceKeychain.remove(account: "watch-voice")
         RecordingQueueStore.shared.setAccount(nil)
@@ -335,6 +337,7 @@ final class PhoneWorkspace: ObservableObject {
         let processingEnabled: Bool
         let server: String
         var transcriptionContext: String?
+        var pendingGenerationModels: [String]? = nil
     }
     private func cacheURL() -> URL? {
         guard let owner = user?.id, RecordingQueueStore.validID(owner) else { return nil }
@@ -346,6 +349,7 @@ final class PhoneWorkspace: ObservableObject {
               let cache = try? JSONDecoder().decode(AssistantCache.self, from: data), cache.server == credential?.server else { return }
         assistants = cache.assistants; transcriptionModels = cache.transcriptionModels
         generationModels = cache.generationModels; processingEnabled = cache.processingEnabled
+        pendingGenerationModels = cache.pendingGenerationModels ?? []
         transcriptionContext = cache.transcriptionContext ?? ""
     }
     private func saveAssistantCache() {
@@ -354,7 +358,7 @@ final class PhoneWorkspace: ObservableObject {
             try RecordingQueueStore.protectDirectory(url.deletingLastPathComponent())
             let cache = AssistantCache(assistants: assistants, transcriptionModels: transcriptionModels,
                                        generationModels: generationModels, processingEnabled: processingEnabled, server: server,
-                                       transcriptionContext: transcriptionContext)
+                                       transcriptionContext: transcriptionContext, pendingGenerationModels: pendingGenerationModels)
             try JSONEncoder().encode(cache).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
             try RecordingQueueStore.protectFile(url)
         } catch { /* Server definitions remain authoritative if cache persistence fails. */ }
@@ -371,6 +375,7 @@ final class PhoneWorkspace: ObservableObject {
             guard credential?.token == saved.token else { return }
             processingEnabled = me.processing_enabled
             transcriptionModels = me.transcription_models; generationModels = me.generation_models
+            pendingGenerationModels = me.pending_generation_models ?? []
             let result: Assistants = try await request("assistants")
             guard credential?.token == saved.token else { return }
             assistants = result.assistants
@@ -470,7 +475,7 @@ final class PhoneWorkspace: ObservableObject {
         if base == nil && captured?.token != credential?.token { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else { throw WorkspaceError.server }
         guard (200..<300).contains(http.statusCode) else {
-            if path.hasPrefix("assistants/"), path.contains("/knowledge"), (400..<500).contains(http.statusCode),
+            if path.hasPrefix("assistants/"), path.contains("/knowledge"), (400..<600).contains(http.statusCode),
                let detail = try? JSONDecoder().decode(KnowledgeRequestFailure.self, from: data) {
                 throw WorkspaceError.status(http.statusCode, String(detail.detail.prefix(300)))
             }

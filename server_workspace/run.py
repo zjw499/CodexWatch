@@ -15,7 +15,7 @@ def load(path: Path) -> WorkspaceConfig:
     values = json.loads(path.read_text(encoding="utf-8-sig"))
     values["root"] = Path(values["root"])
     values["key_file"] = Path(values["key_file"])
-    for key in ("transcription_models", "generation_models", "voice_models", "voice_voices"):
+    for key in ("transcription_models", "generation_models", "pending_generation_models", "voice_models", "voice_voices"):
         if key in values:
             values[key] = tuple(values[key])
     return WorkspaceConfig(**values, config_file=path)

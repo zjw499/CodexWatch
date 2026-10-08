@@ -208,6 +208,14 @@ XML; extraction has a 60-second deadline. Scanned PDFs require a selectable text
 layer. Images, legacy .doc, spreadsheets and password-protected documents are not
 supported by this version.
 
+Uploads show saved-byte progress and send bounded 1 MB HTTPS batches. If a
+connection fails, the phone retries the same batch up to three times. Choose
+**Resume upload** on the unfinished file and select its original file to continue
+after reopening the app. Completed batches remain encrypted on the PC. PDF
+reading errors remain beside the file with a safe diagnostic code, including a
+missing text layer, password protection, timeout or unavailable reader. Common
+recoverable PDF cross-reference errors are accepted within the same parser bounds.
+
 ## Model choices
 
 The PC's organization-approved configuration supplies the iPhone pickers. Existing
@@ -237,6 +245,15 @@ recording jobs or prints provider payloads. Keep custom organization lists scope
 the models approved for that organization; catalog visibility alone is not proof of
 a successful inference request.
 
+`gpt-6.1-sol` is included as an **awaiting API access** result-model choice in
+`pending_generation_models`. The configured pilot project returned 403
+`model_not_found` for an actual synthetic Responses request on October 8, 2026;
+availability in Codex does not establish API project access. It cannot be
+selected until centrally approved. After a successful access canary, add the
+exact ID to `generation_models`; the phone then enables it without substituting
+another model. Its request uses low reasoning effort and `store=false`. It is
+a text result/chat model, not a Realtime audio model.
+
 Start a new Watch voice conversation after uploads finish. The assistant can
 search relevant passages even when calculations/time are disabled. It receives
 only bounded excerpts from this assistant's files. Captions and History label the
@@ -260,10 +277,13 @@ never model instructions. The authenticated iPhone alone manages files through
 owner-bound `/api/assistants/{id}/knowledge` routes; public Watch credentials
 cannot upload files. Audit events contain identifiers and action names only.
 
-Uploads reserve a stable request/file ID, size and hash, then stream the raw body.
-Retrying an acknowledged or lost-acknowledgement upload is idempotent. Expiry,
-account changes, removal and assistant deletion are rechecked after extraction.
-Removal erases encrypted file/text blobs and leaves a tombstone to prevent delayed
+Uploads reserve a stable request/file ID, size and hash, then send numbered,
+encrypted batches and explicitly complete extraction. Batches persist across PC
+restarts. Whole-file SHA-256 is verified before reading; repeated batches must
+match saved bytes. Old clients can still stream one raw body. Retrying an
+acknowledged or lost-acknowledgement upload is idempotent. Expiry, account changes,
+removal and assistant deletion are rechecked after receiving, assembling and
+extracting. Removal erases encrypted batches and file/text blobs and leaves a tombstone to prevent delayed
 uploads from restoring them. Removal ends active voice sessions for that
 assistant, including pending retrieval, within the existing authorization checks.
 Saved conversation answers remain until their owner deletes the conversation;

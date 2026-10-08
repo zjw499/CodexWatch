@@ -174,6 +174,13 @@ struct PhoneAssistantEditor: View {
                 TextField("Name", text: $assistant.name)
                 Picker("Results model", selection: $assistant.model) {
                     ForEach(workspace.generationModels, id: \.self) { Text($0).tag($0) }
+                    ForEach(workspace.pendingGenerationModels, id: \.self) {
+                        Text("\($0) · awaiting API access").tag($0).disabled(true)
+                    }
+                }
+                if !workspace.pendingGenerationModels.isEmpty {
+                    Text("\(workspace.pendingGenerationModels.joined(separator: ", ")) is awaiting access in your organization's OpenAI project.")
+                        .font(.footnote).foregroundStyle(ScribeTheme.muted)
                 }
             }
             Section("Custom instructions") {
