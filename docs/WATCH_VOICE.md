@@ -200,10 +200,42 @@ and route disconnection stop the test without automatic restart.
 In iPhone Settings, open an existing assistant and choose **Knowledge files > Manage
 files > Add files**. Save a new assistant before attaching files. Upload PDF, Word
 (.docx), UTF-8 text, Markdown, or CSV; preview the extracted text, or swipe a file
-to remove it. Limits are 10 MB per file, 20 files and 50 MB per assistant, 500000
-extracted characters, and 250 PDF pages. Scanned PDFs require a selectable text
+to remove it. Limits are 100 MB per file, 20 files and 500 MB per assistant, 2000000
+extracted characters, and 1000 PDF pages. MB upload limits use 1024 * 1024 bytes.
+The phone reads the current limits from the PC, including when connected to an
+older release. Word archives remain bounded to 200 MB expanded and 20 MB document
+XML; extraction has a 60-second deadline. Scanned PDFs require a selectable text
 layer. Images, legacy .doc, spreadsheets and password-protected documents are not
 supported by this version.
+
+## Model choices
+
+The PC's organization-approved configuration supplies the iPhone pickers. Existing
+profiles and defaults keep their selections. The pilot catalog offers these tested
+API-compatible options:
+
+- Results/chat: gpt-4.1-mini, gpt-4.1, gpt-4.1-nano, gpt-6-astra,
+  gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4-mini, gpt-5.4-nano.
+- Recording transcription: gpt-4o-mini-transcribe, gpt-4o-transcribe,
+  gpt-transcribe, whisper-1, gpt-4o-transcribe-diarize.
+- Watch voice: gpt-realtime-2.1, gpt-realtime-2.1-mini, gpt-realtime-1.5,
+  gpt-realtime, gpt-realtime-mini. Marin and Cedar remain available.
+
+Reasoning text models use low reasoning effort and a 12000-token shared reasoning
+and answer budget; incomplete answers fail rather than saving partial notes.
+Diarization requests use automatic chunking without unsupported vocabulary prompts.
+Speaker labels apply within an audio request, and saved transcripts identify each
+audio segment so labels are never presented as stable identities across segments.
+Audio is still prepared in bounded segments below the provider's 25 MB per-request
+limit; the 100 MB limit applies to assistant reference files.
+
+Before enabling these lists on a PC, run `scripts/verify_model_catalog.py --config
+<private-config-path> --live` with explicit authorization for synthetic API requests.
+It checks access, completed notes, file transcription, and Realtime speech/tool
+responses using only fixed synthetic text and generated speech. It never recovers
+recording jobs or prints provider payloads. Keep custom organization lists scoped to
+the models approved for that organization; catalog visibility alone is not proof of
+a successful inference request.
 
 Start a new Watch voice conversation after uploads finish. The assistant can
 search relevant passages even when calculations/time are disabled. It receives

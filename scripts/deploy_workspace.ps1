@@ -60,8 +60,8 @@ if (-not (Test-Path -LiteralPath $configuration)) {
     [ordered]@{
         root=$privateRoot; key_file=$KeyFile
         organization_id='org-OSni86SzRRzYCZgAuwoalu81'; project_id='proj_qPL4pTthHtsvT7t9aldiqqzg'
-        transcription_models=@('gpt-4o-mini-transcribe','gpt-4o-transcribe')
-        generation_models=@('gpt-4.1-mini','gpt-4.1')
+        transcription_models=@('gpt-4o-mini-transcribe','gpt-4o-transcribe','gpt-transcribe','whisper-1','gpt-4o-transcribe-diarize')
+        generation_models=@('gpt-4.1-mini','gpt-4.1','gpt-4.1-nano','gpt-6-astra','gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna','gpt-5.5','gpt-5.4-mini','gpt-5.4-nano')
         baa_verified=$true; retention_verified=$false; safeguards_verified=$false
         approval_evidence='Signed Sky Data Services OpenAI BAA verified October 2, 2026. Project retention and full PC safeguards remain unverified.'
     } | ConvertTo-Json | Set-Content -LiteralPath $configuration -Encoding utf8

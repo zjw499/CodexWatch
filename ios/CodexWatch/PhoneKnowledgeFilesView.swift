@@ -7,6 +7,7 @@ struct PhoneKnowledgeFilesView: View {
     let assistantID: String
     let assistantName: String
     @State private var files: [KnowledgeFile] = []
+    @State private var limits: KnowledgeFileList?
     @State private var importing = false
     @State private var working = false
     @State private var pending: KnowledgeUpload?
@@ -31,14 +32,18 @@ struct PhoneKnowledgeFilesView: View {
                 }
                 if files.isEmpty { Text("No knowledge files yet.").foregroundStyle(ScribeTheme.muted) }
                 Button { importing = true } label: { Label("Add files", systemImage: "plus.circle") }
-                    .disabled(working || files.count >= 20).accessibilityIdentifier("knowledge-add-files")
+                    .disabled(working || limits == nil || files.count >= (limits?.max_files ?? 20)).accessibilityIdentifier("knowledge-add-files")
                 if working { ProgressView("Uploading and reading file…") }
                 if pending != nil, !working {
                     Button("Retry upload") { uploadPending() }
                 }
             }
             Section {
-                Text("PDF, Word (.docx), text, Markdown, and CSV. Up to 10 MB per file, 20 files and 50 MB per assistant. PDFs need selectable text; scanned images are not read.")
+                if let limits {
+                    Text("PDF, Word (.docx), text, Markdown, and CSV. Up to \(min(limits.max_bytes, KnowledgeUpload.maxBytes) / (1024 * 1024)) MB per file, \(limits.max_files) files and \(limits.totalBytes / (1024 * 1024)) MB per assistant. Each file can contain up to \(limits.characters.formatted()) text characters; PDFs up to \(limits.pdfPages.formatted()) pages. PDFs need selectable text; scanned images are not read.")
+                } else {
+                    Text("PDF, Word (.docx), text, Markdown, and CSV. Connecting to check upload limits…")
+                }
                 Text("Files stay in your protected PC workspace. Relevant text is sent to the approved voice model when needed. Start a new conversation after adding files. Removing a file ends any active conversation using this assistant; answers already saved in History remain until you delete the conversation.")
             }.font(.footnote).foregroundStyle(ScribeTheme.muted)
             if let message { Text(message).font(.footnote).foregroundStyle(ScribeTheme.muted) }
@@ -49,19 +54,20 @@ struct PhoneKnowledgeFilesView: View {
             UTType(filenameExtension: "docx") ?? .data, UTType(filenameExtension: "md") ?? .plainText], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
+                let readLimit = limits?.max_bytes ?? 0
                 working = true; message = nil
                 Task {
                     defer { working = false }
                     do {
                         for url in urls {
                             try checkAccount()
-                            let value = try await Task.detached { try KnowledgeUpload.read(url) }.value
+                            let value = try await Task.detached { try KnowledgeUpload.read(url, maxBytes: readLimit) }.value
                             try checkAccount()
                             pending = value
                             _ = try await workspace.uploadKnowledge(value, assistantID: assistantID)
                             try checkAccount()
                             pending = nil
-                            files = try await workspace.knowledgeFiles(assistantID).files
+                            try await loadFiles()
                         }
                         await workspace.refresh()
                     } catch is CancellationError { }
@@ -75,7 +81,7 @@ struct PhoneKnowledgeFilesView: View {
             await reload()
         }
         .onChange(of: workspace.credential?.token) { _, _ in
-            pending = nil; files = []; message = nil; dismiss()
+            pending = nil; files = []; limits = nil; message = nil; dismiss()
         }
         .confirmationDialog("Remove this knowledge file?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
             if let file = removing {
@@ -98,9 +104,14 @@ struct PhoneKnowledgeFilesView: View {
         guard parentToken != nil, parentToken == workspace.credential?.token else { throw KnowledgeFileError.account }
     }
     private func reload() async {
-        do { try checkAccount(); files = try await workspace.knowledgeFiles(assistantID).files }
+        do { try checkAccount(); try await loadFiles() }
         catch is CancellationError { }
         catch { message = error.localizedDescription }
+    }
+    private func loadFiles() async throws {
+        let value = try await workspace.knowledgeFiles(assistantID)
+        try checkAccount()
+        files = value.files; limits = value
     }
     private func uploadPending() {
         guard let pending else { return }

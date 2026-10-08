@@ -16,13 +16,17 @@ import time
 import unicodedata
 import zipfile
 
-MAX_BYTES = 10 * 1024 * 1024
+MAX_BYTES = 100 * 1024 * 1024
 MAX_FILES = 20
-MAX_ASSISTANT_BYTES = 50 * 1024 * 1024
-MAX_CHARACTERS = 500_000
-MAX_SECTIONS = 10_000
+MAX_ASSISTANT_BYTES = 500 * 1024 * 1024
+MAX_CHARACTERS = 2_000_000
+MAX_SECTIONS = 20_000
+MAX_PDF_PAGES = 1000
+MAX_DOCX_EXPANDED_BYTES = 200 * 1024 * 1024
+MAX_DOCX_XML_BYTES = 20 * 1024 * 1024
 EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv"}
 CHUNK_SIZE = 1600
+METADATA_COLUMNS = "id,owner,assistant_id,state,deleted,created,updated,content"
 
 
 class ExtractionError(ValueError):
@@ -36,7 +40,7 @@ def clean_text(text):
 
 def extract(raw, extension):
     if not raw or len(raw) > MAX_BYTES or extension not in EXTENSIONS:
-        raise ExtractionError("Choose a supported file up to 10 MB")
+        raise ExtractionError("Choose a supported file up to 100 MB")
     sections = []
     characters = 0
 
@@ -59,8 +63,8 @@ def extract(raw, extension):
             reader = PdfReader(io.BytesIO(raw), strict=True)
             if reader.is_encrypted:
                 raise ExtractionError("Remove the PDF password before uploading")
-            if len(reader.pages) > 250:
-                raise ExtractionError("PDFs can have up to 250 pages. Split this file")
+            if len(reader.pages) > MAX_PDF_PAGES:
+                raise ExtractionError("PDFs can have up to 1000 pages. Split this file")
             for index, page in enumerate(reader.pages):
                 contents = page.get_contents()
                 if contents and len(contents.get_data()) > 5 * 1024 * 1024:
@@ -70,11 +74,11 @@ def extract(raw, extension):
             from defusedxml.ElementTree import fromstring
             with zipfile.ZipFile(io.BytesIO(raw)) as archive:
                 entries = archive.infolist()
-                if (len(entries) > 2000 or sum(e.file_size for e in entries) > 30 * 1024 * 1024
+                if (len(entries) > 2000 or sum(e.file_size for e in entries) > MAX_DOCX_EXPANDED_BYTES
                         or any(e.flag_bits & 1 for e in entries)):
                     raise ExtractionError("This Word file is too large after extraction or password protected")
                 entry = archive.getinfo("word/document.xml")
-                if entry.file_size > 5 * 1024 * 1024:
+                if entry.file_size > MAX_DOCX_XML_BYTES:
                     raise ExtractionError("This Word file has too much content. Split it")
                 root = fromstring(archive.read(entry), forbid_dtd=True, forbid_entities=True, forbid_external=True)
             ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -146,7 +150,7 @@ async def extract_isolated(raw, extension):
         sys.executable, str(Path(__file__).resolve()), "--extract", extension,
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     try:
-        output, _ = await asyncio.wait_for(process.communicate(raw), 30)
+        output, _ = await asyncio.wait_for(process.communicate(raw), 60)
         result = json.loads(output)
         if process.returncode or "error" in result:
             raise ExtractionError(result.get("error", "This file could not be read"))
@@ -184,7 +188,8 @@ class KnowledgeStore:
     def row(self, db, owner, assistant_id, file_id):
         from .workspace import identifier, fail
         self.assistant(db, owner, assistant_id)
-        row = db.execute("SELECT * FROM assistant_knowledge WHERE id=? AND owner=? AND assistant_id=?",
+        # Raw encrypted originals can be 100 MB; metadata/retrieval never loads them.
+        row = db.execute("SELECT " + METADATA_COLUMNS + " FROM assistant_knowledge WHERE id=? AND owner=? AND assistant_id=?",
                          (identifier(file_id), owner, assistant_id)).fetchone()
         if not row:
             fail(404, "Knowledge file not found")
@@ -276,8 +281,9 @@ def install_routes(app, workspace, account):
     def files(assistant_id: str, user=Depends(account)):
         with workspace.db() as db:
             store.assistant(db, user["id"], assistant_id)
-            rows = db.execute("SELECT * FROM assistant_knowledge WHERE owner=? AND assistant_id=? AND deleted=0 ORDER BY created", (user["id"], assistant_id)).fetchall()
-            return {"files": [store.descriptor(r) for r in rows], "max_bytes": MAX_BYTES, "max_files": MAX_FILES}
+            rows = db.execute("SELECT " + METADATA_COLUMNS + " FROM assistant_knowledge WHERE owner=? AND assistant_id=? AND deleted=0 ORDER BY created", (user["id"], assistant_id)).fetchall()
+            return {"files": [store.descriptor(r) for r in rows], "max_bytes": MAX_BYTES, "max_files": MAX_FILES,
+                    "max_total_bytes": MAX_ASSISTANT_BYTES, "max_characters": MAX_CHARACTERS, "max_pdf_pages": MAX_PDF_PAGES}
 
     @app.put("/api/assistants/{assistant_id}/knowledge/{file_id}")
     def begin(assistant_id: str, file_id: str, body: FileBody, user=Depends(account)):
@@ -291,7 +297,7 @@ def install_routes(app, workspace, account):
             db.execute("BEGIN IMMEDIATE")
             workspace.require_session(db, user)
             store.assistant(db, user["id"], assistant_id)
-            old = db.execute("SELECT * FROM assistant_knowledge WHERE id=?", (file_id,)).fetchone()
+            old = db.execute("SELECT " + METADATA_COLUMNS + " FROM assistant_knowledge WHERE id=?", (file_id,)).fetchone()
             if old:
                 old = store.row(db, user["id"], assistant_id, file_id)
                 prior = workspace.decode(old["content"])
@@ -300,7 +306,7 @@ def install_routes(app, workspace, account):
                 return store.descriptor(old)
             rows = db.execute("SELECT content FROM assistant_knowledge WHERE owner=? AND assistant_id=? AND deleted=0", (user["id"], assistant_id)).fetchall()
             if len(rows) >= MAX_FILES or sum(workspace.decode(r[0])["bytes"] for r in rows) + body.bytes > MAX_ASSISTANT_BYTES:
-                fail(409, "This assistant can hold 20 files totaling 50 MB. Remove a file first")
+                fail(409, "This assistant can hold 20 files totaling 500 MB. Remove a file first")
             now = time.time()
             db.execute("INSERT INTO assistant_knowledge VALUES(?,?,?,'uploading',0,?,?,?,NULL)",
                        (file_id, user["id"], assistant_id, now, now, workspace.encode(value)))
@@ -315,9 +321,9 @@ def install_routes(app, workspace, account):
         # Raw streaming avoids multipart's plaintext disk spool.
         raw = bytearray()
         async for chunk in request.stream():
+            if len(raw) + len(chunk) > min(MAX_BYTES, value["bytes"]):
+                fail(413, "This file exceeds its upload size. Choose a file up to 100 MB")
             raw.extend(chunk)
-            if len(raw) > min(MAX_BYTES, value["bytes"]):
-                fail(413, "This file exceeds its upload size. Choose a file up to 10 MB")
         if len(raw) != value["bytes"] or hashlib.sha256(raw).hexdigest() != value["sha256"]:
             fail(422, "The file upload was incomplete. Try again")
         with workspace.db() as db:

@@ -99,14 +99,17 @@ struct PhoneSettingsView: View {
             Picker("Transcription", selection: $workspace.transcriptionModel) {
                 ForEach(workspace.transcriptionModels, id: \.self) { Text($0).tag($0) }
             }
-            Text("Use gpt-4o-transcribe for difficult recordings. Clear microphone placement still matters.")
+            Text("Choose gpt-transcribe for recorded speech, a mini model for speed, or the diarize model for speaker labels. Clear microphone placement still matters.")
                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
             TextField("Names, acronyms, and vocabulary", text: $workspace.transcriptionContext, axis: .vertical)
                 .lineLimit(2...5).privacySensitive()
+                .disabled(workspace.transcriptionModel == "gpt-4o-transcribe-diarize")
                 .onChange(of: workspace.transcriptionContext) { _, value in
                     if value.count > 2000 { workspace.transcriptionContext = String(value.prefix(2000)) }
                 }
-            Text("Optional words to help speech recognition. Assistant instructions below control the results.")
+            Text(workspace.transcriptionModel == "gpt-4o-transcribe-diarize"
+                 ? "Speaker labels apply only within each audio segment. This model does not accept vocabulary hints."
+                 : "Optional words to help speech recognition. Assistant instructions below control the results.")
                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
             Picker("Default assistant", selection: $workspace.selectedAssistantID) {
                 ForEach(workspace.assistants) { Text($0.name).tag($0.id) }

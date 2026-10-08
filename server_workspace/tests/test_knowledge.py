@@ -87,8 +87,8 @@ def test_limits_and_xml_entity_references_are_rejected():
     with pytest.raises(ExtractionError, match="could not be read"):
         extract(docx('<!DOCTYPE x [<!ENTITY secret SYSTEM "file:///private">]><x>&secret;</x>'), ".docx")
     with pytest.raises(ExtractionError, match="too much content"):
-        extract(docx(" " * (5 * 1024 * 1024 + 1)), ".docx")
-    with pytest.raises(ExtractionError, match="10 MB"):
+        extract(docx(" " * (knowledge.MAX_DOCX_XML_BYTES + 1)), ".docx")
+    with pytest.raises(ExtractionError, match="100 MB"):
         extract(b"x" * (knowledge.MAX_BYTES + 1), ".txt")
 
 
@@ -178,6 +178,37 @@ def test_file_size_hash_type_and_quota_are_checked_before_extraction(setup):
     for index in range(19):
         assert begin(client, a, aid, f"reserve-{index}", b"text").status_code == 200
     assert begin(client, a, aid, "over-quota", b"text").status_code == 409
+
+
+def test_hundred_mb_file_and_five_hundred_mb_total_reservations_are_enforced(setup):
+    _, client, _, _, (_, a), _ = setup
+    aid = aid_for(client, a)
+    path = f"/api/assistants/{aid}/knowledge"
+    limits = client.get(path, headers=a).json()
+    assert limits["max_bytes"] == 100 * 1024 * 1024
+    assert limits["max_total_bytes"] == 500 * 1024 * 1024
+    assert limits["max_characters"] == 2_000_000 and limits["max_pdf_pages"] == 1000
+    metadata = {"filename": "Large.pdf", "bytes": limits["max_bytes"], "sha256": "0" * 64}
+    assert client.put(path + "/too-large", headers=a, json={**metadata, "bytes": metadata["bytes"] + 1}).status_code == 422
+    for index in range(5):
+        assert client.put(path + f"/reserve-{index}", headers=a, json=metadata).status_code == 200
+    response = client.put(path + "/above-total", headers=a, json={**metadata, "bytes": 1})
+    assert response.status_code == 409 and "500 MB" in response.json()["detail"]
+    assert client.delete(path + "/reserve-0", headers=a).status_code == 200
+    assert client.put(path + "/after-removal", headers=a, json=metadata).status_code == 200
+
+
+def test_file_larger_than_old_limit_uploads_extracts_and_remains_encrypted(setup):
+    w, client, _, _, (_, a), _ = setup
+    aid = aid_for(client, a)
+    # Image-heavy PDFs can be large with little text. Padding keeps this fixture synthetic.
+    raw = pdf() + b"\n" * (11 * 1024 * 1024)
+    value = upload(client, a, aid, "large-pdf", raw, "Large.pdf")
+    assert value["state"] == "ready" and value["bytes"] == len(raw)
+    assert "violet" in client.get(f"/api/assistants/{aid}/knowledge/large-pdf", headers=a).json()["text"]
+    with w.db() as db:
+        row = db.execute("SELECT file FROM assistant_knowledge WHERE id='large-pdf'").fetchone()
+        assert row[0] != raw and w.cipher.open(row[0]) == raw
 
 
 def test_retrieval_is_scoped_ranked_bounded_and_cites_passages(setup):

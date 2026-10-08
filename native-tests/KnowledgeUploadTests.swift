@@ -75,9 +75,27 @@ final class KnowledgeUploadTests: XCTestCase {
         XCTAssertEqual(accepted.sha256, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
         try Data().write(to: url)
         XCTAssertThrowsError(try KnowledgeUpload.read(url))
-        try Data(repeating: 1, count: KnowledgeUpload.maxBytes + 1).write(to: url)
+        // A sparse file checks the 100 MB guard without allocating its full body.
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: UInt64(KnowledgeUpload.maxBytes + 1))
+        try handle.close()
         XCTAssertThrowsError(try KnowledgeUpload.read(url))
         XCTAssertThrowsError(try KnowledgeUpload.read(root.appendingPathComponent("image.png")))
+    }
+    func testReaderHonorsServerLimitAndDecodesLegacyAndExpandedLimits() throws {
+        let old = try JSONDecoder().decode(KnowledgeFileList.self, from: Data(#"{"files":[],"max_bytes":10485760,"max_files":20}"#.utf8))
+        XCTAssertEqual(old.totalBytes, 50 * 1024 * 1024)
+        XCTAssertEqual(old.pdfPages, 250)
+        let expanded = try JSONDecoder().decode(KnowledgeFileList.self, from: Data(#"{"files":[],"max_bytes":104857600,"max_files":20,"max_total_bytes":524288000,"max_characters":2000000,"max_pdf_pages":1000}"#.utf8))
+        XCTAssertEqual(expanded.totalBytes, 500 * 1024 * 1024)
+        XCTAssertEqual(expanded.characters, 2_000_000)
+        XCTAssertEqual(expanded.pdfPages, 1000)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".txt")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(repeating: 65, count: 11 * 1024 * 1024).write(to: url)
+        XCTAssertEqual(try KnowledgeUpload.read(url).data.count, 11 * 1024 * 1024)
+        XCTAssertThrowsError(try KnowledgeUpload.read(url, maxBytes: old.max_bytes))
+        XCTAssertThrowsError(try KnowledgeUpload.read(url, maxBytes: 0))
     }
     func testKnowledgeSourcesDecodeAsLabelsWithoutExternalLinksAndLegacyDefaultsStayPrivate() throws {
         let source = try JSONDecoder().decode(VoiceSource.self, from: Data(#"{"title":"Orbit.pdf · Page 2","url":"knowledge://file-1#3","kind":"knowledge","file_id":"file-1","location":"Page 2"}"#.utf8))
