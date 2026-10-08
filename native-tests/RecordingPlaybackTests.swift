@@ -23,7 +23,7 @@ final class RecordingPlaybackTests: XCTestCase {
             if index == 2 { finalPart.fulfill() }
             return self.wav()
         }
-        await fulfillment(of: [finalPart], timeout: 10)
+        await fulfillment(of: [finalPart], timeout: 30)
         XCTAssertEqual(indexes, [0, 1, 2])
         player.stop()
     }

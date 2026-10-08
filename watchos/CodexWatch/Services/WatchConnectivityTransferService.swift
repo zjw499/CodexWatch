@@ -362,19 +362,66 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         handleQueueMessage(message)
     }
 
+    func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+        if message["command"] as? String == "workspace-account" {
+            Task { @MainActor in replyHandler(self.applyWorkspaceAccount(message)) }
+        } else {
+            handleQueueMessage(message)
+            replyHandler(["ok": true])
+        }
+    }
+
+    @MainActor
+    func requestVoiceSetup() {
+        let watch = WCSession.default
+        guard watch.activationState == .activated, watch.isReachable else {
+            WatchVoiceService.shared.showSetupMessage("Open Scribe Pilot on your iPhone and keep your Watch nearby, then tap Sync from iPhone again. No code is needed.")
+            return
+        }
+        WatchVoiceService.shared.showSetupMessage("Checking voice setup with your iPhone…")
+        watch.sendMessage(["command": "voice-setup-request"], replyHandler: { reply in
+            Task { @MainActor in
+                guard reply["command"] as? String == "workspace-account" else { return }
+                _ = self.applyWorkspaceAccount(reply)
+            }
+        }, errorHandler: { _ in
+            Task { @MainActor in WatchVoiceService.shared.showSetupMessage("The iPhone did not respond. Open Scribe Pilot on your iPhone, then tap Sync from iPhone again.") }
+        })
+    }
+
+    @MainActor
+    private func applyWorkspaceAccount(_ context: [String: Any]) -> [String: Any] {
+        let raw = context["owner_id"] as? String ?? ""
+        let owner = RecordingQueueStore.validID(raw) ? raw : nil
+        if RecordingQueueStore.shared.accountID != owner {
+            meetingStatus = nil; lastRecordingID = nil
+        }
+        RecordingQueueStore.shared.setAccount(owner)
+        let result = WatchVoiceService.shared.applyAccount(owner: owner,
+            configurationData: context["voice_config"] as? Data, credentialData: context["voice_credential"] as? Data)
+        UserDefaults.standard.set(context["username"] as? String ?? "", forKey: "ScribePilot.WorkspaceUsername")
+        openAIReady = context["ready"] as? Bool ?? false
+        if let status = context["meeting_status"] as? [String: String], status["recording_id"] == lastRecordingID {
+            meetingStatus = status["status"]
+        }
+        guard let owner, let request = context["voice_setup_request"] as? String, VoiceWire.validID(request),
+              let credentialData = context["voice_credential"] as? Data,
+              let credential = try? JSONDecoder().decode(VoiceDeviceCredential.self, from: credentialData),
+              credential.owner_id == owner else { return ["ok": true] }
+        let receipt = VoiceSetupReceipt(version: 1, requestID: request, ownerID: owner, deviceID: credential.device_id, state: result)
+        guard let data = try? JSONEncoder().encode(receipt) else { return ["ok": false] }
+        let reply: [String: Any] = ["command": "voice-setup-receipt", "voice_setup_receipt": data]
+        // Durable, non-secret acknowledgment also works when the phone is suspended.
+        let session = WCSession.default
+        if !session.outstandingUserInfoTransfers.contains(where: { ($0.userInfo["voice_setup_receipt"] as? Data) == data }) {
+            session.transferUserInfo(reply)
+        }
+        return reply
+    }
+
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         if applicationContext["command"] as? String == "workspace-account" {
-            Task { @MainActor in
-                let raw = applicationContext["owner_id"] as? String ?? ""
-                let owner = RecordingQueueStore.validID(raw) ? raw : nil
-                if RecordingQueueStore.shared.accountID != owner {
-                    self.meetingStatus = nil
-                    self.lastRecordingID = nil
-                }
-                RecordingQueueStore.shared.setAccount(owner)
-                UserDefaults.standard.set(applicationContext["username"] as? String ?? "", forKey: "ScribePilot.WorkspaceUsername")
-                self.openAIReady = applicationContext["ready"] as? Bool ?? false
-            }
+            Task { @MainActor in _ = self.applyWorkspaceAccount(applicationContext) }
             return
         }
         guard applicationContext["command"] as? String == "meeting-status",
@@ -403,6 +450,10 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     private func handleQueueMessage(_ message: [String: Any]) {
+        if message["command"] as? String == "workspace-account" {
+            Task { @MainActor in _ = self.applyWorkspaceAccount(message) }
+            return
+        }
         if message["command"] as? String == "resend-recording" { handleResendRequest(message); return }
         Task { @MainActor in
             if message["command"] as? String == "processing-settings" {

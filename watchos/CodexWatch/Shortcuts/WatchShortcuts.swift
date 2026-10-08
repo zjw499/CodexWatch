@@ -1,5 +1,49 @@
 import AppIntents
 
+struct VoiceAssistantEntity: AppEntity {
+    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Voice Assistant")
+    static let defaultQuery = VoiceAssistantQuery()
+    let id: String
+    let name: String
+    var displayRepresentation: DisplayRepresentation { DisplayRepresentation(title: "\(name)") }
+}
+
+struct VoiceAssistantQuery: EntityQuery {
+    func entities(for identifiers: [String]) async throws -> [VoiceAssistantEntity] {
+        try await suggestedEntities().filter { identifiers.contains($0.id) }
+    }
+    func suggestedEntities() async throws -> [VoiceAssistantEntity] {
+        await MainActor.run {
+            guard let cache = VoiceDescriptorCache.read(), cache.owner == RecordingQueueStore.shared.accountID,
+                  cache.configuration.enabled else { return [] }
+            return cache.configuration.assistants.map { VoiceAssistantEntity(id: $0.id, name: $0.name) }
+        }
+    }
+}
+
+struct TalkWatchAssistantIntent: AppIntent {
+    static let title: LocalizedStringResource = "Talk to Assistant"
+    static let description = IntentDescription("Talk through your Watch microphone and speaker using your Scribe Pilot assistant.")
+    static let openAppWhenRun = true
+    @available(watchOS 26.0, *)
+    static let supportedModes: IntentModes = [.foreground(.immediate)]
+    @Parameter(title: "Assistant") var assistant: VoiceAssistantEntity?
+    static var parameterSummary: some ParameterSummary { Summary("Talk to \(\.$assistant)") }
+    func perform() async throws -> some IntentResult {
+        await WatchShortcutCommandRouter.enqueueVoice(assistantID: assistant?.id)
+        return .result()
+    }
+}
+
+struct EndWatchVoiceIntent: AppIntent {
+    static let title: LocalizedStringResource = "End Voice Conversation"
+    static let openAppWhenRun = true
+    func perform() async throws -> some IntentResult {
+        await WatchShortcutCommandRouter.enqueue(.endVoice)
+        return .result()
+    }
+}
+
 struct StartWatchRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Record Meeting on Watch"
     static let description = IntentDescription(
@@ -67,6 +111,18 @@ struct CodexWatchWatchShortcuts: AppShortcutsProvider {
     static let shortcutTileColor: ShortcutTileColor = .red
 
     static var appShortcuts: [AppShortcut] {
+        AppShortcut(
+            intent: TalkWatchAssistantIntent(),
+            phrases: ["Talk to an assistant with \(.applicationName)", "Talk to \(\.$assistant) with \(.applicationName)"],
+            shortTitle: "Talk to Assistant",
+            systemImageName: "waveform"
+        )
+        AppShortcut(
+            intent: EndWatchVoiceIntent(),
+            phrases: ["End the voice conversation with \(.applicationName)"],
+            shortTitle: "End Conversation",
+            systemImageName: "phone.down"
+        )
         AppShortcut(
             intent: StartWatchRecordingIntent(),
             phrases: [

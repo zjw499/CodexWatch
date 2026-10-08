@@ -15,6 +15,9 @@ struct CodexWatchApp: App {
     @StateObject private var workspace = PhoneWorkspace.shared
 
     init() {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-scribe-ui-preview") { UIView.setAnimationsEnabled(false) }
+        #endif
         CodexWatchShortcuts.updateAppShortcutParameters()
         ScribePreviewFixtures.loadIfRequested()
     }

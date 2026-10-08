@@ -18,13 +18,14 @@ struct PhoneSettingsView: View {
         Form {
             Section {
                 Label("Your AI workspace", systemImage: "waveform").font(.headline)
-                Text("Your organization provides the OpenAI connection. Choose how your recordings become useful results.")
+                Text("Your organization provides the OpenAI connection. Configure assistants for recordings and Watch conversations.")
                     .font(.footnote).foregroundStyle(ScribeTheme.muted)
             }
             if let user = workspace.user {
                 account(user)
                 models
                 assistants
+                watchVoice
                 Section("Recording workflow") {
                     Label("Review, then tap Process", systemImage: "checkmark.circle")
                     Label("Audio and results kept until deleted", systemImage: "tray.full")
@@ -98,14 +99,17 @@ struct PhoneSettingsView: View {
             Picker("Transcription", selection: $workspace.transcriptionModel) {
                 ForEach(workspace.transcriptionModels, id: \.self) { Text($0).tag($0) }
             }
-            Text("Use gpt-4o-transcribe for difficult recordings. Clear microphone placement still matters.")
+            Text("Choose gpt-transcribe for recorded speech, a mini model for speed, or the diarize model for speaker labels. Clear microphone placement still matters.")
                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
             TextField("Names, acronyms, and vocabulary", text: $workspace.transcriptionContext, axis: .vertical)
                 .lineLimit(2...5).privacySensitive()
+                .disabled(workspace.transcriptionModel == "gpt-4o-transcribe-diarize")
                 .onChange(of: workspace.transcriptionContext) { _, value in
                     if value.count > 2000 { workspace.transcriptionContext = String(value.prefix(2000)) }
                 }
-            Text("Optional words to help speech recognition. Assistant instructions below control the results.")
+            Text(workspace.transcriptionModel == "gpt-4o-transcribe-diarize"
+                 ? "Speaker labels apply only within each audio segment. This model does not accept vocabulary hints."
+                 : "Optional words to help speech recognition. Assistant instructions below control the results.")
                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
             Picker("Default assistant", selection: $workspace.selectedAssistantID) {
                 ForEach(workspace.assistants) { Text($0.name).tag($0.id) }
@@ -122,11 +126,31 @@ struct PhoneSettingsView: View {
                         Text(assistant.model).font(.caption).foregroundStyle(ScribeTheme.muted)
                     }
                 }
+                .accessibilityIdentifier("assistant-editor-\(assistant.id)")
             }
             Button { editingAssistant = WorkspaceAssistant(id: UUID().uuidString, name: "", instructions: "", model: workspace.generationModels.first ?? "gpt-4.1-mini") } label: {
                 Label("Create assistant", systemImage: "plus.circle")
             }
             Text("Give each assistant a purpose, model, and custom instructions. Choose it before processing a recording or regenerating results.")
+                .font(.footnote).foregroundStyle(ScribeTheme.muted)
+        }
+    }
+    private var watchVoice: some View {
+        Section("Watch voice") {
+            if let config = workspace.voiceConfiguration {
+                Picker("Default Watch assistant", selection: Binding(get: { config.default_assistant_id }, set: { id in
+                    run { try await workspace.setDefaultVoiceAssistant(id) }
+                })) {
+                    if config.assistants.isEmpty { Text("Enable voice on an assistant").tag("") }
+                    ForEach(config.assistants) { Text($0.name).tag($0.id) }
+                }
+                Button("Connect Watch voice") { run { try await workspace.provisionWatchVoice() } }
+                    .disabled(working || !config.enabled || config.assistants.isEmpty)
+            }
+            NavigationLink("Voice conversation history") { PhoneVoiceHistoryView() }
+            NavigationLink("Watch audio reports") { PhoneVoiceDiagnosticsView() }
+            if let message = workspace.voiceMessage { Text(message).font(.footnote).foregroundStyle(ScribeTheme.muted) }
+            Text("No code to enter. Keep Scribe Pilot open on your unlocked Watch during setup; the iPhone transfers access automatically and shows confirmation here. After setup, your Watch needs internet and the PC must be online. Text is saved; audio is not retained.")
                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
         }
     }
@@ -150,12 +174,65 @@ struct PhoneAssistantEditor: View {
                 TextField("Name", text: $assistant.name)
                 Picker("Results model", selection: $assistant.model) {
                     ForEach(workspace.generationModels, id: \.self) { Text($0).tag($0) }
+                    ForEach(workspace.pendingGenerationModels, id: \.self) {
+                        Text("\($0) · awaiting API access").tag($0).disabled(true)
+                    }
+                }
+                if !workspace.pendingGenerationModels.isEmpty {
+                    Text("\(workspace.pendingGenerationModels.joined(separator: ", ")) is awaiting access in your organization's OpenAI project.")
+                        .font(.footnote).foregroundStyle(ScribeTheme.muted)
                 }
             }
             Section("Custom instructions") {
                 TextEditor(text: $assistant.instructions).frame(minHeight: 240).privacySensitive()
-                Text("Describe the output, tone, structure, and facts this assistant should focus on. It works from your recording and follow-up messages.")
+                Text("Describe this assistant's purpose, tone, and instructions. These also apply when you enable Watch voice conversations.")
                     .font(.footnote).foregroundStyle(ScribeTheme.muted)
+            }
+            Section("Knowledge files") {
+                if let saved = workspace.assistants.first(where: { $0.id == assistant.id }) {
+                    NavigationLink {
+                        PhoneKnowledgeFilesView(assistantID: assistant.id, assistantName: assistant.name)
+                    } label: {
+                        Label("Manage files · \(saved.knowledge_file_count ?? 0)", systemImage: "doc.text")
+                    }
+                    .accessibilityIdentifier("assistant-knowledge-files")
+                } else {
+                    Text("Save this assistant before adding files.")
+                }
+                Text("Upload reference files for Watch voice conversations. The assistant finds relevant passages and shows file sources in History.")
+                    .font(.footnote).foregroundStyle(ScribeTheme.muted)
+            }
+            Section("Watch voice") {
+                Toggle("Enable voice conversations", isOn: $assistant.voiceSettings.enabled)
+                if assistant.voiceSettings.enabled {
+                    Picker("Voice", selection: $assistant.voiceSettings.voice) {
+                        ForEach(workspace.voiceConfiguration?.voices ?? ["marin", "cedar"], id: \.self) { Text($0.capitalized).tag($0) }
+                    }
+                    .accessibilityIdentifier("assistant-voice-picker")
+                    Toggle("Calculations and current time", isOn: $assistant.voiceSettings.tools_enabled)
+                    if assistant.voiceSettings.tools_enabled {
+                        Toggle("Search the public web", isOn: $assistant.voiceSettings.web_search)
+                            .accessibilityIdentifier("assistant-web-search-toggle")
+                        if assistant.voiceSettings.web_search {
+                            Toggle("Knowledge files contain public information only", isOn: $assistant.voiceSettings.knowledge_public)
+                            Text("Files are private by default, which pauses public web search for conversations using them. Enable this only for public, non-sensitive reference material. A conversation that already used private knowledge keeps web search paused.")
+                                .font(.footnote).foregroundStyle(ScribeTheme.muted)
+                            Text("Use this assistant for public, non-sensitive topics. Live web search is outside the organization's BAA. Recording content is never included in search.")
+                                .font(.footnote).foregroundStyle(ScribeTheme.muted)
+                            if workspace.voiceConfiguration?.public_web_search_enabled != true {
+                                Text("An administrator must enable public web search in Watch voice policy.")
+                                    .font(.footnote).foregroundStyle(ScribeTheme.muted)
+                            }
+                        }
+                    }
+                    if let models = workspace.voiceConfiguration?.models, models.count > 1 {
+                        Picker("Voice model", selection: $assistant.voiceSettings.model) {
+                            ForEach(models, id: \.self) { Text($0).tag($0) }
+                        }
+                    }
+                    Text("Quick launches start a fresh conversation. Resume a saved conversation from History.")
+                        .font(.footnote).foregroundStyle(ScribeTheme.muted)
+                }
             }
             if workspace.assistants.contains(where: { $0.id == assistant.id }) {
                 Section { Button("Delete assistant", role: .destructive) { deleting = true } }

@@ -1,8 +1,39 @@
 name: Build watchOS and upload to TestFlight
 
 on:
+  push:
+    branches: [feature/watch-voice-assistants]
+    paths: ['.github/workflows/watchos-testflight.yml']
   workflow_dispatch:
     inputs:
+      archive_only:
+        description: Prepare and retain a signed archive for validation before distribution
+        type: boolean
+        required: false
+        default: true
+      realtime_retention_confirmed:
+        description: Realtime Modified Retention is confirmed for the configured organization/project
+        type: boolean
+        required: false
+        default: false
+      pilot_release:
+        description: Distribute an administrator pilot for physical Watch testing before production acceptance
+        type: boolean
+        required: false
+        default: false
+      device_acceptance_confirmed:
+        description: Physical Watch voice acceptance has passed, including independent networking
+        type: boolean
+        required: false
+        default: false
+      release_evidence:
+        description: Non-sensitive retention confirmation and pilot testing or physical Watch acceptance evidence
+        required: false
+        default: ""
+      native_verification_run:
+        description: Matching native verification run with completed build and tests for this source
+        required: false
+        default: ""
       check_only:
         description: Check an existing TestFlight build without creating a new archive
         required: false
@@ -10,7 +41,7 @@ on:
       build_number:
         description: Existing build number to check when check_only is true
         required: false
-        default: "49"
+        default: "160"
       diagnose_only:
         description: Print the App Store Connect app and latest visible builds without polling
         required: false
@@ -18,6 +49,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: watchos-testflight-intel
@@ -27,7 +59,7 @@ jobs:
   build-and-upload:
     if: ${{ inputs.check_only != 'true' }}
     runs-on: macos-26-intel
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       APP_BUNDLE_ID: com.zachwyatt.codexwatch
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -38,10 +70,37 @@ jobs:
       WATCH_AUDIO_UPLOAD_URL: https://zwyattpc.tail488e93.ts.net/upload
       WATCH_AUDIO_BASIC_AUTH_USERNAME: ""
       WATCH_AUDIO_BASIC_AUTH_PASSWORD: ""
+      # The explicit feature-branch marker requests an approved administrator pilot.
+      # Ordinary pushes retain archive-only behavior.
+      ARCHIVE_ONLY: ${{ inputs.archive_only || (github.event_name != 'workflow_dispatch' && !contains(github.event.head_commit.message, '[watch-voice-pilot]')) }}
+      PILOT_RELEASE: ${{ inputs.pilot_release || (github.event_name == 'push' && contains(github.event.head_commit.message, '[watch-voice-pilot]')) }}
 
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+
+      - name: Validate release mode
+        shell: bash
+        env:
+          REALTIME_RETENTION_CONFIRMED: ${{ inputs.realtime_retention_confirmed || (github.event_name == 'push' && contains(github.event.head_commit.message, '[watch-voice-pilot]')) }}
+          DEVICE_ACCEPTANCE_CONFIRMED: ${{ inputs.device_acceptance_confirmed }}
+          RELEASE_EVIDENCE: ${{ inputs.release_evidence || github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          if [[ "$ARCHIVE_ONLY" == "true" ]]; then
+            echo "Preparing a signed archive for validation."
+            exit 0
+          fi
+          if [[ "$REALTIME_RETENTION_CONFIRMED" != "true" || ! "$RELEASE_EVIDENCE" =~ [^[:space:]] ]]; then
+            echo "TestFlight upload requires recorded Realtime retention evidence." >&2
+            exit 1
+          fi
+          if [[ "$PILOT_RELEASE" == "true" ]]; then
+            echo "Preparing the administrator pilot for physical Watch acceptance testing."
+          elif [[ "$DEVICE_ACCEPTANCE_CONFIRMED" != "true" ]]; then
+            echo "Production distribution requires physical Watch acceptance evidence." >&2
+            exit 1
+          fi
 
       - name: Validate required secrets
         shell: bash
@@ -253,6 +312,7 @@ jobs:
           set -euo pipefail
           APP_PATH="$(find "$RUNNER_TEMP/CodexWatch.xcarchive/Products/Applications" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -d "$APP_PATH"
+          codesign --verify --deep --strict "$APP_PATH"
           CA_PATH="$(find "$APP_PATH" -type f -name 'watch-audio-ca.crt' -print -quit)"
           test -n "$CA_PATH"
           echo "iPhone upload CA found at app-relative path: ${CA_PATH#"$APP_PATH/"}"
@@ -279,6 +339,7 @@ jobs:
           WATCH_EXTENSION_PATH="$(find "$RUNNER_TEMP/CodexWatch.xcarchive" -type d -name '*.appex' -print -quit)"
           test -d "$WATCH_EXTENSION_PATH"
           test -d "$WATCH_EXTENSION_PATH/Metadata.appintents"
+          python3 scripts/verify_watch_voice_metadata.py "$WATCH_EXTENSION_PATH/Metadata.appintents"
 
           WATCH_INFO="$WATCH_EXTENSION_PATH/Info.plist"
           complication_class="$(/usr/libexec/PlistBuddy -c 'Print :CLKComplicationPrincipalClass' "$WATCH_INFO")"
@@ -294,7 +355,57 @@ jobs:
           fi
           echo "Watch App Intents metadata and complication configuration are present"
 
+      - name: Package verified signed archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          deliverables="$RUNNER_TEMP/archive-deliverables"
+          mkdir -p "$deliverables"
+          tar -czf "$deliverables/ScribePilot-${GITHUB_RUN_NUMBER}.xcarchive.tar.gz" \
+            -C "$RUNNER_TEMP" CodexWatch.xcarchive
+          python3 <<'PY'
+          import hashlib, json, os, plistlib
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          archive = next((root / 'archive-deliverables').glob('*.tar.gz'))
+          with archive.open('rb') as source:
+              digest = hashlib.file_digest(source, 'sha256').hexdigest()
+          with (root / 'CodexWatch.xcarchive' / 'Info.plist').open('rb') as source:
+              info = plistlib.load(source)['ApplicationProperties']
+          manifest = {
+              'schema_version': 1, 'source_commit': os.environ['GITHUB_SHA'],
+              'workflow_run': os.environ['GITHUB_RUN_ID'], 'archive': archive.name,
+              'sha256': digest, 'bundle_id': info['CFBundleIdentifier'],
+              'version': info['CFBundleShortVersionString'], 'build_number': info['CFBundleVersion'],
+              'mode': ('archive_only' if os.environ['ARCHIVE_ONLY'] == 'true' else
+                       'administrator_pilot' if os.environ['PILOT_RELEASE'] == 'true' else 'production_release'),
+              'watch_shortcuts_and_complications_verified': True,
+          }
+          (archive.parent / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
+              summary.write(f"Signed iPhone/Watch archive: **{manifest['version']} ({manifest['build_number']})**\n\n")
+              summary.write(f"Source: `{manifest['source_commit']}`. Mode: `{manifest['mode']}`.\n\n")
+              summary.write('Watch App Intents and complication metadata passed archive validation.\n')
+          PY
+
+      - name: Retain signed archive and source manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: scribe-pilot-signed-archive-${{ github.run_number }}
+          path: ${{ runner.temp }}/archive-deliverables/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Require matching native verification before distribution
+        if: ${{ env.ARCHIVE_ONLY == 'false' }}
+        timeout-minutes: 46
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_VERIFICATION_RUN: ${{ inputs.native_verification_run || github.event.head_commit.message }}
+        run: python3 scripts/require_native_verification.py
+
       - name: Upload archive to TestFlight
+        if: ${{ env.ARCHIVE_ONLY == 'false' }}
         shell: bash
         env:
           APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
@@ -342,12 +453,13 @@ jobs:
             -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID"
 
   check-testflight-build:
-    if: ${{ inputs.check_only == 'true' }}
+    needs: build-and-upload
+    if: ${{ always() && (inputs.check_only == 'true' || (needs.build-and-upload.result == 'success' && ((github.event_name == 'workflow_dispatch' && !inputs.archive_only) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[watch-voice-pilot]'))))) }}
     runs-on: macos-26-intel
     timeout-minutes: 20
     env:
       APP_ID: "6789821399"
-      BUILD_NUMBER: ${{ inputs.build_number }}
+      BUILD_NUMBER: ${{ inputs.check_only == 'true' && inputs.build_number || github.run_number }}
       DIAGNOSE_ONLY: ${{ inputs.diagnose_only }}
       BETA_GROUP_NAME: Personal Internal Testing
       APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
@@ -395,6 +507,7 @@ jobs:
             app_json="$(curl -fsSL "${auth[@]}" "$api/apps/$APP_ID")"
             echo "$app_json" | jq -c '{id: .data.id, name: .data.attributes.name, bundleId: .data.attributes.bundleId}'
             all_builds="$(curl -fsSL "${auth[@]}" -G "$api/builds" \
+              --data-urlencode "filter[app]=$APP_ID" \
               --data-urlencode "sort=-uploadedDate" \
               --data-urlencode "limit=25")"
             echo "Latest visible builds:"
@@ -408,6 +521,7 @@ jobs:
           processing_state=""
           for attempt in $(seq 1 20); do
             build_json="$(curl -fsSL "${auth[@]}" -G "$api/builds" \
+              --data-urlencode "filter[app]=$APP_ID" \
               --data-urlencode "sort=-uploadedDate" \
               --data-urlencode "limit=50")"
             build_row="$(jq -r --arg build "$BUILD_NUMBER" '

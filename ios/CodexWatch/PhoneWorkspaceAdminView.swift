@@ -54,6 +54,9 @@ struct PhoneWorkspaceAdminView: View {
                 Link("OpenAI HIPAA requirements", destination: URL(string: "https://help.openai.com/en/articles/20001069-hipaa-eligible-products-and-functionality")!)
             }
             Section("Organization review") {
+                NavigationLink("Watch voice policy") { PhoneVoicePolicyView() }
+                NavigationLink("Review all users' voice conversations") { PhoneVoiceHistoryView(review: true) }
+                NavigationLink("Review Watch audio reports") { PhoneVoiceDiagnosticsView(review: true) }
                 NavigationLink("Review all users' recordings") {
                     List(recordings) { recording in
                         NavigationLink { PhoneRemoteRecordingView(recordingID: recording.id, review: true) } label: {
