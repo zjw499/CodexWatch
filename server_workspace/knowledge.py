@@ -62,13 +62,20 @@ def extract(raw, extension):
     try:
         if extension == ".pdf":
             from pypdf import PdfReader, Configuration
+            from pypdf.errors import DependencyError
             # A second bound on compressed content, before page parsing.
             Configuration.zlib_maximum_output_length = 5 * 1024 * 1024
             # Recover common cross-reference defects, as ordinary PDF viewers do.
             # Isolation, time, page, decompression and text bounds still apply.
-            reader = PdfReader(io.BytesIO(raw), strict=False)
-            if reader.is_encrypted:
-                raise ExtractionError("Remove the PDF password before uploading", "PDF_PASSWORD")
+            try:
+                reader = PdfReader(io.BytesIO(raw), strict=False)
+                # Secured PDFs can still open without a user password. The flag
+                # remains true after decryption, so check the empty password.
+                if reader.is_encrypted and not reader.decrypt(""):
+                    raise ExtractionError("Remove the PDF password before uploading", "PDF_PASSWORD")
+            except DependencyError:
+                raise ExtractionError("The PC's PDF reader needs encryption support. Your upload is saved; retry after the PC is updated",
+                                      "FILE_READER_UNAVAILABLE") from None
             if len(reader.pages) > MAX_PDF_PAGES:
                 raise ExtractionError("PDFs can have up to 1000 pages. Split this file")
             for index, page in enumerate(reader.pages):
@@ -382,7 +389,7 @@ def install_routes(app, workspace, account):
             sealed = await asyncio.to_thread(workspace.cipher.seal, raw)
         except ExtractionError as error:
             store.failure(user["id"], assistant_id, file_id, user, str(error), error.code, ticket)
-            fail(422, str(error))
+            fail(503 if error.code == "FILE_READER_UNAVAILABLE" else 422, str(error))
         except asyncio.CancelledError:
             store.failure(user["id"], assistant_id, file_id, user, "File reading was interrupted. Retry this upload", "FILE_READ_INTERRUPTED", ticket)
             raise

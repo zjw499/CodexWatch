@@ -74,6 +74,66 @@ def test_pdf_reader_recovers_viewer_readable_cross_reference_defects():
     assert "violet" in json.dumps(extract(raw, ".pdf"))
 
 
+def secured_pdf(password, algorithm):
+    from pypdf import PdfReader, PdfWriter
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(pdf())))
+    writer.encrypt(password, owner_password="synthetic-owner-password", algorithm=algorithm)
+    result = io.BytesIO()
+    writer.write(result)
+    return result.getvalue()
+
+
+@pytest.mark.parametrize("algorithm", ["RC4-128", "AES-128", "AES-256-R5", "AES-256"])
+def test_pdf_that_opens_without_password_is_read_in_isolated_worker(algorithm):
+    # These remain is_encrypted even though a viewer can open them without a prompt.
+    raw = secured_pdf("", algorithm)
+    result = asyncio.run(knowledge.extract_isolated(raw, ".pdf"))
+    assert "violet" in json.dumps(result)
+    assert result["sections"][0]["location"] == "Page 1"
+
+
+@pytest.mark.parametrize("algorithm", ["RC4-128", "AES-128", "AES-256-R5", "AES-256"])
+def test_pdf_that_requires_password_keeps_actionable_error(algorithm):
+    raw = secured_pdf("synthetic-user-password", algorithm)
+    with pytest.raises(ExtractionError) as raised:
+        asyncio.run(knowledge.extract_isolated(raw, ".pdf"))
+    assert raised.value.code == "PDF_PASSWORD"
+    assert "synthetic" not in str(raised.value)
+
+
+def test_missing_pdf_crypto_support_reports_pc_fault_without_parser_payload(monkeypatch):
+    import pypdf
+    from pypdf.errors import DependencyError
+    def unavailable(*args, **kwargs):
+        raise DependencyError("SENSITIVE_PARSER_PAYLOAD")
+    monkeypatch.setattr(pypdf, "PdfReader", unavailable)
+    with pytest.raises(ExtractionError) as raised:
+        extract(pdf(), ".pdf")
+    assert raised.value.code == "FILE_READER_UNAVAILABLE"
+    assert "PC" in str(raised.value) and "saved" in str(raised.value)
+    assert "SENSITIVE_PARSER_PAYLOAD" not in str(raised.value)
+
+
+def test_pdf_reader_unavailable_preserves_upload_for_retry(setup, monkeypatch):
+    w, client, _, _, (_, a), _ = setup
+    aid = aid_for(client, a)
+    raw = pdf()
+    path = f"/api/assistants/{aid}/knowledge/crypto-unavailable"
+    assert begin(client, a, aid, "crypto-unavailable", raw, "Reference.pdf").status_code == 200
+    send_chunks(client, a, path, raw)
+    original = knowledge.extract_isolated
+    async def unavailable(*args):
+        raise ExtractionError("The PC's PDF reader needs encryption support. Your upload is saved", "FILE_READER_UNAVAILABLE")
+    monkeypatch.setattr(knowledge, "extract_isolated", unavailable)
+    assert client.post(path + "/complete", headers=a).status_code == 503
+    file = client.get(path, headers=a).json()["file"]
+    assert file["error_code"] == "FILE_READER_UNAVAILABLE" and file["uploaded_bytes"] == len(raw)
+    with w.db() as db:
+        assert db.execute("SELECT COUNT(*) FROM assistant_knowledge_chunks WHERE file_id='crypto-unavailable'").fetchone()[0] == 1
+    monkeypatch.setattr(knowledge, "extract_isolated", original)
+    assert client.post(path + "/complete", headers=a).json()["state"] == "ready"
+
+
 def test_upload_batches_resume_after_restart_and_lost_acknowledgement(setup):
     w, client, _, _, (_, a), (_, b) = setup
     aid = aid_for(client, a)
