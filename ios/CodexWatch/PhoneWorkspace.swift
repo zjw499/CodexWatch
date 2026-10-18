@@ -506,12 +506,12 @@ final class PhoneWorkspace: ObservableObject {
         guard let owner = user?.id, WCSession.isSupported(), WCSession.default.activationState == .activated else { throw VoiceError.setup }
         let watch = WCSession.default
         guard watch.isPaired, watch.isWatchAppInstalled else { throw VoiceStartupError(message: "Install Scribe Pilot on your paired Apple Watch.") }
-        var context = watchAccountContext()
-        context["voice_launch"] = try JSONEncoder().encode(VoiceLaunchRequest(ownerID: owner, assistantID: assistantID))
+        let context: [String: Any] = ["command": "voice-launch",
+            "voice_launch": try JSONEncoder().encode(VoiceLaunchRequest(ownerID: owner, assistantID: assistantID))]
         // Launch requests expire in 60 seconds and never start background audio.
         // Keep them out of the durable account context to avoid replaying launches.
         if watch.isReachable {
-            watch.sendMessage(context, replyHandler: nil, errorHandler: { _ in })
+            watch.sendMessage(context, replyHandler: nil, errorHandler: { _ in watch.transferUserInfo(context) })
         } else { watch.transferUserInfo(context) }
     }
 

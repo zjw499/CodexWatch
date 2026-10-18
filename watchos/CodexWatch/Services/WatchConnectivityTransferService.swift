@@ -433,6 +433,9 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
 
     @MainActor
     private func applyWorkspaceAccount(_ context: [String: Any]) -> [String: Any] {
+        // Launches have a separate, expiring owner-bound envelope. Never apply
+        // account credentials replayed from an older queued shortcut handoff.
+        guard context["voice_launch"] == nil else { return ["ok": false] }
         let raw = context["owner_id"] as? String ?? ""
         let owner = RecordingQueueStore.validID(raw) ? raw : nil
         if RecordingQueueStore.shared.accountID != owner {
@@ -441,10 +444,6 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         RecordingQueueStore.shared.setAccount(owner)
         let result = WatchVoiceService.shared.applyAccount(owner: owner,
             configurationData: context["voice_config"] as? Data, credentialData: context["voice_credential"] as? Data)
-        if let launchData = context["voice_launch"] as? Data,
-           let launch = try? JSONDecoder().decode(VoiceLaunchRequest.self, from: launchData), launch.valid(owner: owner) {
-            WatchShortcutCommandRouter.enqueueLaunch(launch)
-        }
         UserDefaults.standard.set(context["username"] as? String ?? "", forKey: "ScribePilot.WorkspaceUsername")
         openAIReady = context["ready"] as? Bool ?? false
         if let status = context["meeting_status"] as? [String: String], status["recording_id"] == lastRecordingID {
@@ -496,6 +495,15 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     private func handleQueueMessage(_ message: [String: Any]) {
+        if message["command"] as? String == "voice-launch" {
+            Task { @MainActor in
+                guard let data = message["voice_launch"] as? Data,
+                      let launch = try? JSONDecoder().decode(VoiceLaunchRequest.self, from: data),
+                      launch.valid(owner: RecordingQueueStore.shared.accountID) else { return }
+                WatchShortcutCommandRouter.enqueueLaunch(launch)
+            }
+            return
+        }
         if message["command"] as? String == "workspace-account" {
             Task { @MainActor in _ = self.applyWorkspaceAccount(message) }
             return
