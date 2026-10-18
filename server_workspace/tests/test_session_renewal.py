@@ -91,3 +91,38 @@ def test_private_activity_renews_only_its_parent_devices(voice):
         assert db.execute("SELECT expires FROM voice_devices WHERE hash=?", (digest(device["token"]),)).fetchone()[0] == expiry
     assert private.delete("/api/session", headers=phone_headers).status_code == 200
     assert public.get("/voice/v1/config", headers=headers).status_code == 401
+
+
+def test_reopening_phone_preserves_token_renewed_by_watch_and_active_conversation(voice):
+    w, private, public, people, _, device, headers, _ = voice
+    info = start(voice)
+    with w.db() as db:
+        db.execute("UPDATE sessions SET expires=? WHERE hash=?", (time.time() + 60, digest(people["alice"][0]["token"])))
+    renewed = public.get("/voice/v1/config", headers=headers)
+    assert renewed.status_code == 200
+    confirmed = private.post("/api/voice/devices", headers=people["alice"][1],
+                             json={"device_id": device["device_id"], "existing_token": device["token"]})
+    assert confirmed.status_code == 200
+    assert confirmed.json()["token"] == device["token"]
+    assert confirmed.json()["expires"] == float(renewed.headers["X-Scribe-Session-Expires"])
+    public.portal.call(asyncio.sleep, 1.1)
+    assert public.app.state.voice.sessions[info["id"]].state != "ended"
+
+
+@pytest.mark.parametrize("other", ["expired", "different-parent", "different-owner"])
+def test_cached_provisioning_token_requires_live_owner_and_parent_binding(voice, other):
+    w, private, public, people, _, device, headers, _ = voice
+    if other == "expired":
+        with w.db() as db:
+            db.execute("UPDATE voice_devices SET expires=0 WHERE hash=?", (digest(device["token"]),))
+        phone_headers = people["alice"][1]
+    elif other == "different-parent":
+        replacement = private.post("/api/login", json={"username": "alice", "password": "long-test-password"}).json()
+        phone_headers = {"Authorization": "Bearer " + replacement["token"]}
+    else:
+        phone_headers = people["bobby"][1]
+    response = private.post("/api/voice/devices", headers=phone_headers,
+                            json={"device_id": device["device_id"], "existing_token": device["token"]})
+    assert response.status_code == 200
+    assert response.json()["token"] != device["token"]
+    assert response.json()["owner_id"] == people["bobby" if other == "different-owner" else "alice"][0]["user"]["id"]

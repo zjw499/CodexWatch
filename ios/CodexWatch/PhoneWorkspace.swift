@@ -465,8 +465,14 @@ final class PhoneWorkspace: ObservableObject {
         }
         let deviceID = UserDefaults.standard.string(forKey: "ScribePilot.WatchVoiceDeviceID") ?? UUID().uuidString
         UserDefaults.standard.set(deviceID, forKey: "ScribePilot.WatchVoiceDeviceID")
+        var provision = ["device_id": deviceID]
+        if let existing = WorkspaceKeychain.read(WatchVoiceBinding.self, account: "watch-voice"),
+           existing.parentHash == hash, existing.credential.canAuthenticate, existing.credential.owner_id == captured.user.id,
+           existing.credential.device_id == deviceID, existing.credential.gateway_url == config.gateway_url {
+            provision["existing_token"] = existing.credential.token
+        }
         let device: VoiceDeviceCredential = try await request("voice/devices", method: "POST",
-            body: JSONEncoder().encode(["device_id": deviceID]))
+            body: JSONEncoder().encode(provision))
         guard credential?.token == captured.token else { throw CancellationError() }
         guard device.valid, device.owner_id == captured.user.id, device.gateway_url == config.gateway_url else { throw VoiceError.setup }
         try WorkspaceKeychain.save(WatchVoiceBinding(parentHash: hash, credential: device, setupRequestID: UUID().uuidString), account: "watch-voice")
@@ -550,7 +556,9 @@ final class PhoneWorkspace: ObservableObject {
     private func revokePendingSessions() async {
         let pending = WorkspaceKeychain.read([WorkspaceCredential].self, account: "revocations") ?? []
         var remaining: [WorkspaceCredential] = []
-        for entry in pending where entry.expires > Date().timeIntervalSince1970 {
+        // The server may have renewed this session through the independent Watch.
+        // Always attempt revocation; only a server 401 proves it already ended.
+        for entry in pending {
             do {
                 let _: OK = try await request("session", method: "DELETE", base: entry.server, token: entry.token)
             } catch {

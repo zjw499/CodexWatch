@@ -38,6 +38,7 @@ class VoicePolicy(BaseModel):
 
 class DeviceBody(BaseModel):
     device_id: str = Field(min_length=1, max_length=140)
+    existing_token: str | None = Field(default=None, min_length=20, max_length=256)
 
 
 class PreferencesBody(BaseModel):
@@ -122,13 +123,21 @@ class VoiceStore:
                 "session_seconds": policy.session_seconds, "idle_seconds": policy.idle_seconds,
                 "public_web_search_enabled": policy.public_web_search_enabled}
 
-    def provision(self, user, device_id: str):
+    def provision(self, user, device_id: str, existing_token: str | None = None):
         identifier(device_id)
         self.require_available(user["id"])
         token = secrets.token_urlsafe(32)
         with self.w.db() as db:
             self.w.require_session(db, user)
             parent = db.execute("SELECT expires FROM sessions WHERE hash=?", (user["session_hash"],)).fetchone()
+            # The Watch can renew while the phone is offline. Confirm a cached
+            # token against live server state before replacing an active device.
+            if existing_token:
+                current = db.execute("SELECT expires FROM voice_devices WHERE hash=? AND owner=? AND parent_session=? AND device_id=? AND expires>?",
+                                     (digest(existing_token), user["id"], user["session_hash"], device_id, time.time())).fetchone()
+                if current:
+                    return {"version": 1, "token": existing_token, "owner_id": user["id"], "expires": min(current[0], parent[0]),
+                            "gateway_url": self.w.config.voice_gateway_url, "device_id": device_id}
             db.execute("DELETE FROM voice_devices WHERE owner=? AND device_id=?", (user["id"], device_id))
             db.execute("INSERT INTO voice_devices VALUES(?,?,?,?,?)",
                        (digest(token), user["id"], user["session_hash"], device_id, parent[0]))
@@ -265,7 +274,7 @@ def install_private_routes(app, workspace, account, admin):
 
     @app.post("/api/voice/devices")
     def provision(body: DeviceBody, user=Depends(account)):
-        return store.provision(user, body.device_id)
+        return store.provision(user, body.device_id, body.existing_token)
 
     @app.delete("/api/voice/devices/{device_id}")
     def revoke_device(device_id: str, user=Depends(account)):
