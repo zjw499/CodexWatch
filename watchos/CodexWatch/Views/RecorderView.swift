@@ -20,6 +20,7 @@ struct RecorderView: View {
             capture.tag(0)
             WatchRecordingQueueView().tag(1)
             WatchProcessingView().tag(2)
+            WatchVoiceHomeView().tag(3)
         }
         .tabViewStyle(.verticalPage)
         .background(ScribeTheme.background.ignoresSafeArea()).tint(ScribeTheme.red)

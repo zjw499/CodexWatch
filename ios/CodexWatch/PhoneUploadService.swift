@@ -245,7 +245,10 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             setStatus("Watch transfer unavailable: \(error.localizedDescription)")
         } else if activationState == .activated {
             setStatus("Ready for watch recordings")
-            Task { @MainActor in PhoneWorkspace.shared.syncWatchAccount() }
+            Task { @MainActor in
+                _ = await PhoneWorkspace.shared.automaticWatchContext()
+                PhoneWorkspace.shared.syncWatchAccount()
+            }
         }
     }
 
@@ -741,7 +744,36 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         handleQueueCommand(message)
     }
 
+    func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+        if message["command"] as? String == "voice-setup-request" {
+            Task { @MainActor in replyHandler(await PhoneWorkspace.shared.automaticWatchContext(
+                repair: message["repair"] as? Bool == true, requestID: message["request_id"] as? String)) }
+        } else {
+            handleQueueCommand(message)
+            replyHandler(["ok": true])
+        }
+    }
+
+    func sessionReachabilityDidChange(_ session: WCSession) {
+        if session.isReachable { Task { @MainActor in
+            _ = await PhoneWorkspace.shared.automaticWatchContext()
+            PhoneWorkspace.shared.syncWatchAccount()
+        } }
+    }
+
     private func handleQueueCommand(_ message: [String: Any]) {
+        if message["command"] as? String == "voice-setup-request" {
+            Task { @MainActor in
+                _ = await PhoneWorkspace.shared.automaticWatchContext(repair: message["repair"] as? Bool == true,
+                    requestID: message["request_id"] as? String)
+                PhoneWorkspace.shared.syncWatchAccount()
+            }
+            return
+        }
+        if message["command"] as? String == "voice-setup-receipt" {
+            Task { @MainActor in PhoneWorkspace.shared.receiveWatchVoiceReceipt(message) }
+            return
+        }
         guard let id = message["recording_id"] as? String, RecordingQueueStore.validID(id) else { return }
         Task { @MainActor in
             do {
@@ -982,11 +1014,16 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
         DispatchQueue.main.async {
             let session = WCSession.default
             guard session.activationState == .activated else { return }
-            let context: [String: Any] = [
+            var context: [String: Any] = [
                 "command": "meeting-status", "recording_id": recordingID, "status": message,
             ]
             let previous = session.applicationContext
             guard previous["recording_id"] as? String != recordingID || previous["status"] as? String != message else { return }
+            // A meeting update must not replace undelivered account/voice provisioning.
+            if previous["command"] as? String == "workspace-account" {
+                context = previous
+                context["meeting_status"] = ["recording_id": recordingID, "status": message]
+            }
             try? session.updateApplicationContext(context)
         }
     }

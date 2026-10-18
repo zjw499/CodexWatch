@@ -14,8 +14,12 @@ final class PhoneRecorderService: NSObject, ObservableObject {
     @Published var errorMessage: String?
 
     private var recorder: AVAudioRecorder?
+    private var starting = false
 
     func startRecording() async {
+        guard !starting else { return }
+        starting = true
+        defer { starting = false }
         guard !isRecording else {
             statusMessage = "Already recording"
             return

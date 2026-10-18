@@ -6,6 +6,8 @@ enum ScribePilotComplication {
     static let recordIdentifier = "ScribePilot.Record"
     static let openActivityType = "com.zachwyatt.codexwatch.open"
     static let recordActivityType = "com.zachwyatt.codexwatch.record"
+    static let voiceIdentifier = "ScribePilot.Voice"
+    static let voiceActivityType = "com.zachwyatt.codexwatch.voice"
 
     static let supportedFamilies: [CLKComplicationFamily] = [
         .graphicCircular,
@@ -46,7 +48,19 @@ final class ScribePilotComplicationDataSource: NSObject, CLKComplicationDataSour
                 title: "Open Scribe Pilot"
             )
         )
-        handler([record, open])
+        var descriptors = [record, open]
+        descriptors.append(CLKComplicationDescriptor(identifier: ScribePilotComplication.voiceIdentifier,
+            displayName: "Talk to Assistant", supportedFamilies: ScribePilotComplication.supportedFamilies,
+            userActivity: ScribePilotComplication.activity(type: ScribePilotComplication.voiceActivityType, title: "Talk to Assistant")))
+        if let cache = VoiceDescriptorCache.read(), cache.owner == RecordingQueueStore.shared.accountID, cache.configuration.enabled {
+            for assistant in cache.configuration.assistants {
+                let activity = ScribePilotComplication.activity(type: ScribePilotComplication.voiceActivityType, title: "Talk to \(assistant.name)")
+                activity.userInfo = ["assistant_id": assistant.id, "owner_id": cache.owner]
+                descriptors.append(CLKComplicationDescriptor(identifier: ScribePilotComplication.voiceIdentifier + "." + assistant.id,
+                    displayName: "Talk to \(assistant.name)", supportedFamilies: ScribePilotComplication.supportedFamilies, userActivity: activity))
+            }
+        }
+        handler(descriptors)
     }
 
     func handleSharedComplicationDescriptors(_ complicationDescriptors: [CLKComplicationDescriptor]) {}
@@ -78,23 +92,24 @@ final class ScribePilotComplicationDataSource: NSObject, CLKComplicationDataSour
 
     private func template(for complication: CLKComplication) -> CLKComplicationTemplate? {
         let startsRecording = complication.identifier == ScribePilotComplication.recordIdentifier
+        let talks = complication.identifier.hasPrefix(ScribePilotComplication.voiceIdentifier)
 
         switch complication.family {
         case .graphicCircular:
             return CLKComplicationTemplateGraphicCircularView(
-                ScribePilotCircularComplication(startsRecording: startsRecording)
+                ScribePilotCircularComplication(startsRecording: startsRecording, talks: talks)
             )
         case .graphicRectangular:
             return CLKComplicationTemplateGraphicRectangularFullView(
-                ScribePilotRectangularComplication(startsRecording: startsRecording)
+                ScribePilotRectangularComplication(startsRecording: startsRecording, talks: talks)
             )
         case .graphicCorner:
             return CLKComplicationTemplateGraphicCornerCircularView(
-                ScribePilotCircularComplication(startsRecording: startsRecording)
+                ScribePilotCircularComplication(startsRecording: startsRecording, talks: talks)
             )
         case .graphicExtraLarge:
             return CLKComplicationTemplateGraphicExtraLargeCircularView(
-                ScribePilotCircularComplication(startsRecording: startsRecording)
+                ScribePilotCircularComplication(startsRecording: startsRecording, talks: talks)
             )
         default:
             return nil
@@ -104,12 +119,13 @@ final class ScribePilotComplicationDataSource: NSObject, CLKComplicationDataSour
 
 private struct ScribePilotCircularComplication: View {
     let startsRecording: Bool
+    var talks = false
 
     var body: some View {
         ZStack {
             Circle()
                 .fill(Color(red: 0.04, green: 0.20, blue: 0.21))
-            Image(systemName: startsRecording ? "record.circle.fill" : "mic.fill")
+            Image(systemName: talks ? "waveform" : (startsRecording ? "record.circle.fill" : "mic.fill"))
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(Color(red: 0.25, green: 0.82, blue: 0.78))
         }
@@ -118,16 +134,17 @@ private struct ScribePilotCircularComplication: View {
 
 private struct ScribePilotRectangularComplication: View {
     let startsRecording: Bool
+    var talks = false
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: startsRecording ? "record.circle.fill" : "mic.fill")
+            Image(systemName: talks ? "waveform" : (startsRecording ? "record.circle.fill" : "mic.fill"))
                 .font(.title2)
                 .foregroundStyle(Color(red: 0.25, green: 0.82, blue: 0.78))
             VStack(alignment: .leading, spacing: 1) {
-                Text(startsRecording ? "MEETING" : "SCRIBE PILOT")
+                Text(talks ? "ASSISTANT" : (startsRecording ? "MEETING" : "SCRIBE PILOT"))
                     .font(.caption2.weight(.bold))
-                Text(startsRecording ? "Tap to start" : "Tap to open")
+                Text(talks ? "Tap to talk" : (startsRecording ? "Tap to start" : "Tap to open"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

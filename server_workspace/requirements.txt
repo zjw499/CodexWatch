@@ -2,3 +2,7 @@ fastapi>=0.116,<1.0
 httpx>=0.28,<1.0
 python-multipart>=0.0.9,<1.0
 uvicorn>=0.35,<1.0
+websockets>=15,<17
+tzdata>=2025.2,<2027
+pypdf[crypto]>=6.19,<7
+defusedxml>=0.7.1,<1

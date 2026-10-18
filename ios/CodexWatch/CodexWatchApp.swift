@@ -15,6 +15,9 @@ struct CodexWatchApp: App {
     @StateObject private var workspace = PhoneWorkspace.shared
 
     init() {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-scribe-ui-preview") { UIView.setAnimationsEnabled(false) }
+        #endif
         CodexWatchShortcuts.updateAppShortcutParameters()
         ScribePreviewFixtures.loadIfRequested()
     }
@@ -42,7 +45,10 @@ struct CodexWatchApp: App {
             .task { await privacy.unlock() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background { privacy.lock() }
-                if phase == .active { Task { await privacy.unlock() } }
+                if phase == .active { Task {
+                    await privacy.unlock()
+                    await workspace.refresh()
+                } }
             }
         }
     }

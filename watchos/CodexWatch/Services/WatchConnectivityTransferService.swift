@@ -362,19 +362,111 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         handleQueueMessage(message)
     }
 
+    func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+        if message["command"] as? String == "voice-end" {
+            Task { @MainActor in
+                guard let owner = message["owner_id"] as? String, owner == RecordingQueueStore.shared.accountID,
+                      let expiry = message["expires"] as? Double, expiry > Date().timeIntervalSince1970 else {
+                    replyHandler(["ok": false]); return
+                }
+                WatchVoiceService.shared.end()
+                replyHandler(["ok": true])
+            }
+        } else if message["command"] as? String == "workspace-account" {
+            Task { @MainActor in replyHandler(self.applyWorkspaceAccount(message)) }
+        } else {
+            handleQueueMessage(message)
+            replyHandler(["ok": true])
+        }
+    }
+
+    @MainActor
+    func requestVoiceSetup() {
+        Task { @MainActor in _ = await ensureVoiceSetup() }
+    }
+
+    @MainActor private var voiceSetupTask: Task<Bool, Never>?
+
+    @MainActor
+    func ensureVoiceSetup(repair: Bool = false) async -> Bool {
+        if let task = voiceSetupTask { return await task.value }
+        let task = Task { @MainActor in await self.connectVoiceAutomatically(repair: repair) }
+        voiceSetupTask = task
+        defer { voiceSetupTask = nil }
+        return await task.value
+    }
+
+    @MainActor
+    private func connectVoiceAutomatically(repair: Bool) async -> Bool {
+        let watch = WCSession.default
+        if !repair, let saved = VoiceKeychain.read(), saved.valid,
+           saved.owner_id == RecordingQueueStore.shared.accountID { return true }
+        if repair { VoiceKeychain.clear() }
+        if !repair, watch.receivedApplicationContext["command"] as? String == "workspace-account" {
+            _ = applyWorkspaceAccount(watch.receivedApplicationContext)
+        }
+        WatchVoiceService.shared.showSetupMessage("Connecting Watch voice automatically…")
+        let request: [String: Any] = ["command": "voice-setup-request", "repair": repair, "request_id": UUID().uuidString]
+        // Durable setup requests work when the phone is temporarily unreachable.
+        // Only setup is queued; conversations always require a fresh foreground launch.
+        if watch.activationState == .activated {
+            if watch.isReachable {
+                watch.sendMessage(request, replyHandler: { reply in
+                    Task { @MainActor in
+                        guard reply["command"] as? String == "workspace-account" else { return }
+                        _ = self.applyWorkspaceAccount(reply)
+                    }
+                }, errorHandler: { _ in })
+            } else if !watch.outstandingUserInfoTransfers.contains(where: { $0.userInfo["command"] as? String == "voice-setup-request" }) {
+                watch.transferUserInfo(request)
+            }
+        }
+        // WC callbacks and application-context delivery update Keychain on the main actor.
+        for _ in 0..<40 {
+            if Task.isCancelled { return false }
+            if let saved = VoiceKeychain.read(), saved.valid, saved.owner_id == RecordingQueueStore.shared.accountID { return true }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        WatchVoiceService.shared.showSetupMessage(VoiceSetupState.needsSetup.message)
+        return false
+    }
+
+    @MainActor
+    private func applyWorkspaceAccount(_ context: [String: Any]) -> [String: Any] {
+        // Launches have a separate, expiring owner-bound envelope. Never apply
+        // account credentials replayed from an older queued shortcut handoff.
+        guard context["voice_launch"] == nil else { return ["ok": false] }
+        let raw = context["owner_id"] as? String ?? ""
+        let owner = RecordingQueueStore.validID(raw) ? raw : nil
+        if RecordingQueueStore.shared.accountID != owner {
+            meetingStatus = nil; lastRecordingID = nil
+        }
+        RecordingQueueStore.shared.setAccount(owner)
+        let result = WatchVoiceService.shared.applyAccount(owner: owner,
+            configurationData: context["voice_config"] as? Data, credentialData: context["voice_credential"] as? Data)
+        UserDefaults.standard.set(context["username"] as? String ?? "", forKey: "ScribePilot.WorkspaceUsername")
+        openAIReady = context["ready"] as? Bool ?? false
+        if let status = context["meeting_status"] as? [String: String], status["recording_id"] == lastRecordingID {
+            meetingStatus = status["status"]
+        }
+        guard let owner, let request = context["voice_setup_request"] as? String, VoiceWire.validID(request),
+              let credentialData = context["voice_credential"] as? Data,
+              let credential = try? JSONDecoder().decode(VoiceDeviceCredential.self, from: credentialData),
+              credential.owner_id == owner else { return ["ok": true] }
+        let receipt = VoiceSetupReceipt(version: 1, requestID: request, ownerID: owner, deviceID: credential.device_id, state: result)
+        guard let data = try? JSONEncoder().encode(receipt) else { return ["ok": false] }
+        let reply: [String: Any] = ["command": "voice-setup-receipt", "voice_setup_receipt": data]
+        // Durable, non-secret acknowledgment also works when the phone is suspended.
+        let session = WCSession.default
+        if !session.outstandingUserInfoTransfers.contains(where: { ($0.userInfo["voice_setup_receipt"] as? Data) == data }) {
+            session.transferUserInfo(reply)
+        }
+        return reply
+    }
+
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         if applicationContext["command"] as? String == "workspace-account" {
-            Task { @MainActor in
-                let raw = applicationContext["owner_id"] as? String ?? ""
-                let owner = RecordingQueueStore.validID(raw) ? raw : nil
-                if RecordingQueueStore.shared.accountID != owner {
-                    self.meetingStatus = nil
-                    self.lastRecordingID = nil
-                }
-                RecordingQueueStore.shared.setAccount(owner)
-                UserDefaults.standard.set(applicationContext["username"] as? String ?? "", forKey: "ScribePilot.WorkspaceUsername")
-                self.openAIReady = applicationContext["ready"] as? Bool ?? false
-            }
+            Task { @MainActor in _ = self.applyWorkspaceAccount(applicationContext) }
             return
         }
         guard applicationContext["command"] as? String == "meeting-status",
@@ -403,6 +495,19 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     private func handleQueueMessage(_ message: [String: Any]) {
+        if message["command"] as? String == "voice-launch" {
+            Task { @MainActor in
+                guard let data = message["voice_launch"] as? Data,
+                      let launch = try? JSONDecoder().decode(VoiceLaunchRequest.self, from: data),
+                      launch.valid(owner: RecordingQueueStore.shared.accountID) else { return }
+                WatchShortcutCommandRouter.enqueueLaunch(launch)
+            }
+            return
+        }
+        if message["command"] as? String == "workspace-account" {
+            Task { @MainActor in _ = self.applyWorkspaceAccount(message) }
+            return
+        }
         if message["command"] as? String == "resend-recording" { handleResendRequest(message); return }
         Task { @MainActor in
             if message["command"] as? String == "processing-settings" {

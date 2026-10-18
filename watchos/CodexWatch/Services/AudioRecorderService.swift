@@ -161,6 +161,7 @@ private final class ContinuousAudioChunkWriter: @unchecked Sendable {
 
 @MainActor
 final class AudioRecorderService: NSObject, ObservableObject {
+    private var startingFromAction = false
     @Published private(set) var isRecording = false
     @Published private(set) var elapsedTime: TimeInterval = 0
     @Published private(set) var lastRecordingURL: URL?
@@ -225,6 +226,17 @@ final class AudioRecorderService: NSObject, ObservableObject {
     }
 
     func startRecording() async {
+        guard !startingFromAction else { return }
+        startingFromAction = true
+        defer { startingFromAction = false }
+        guard !VoiceAudioDiagnosticReservation.shared.isHeld else {
+            errorMessage = "End the Watch audio test before starting a meeting recording."
+            return
+        }
+        guard !WatchVoiceService.shared.isActive else {
+            errorMessage = "End your voice conversation before starting a meeting recording."
+            return
+        }
         guard !isRecording else {
             statusMessage = "Already recording"
             return
@@ -239,6 +251,16 @@ final class AudioRecorderService: NSObject, ObservableObject {
 
         guard await requestMicrophonePermission() else {
             statusMessage = "Allow microphone access in Watch Settings"
+            return
+        }
+
+        guard !WatchVoiceService.shared.isActive else {
+            errorMessage = "End your voice conversation before starting a meeting recording."
+            return
+        }
+
+        guard !VoiceAudioDiagnosticReservation.shared.isHeld else {
+            errorMessage = "End the Watch audio test before starting a meeting recording."
             return
         }
 
@@ -551,6 +573,10 @@ final class AudioRecorderService: NSObject, ObservableObject {
 
     private func tryToResumeRecording() -> Bool {
         guard isRecording, !awaitingInterruptionEnd, let recordingID else { return false }
+        guard !VoiceAudioDiagnosticReservation.shared.isHeld else {
+            WatchAudioDiagnosticService.shared.cancel(message: "Recovered meeting recording is taking priority over the audio test.")
+            return false
+        }
 
         do {
             try activateAudioSession()

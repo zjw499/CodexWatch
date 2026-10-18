@@ -1,0 +1,16 @@
+name: Verify public voice gateway
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/watch-voice-assistants]
+    paths: ['scripts/verify_voice_gateway.py', '.github/workflows/voice-gateway-check.yml']
+jobs:
+  public-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify public TLS and voice-only routing
+        run: python3 scripts/verify_voice_gateway.py
