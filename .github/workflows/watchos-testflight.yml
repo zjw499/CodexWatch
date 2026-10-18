@@ -41,7 +41,7 @@ on:
       build_number:
         description: Existing build number to check when check_only is true
         required: false
-        default: "163"
+        default: "164"
       diagnose_only:
         description: Print the App Store Connect app and latest visible builds without polling
         required: false
@@ -78,6 +78,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+      - name: Preflight Siri shortcut descriptions
+        run: python3 scripts/verify_watch_voice_metadata.py --source-only
 
       - name: Validate release mode
         shell: bash
