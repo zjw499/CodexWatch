@@ -121,7 +121,11 @@ final class WatchVoiceService: ObservableObject {
                   saved.owner_id == owner, saved.gateway_url == config.gateway_url else { return finishSetup(.needsSetup) }
             if let current = credential, current.token != saved.token { end(message: "Watch voice access was updated.", closeCause: .accessChange) }
             do {
-                try VoiceKeychain.save(saved)
+                // Delayed phone contexts cannot shorten an expiry renewed by
+                // the independently connected Watch using this same token.
+                let existing = VoiceKeychain.read()
+                let updated = existing?.token == saved.token ? saved.renewed(until: existing!.expires) : saved
+                try VoiceKeychain.save(updated)
                 guard VoiceKeychain.read()?.token == saved.token else { throw VoiceError.setup }
             } catch { return finishSetup(.needsUnlock) }
         }
@@ -153,9 +157,10 @@ final class WatchVoiceService: ObservableObject {
         }
     }
 
-    func refresh() async {
+    func refresh(repairSetup: Bool = true) async {
         do {
-            let saved = try access()
+            guard let saved = VoiceKeychain.read(), saved.canAuthenticate,
+                  saved.owner_id == RecordingQueueStore.shared.accountID else { throw VoiceError.setup }
             let config: VoiceConfiguration = try await client.send("config", credential: saved)
             guard saved.owner_id == RecordingQueueStore.shared.accountID else { return }
             guard config.version == 1, config.gateway_url == saved.gateway_url else { throw VoiceError.version }
@@ -163,7 +168,16 @@ final class WatchVoiceService: ObservableObject {
             VoiceDescriptorCache.save(owner: saved.owner_id, configuration: config)
             if !config.enabled { end(message: "Watch voice is currently disabled.") }
             _ = finishSetup(!config.enabled ? .disabled : (config.assistants.isEmpty ? .needsAssistant : .ready))
-        } catch { message = error.localizedDescription }
+        } catch {
+            let needsRepair: Bool
+            if case VoiceError.status(401) = error { needsRepair = true }
+            else if case VoiceError.setup = error { needsRepair = true }
+            else { needsRepair = false }
+            if repairSetup && needsRepair,
+               await WatchConnectivityTransferService.shared.ensureVoiceSetup(repair: VoiceKeychain.read() != nil) {
+                await refresh(repairSetup: false)
+            } else { message = error.localizedDescription }
+        }
     }
 
     func open(assistantID: String? = nil, conversationID: String? = nil, requestID: String = UUID().uuidString) async {
@@ -182,6 +196,8 @@ final class WatchVoiceService: ObservableObject {
         let run = generation
         do {
             await closing.wait()
+            guard generation == run, isActive else { return }
+            await refresh()
             guard generation == run, isActive else { return }
             let saved = try access()
             credential = saved
@@ -203,7 +219,8 @@ final class WatchVoiceService: ObservableObject {
             guard generation == run, isActive else {
                 try? await client.control(VoiceControl(action: "end"), sessionID: info.id, credential: saved); return
             }
-            guard info.version == 1, info.state != "ended", VoiceWire.validID(info.id) else { throw VoiceError.connection }
+            if info.state == "ended" { throw VoiceStartupError(message: info.message ?? VoiceError.connection.localizedDescription) }
+            guard info.version == 1, VoiceWire.validID(info.id) else { throw VoiceError.connection }
             current = info; assistantName = info.assistant_name; lastAssistantID = info.assistant_id; sequence = 0
             transport.sessionID = info.id
             usesPublicWeb = info.web_search == true

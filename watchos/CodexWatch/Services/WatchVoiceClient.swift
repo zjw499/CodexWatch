@@ -27,7 +27,9 @@ final class WatchVoiceClient {
         streamSession = URLSession(configuration: streamConfig, delegate: delegate, delegateQueue: nil)
     }
     private func request(_ path: String, credential: VoiceDeviceCredential, method: String, data: Data?, audio: Bool) throws -> URLRequest {
-        guard credential.valid, let base = VoiceWire.gatewayURL(credential.gateway_url),
+        // Only config may ask the server to validate a stale local expiry. It
+        // cannot revive an expired/revoked server credential or upload audio.
+        guard (credential.valid || (path == "config" && credential.canAuthenticate)), let base = VoiceWire.gatewayURL(credential.gateway_url),
               let url = URL(string: base.absoluteString + "/" + path) else { throw VoiceError.setup }
         var request = URLRequest(url: url)
         request.httpMethod = method; request.httpBody = data
@@ -36,13 +38,18 @@ final class WatchVoiceClient {
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         return request
     }
-    private func check(_ response: URLResponse) throws {
+    private func check(_ response: URLResponse, credential: VoiceDeviceCredential) throws {
         guard let response = response as? HTTPURLResponse else { throw VoiceError.connection }
         guard (200..<300).contains(response.statusCode) else { throw VoiceError.status(response.statusCode) }
+        if let value = response.value(forHTTPHeaderField: SessionRenewal.header), let expiry = Double(value),
+           let current = VoiceKeychain.read(), current.token == credential.token, current.owner_id == credential.owner_id,
+           SessionRenewal.accepts(expiry, after: current.expires) {
+            try? VoiceKeychain.save(current.renewed(until: expiry))
+        }
     }
     func send<T: Decodable>(_ path: String, credential: VoiceDeviceCredential, method: String = "GET", data: Data? = nil) async throws -> T {
         let (body, response) = try await session.data(for: request(path, credential: credential, method: method, data: data, audio: false))
-        try check(response)
+        try check(response, credential: credential)
         return try JSONDecoder().decode(T.self, from: body)
     }
     func diagnostic(_ report: VoiceDiagnosticReport, credential: VoiceDeviceCredential) async throws -> VoiceDiagnosticReceipt {
@@ -60,7 +67,7 @@ final class WatchVoiceClient {
         // One retry with identical bytes/sequence handles a lost HTTP acknowledgement.
         for attempt in 0...1 {
             do {
-                let (body, response) = try await session.data(for: request); try check(response)
+                let (body, response) = try await session.data(for: request); try check(response, credential: credential)
                 let receipt = try JSONDecoder().decode(VoiceAudioReceipt.self, from: body)
                 guard receipt.ok, receipt.next_sequence == sequence + 1 else { throw VoiceError.connection }
                 return attempt
@@ -78,7 +85,7 @@ final class WatchVoiceClient {
         request.timeoutInterval = VoiceConnectionPolicy.requestTimeout
         for attempt in 0...1 {
             do {
-                let (body, response) = try await session.data(for: request); try check(response)
+                let (body, response) = try await session.data(for: request); try check(response, credential: credential)
                 guard try JSONDecoder().decode(VoiceOK.self, from: body).ok else { throw VoiceError.connection }
                 return
             } catch {
@@ -92,7 +99,7 @@ final class WatchVoiceClient {
         var request = try request("sessions/\(sessionID)/events", credential: credential, method: "GET", data: nil, audio: false)
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         let (bytes, response) = try await streamSession.bytes(for: request)
-        try check(response)
+        try check(response, credential: credential)
         for try await line in bytes.lines {
             try Task.checkCancellation()
             if let event = try VoiceWire.event(line: line) {

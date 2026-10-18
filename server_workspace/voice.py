@@ -136,15 +136,19 @@ class VoiceStore:
         return {"version": 1, "token": token, "owner_id": user["id"], "expires": parent[0],
                 "gateway_url": self.w.config.voice_gateway_url, "device_id": device_id}
 
-    def authenticate_hash(self, token_hash: str):
+    def authenticate_hash(self, token_hash: str, *, renew=False):
         with self.w.db() as db:
-            row = db.execute("""SELECT d.owner AS id,d.hash AS device_hash,d.parent_session AS session_hash
+            row = db.execute("""SELECT d.owner AS id,d.hash AS device_hash,d.parent_session AS session_hash,d.expires
                 FROM voice_devices d JOIN sessions s ON s.hash=d.parent_session AND s.user_id=d.owner
                 JOIN users u ON u.id=d.owner WHERE d.hash=? AND d.expires>? AND s.expires>? AND u.active=1""",
                              (token_hash, time.time(), time.time())).fetchone()
-        if not row:
-            fail(401, "Open Scribe Pilot on your iPhone to set up Watch voice again")
-        return dict(row)
+            if not row:
+                fail(401, "Sign in to Scribe Pilot on your iPhone to reconnect Watch voice")
+            result = dict(row)
+            if renew:
+                self.w.renew_session(db, row["session_hash"], row["id"])
+                result["expires"] = db.execute("SELECT expires FROM voice_devices WHERE hash=?", (token_hash,)).fetchone()[0]
+        return result
 
     def conversation(self, conversation_id: str, owner: str, *, review=False):
         identifier(conversation_id)
@@ -335,14 +339,27 @@ def install_private_routes(app, workspace, account, admin):
         return body.model_dump()
 
 
+class VoiceServiceUnavailable(Exception):
+    """A safe, actionable startup error; never contains a provider payload."""
+
+
 class OpenAIRealtimePeer:
     @classmethod
     async def open(cls, workspace, model, owner):
         from websockets.asyncio.client import connect
-        headers = workspace.provider.headers()
+        try:
+            headers = workspace.provider.headers()
+        except (OSError, RuntimeError, ValueError):
+            raise VoiceServiceUnavailable("The PC voice service cannot read its organization API key. Ask the administrator to restore its configured key file.") from None
         headers["OpenAI-Safety-Identifier"] = digest(owner)
-        socket = await connect("wss://api.openai.com/v1/realtime?model=" + model, additional_headers=headers,
-                               open_timeout=10, max_size=2**20, compression=None)
+        from websockets.exceptions import InvalidStatus
+        try:
+            socket = await connect("wss://api.openai.com/v1/realtime?model=" + model, additional_headers=headers,
+                                   open_timeout=10, max_size=2**20, compression=None)
+        except InvalidStatus as error:
+            if error.response.status_code in (401, 403):
+                raise VoiceServiceUnavailable("OpenAI rejected the PC voice service's access. Ask the administrator to check the organization API key and model access.") from None
+            raise
         return cls(socket)
 
     def __init__(self, socket):
@@ -417,10 +434,12 @@ class VoiceSession:
                         "responses_cancelled": 0, "responses_incomplete": 0, "generated_audio_bytes": 0,
                         "discarded_audio_bytes": 0, "playback_confirmations": 0}
         self.reader = self.monitor = None
+        self.end_message = None
 
     def info(self):
         return {"version": 1, "id": self.id, "conversation_id": self.conversation_id,
                 "assistant_id": self.profile["id"], "assistant_name": self.profile["name"], "state": self.state,
+                "message": self.end_message,
                 "web_search": any(d["name"] == "search_web" for d in self.tool_definitions), "playback_markers": True}
 
     async def emit(self, kind, **fields):
@@ -460,6 +479,8 @@ class VoiceSession:
                         "type": "input_text" if turn["role"] == "user" else "output_text", "text": turn["text"]}]}})
             self.reader = asyncio.create_task(self.read_provider())
             self.monitor = asyncio.create_task(self.watchdog())
+        except VoiceServiceUnavailable as error:
+            await self.end(str(error))
         except Exception:
             await self.end("The voice service could not connect. Try again.")
 
@@ -800,6 +821,7 @@ class VoiceSession:
         if self.state == "ended":
             return
         self.state = "ended"
+        self.end_message = message
         self.ended_at = time.monotonic()
         # A completed provider transcript does not prove the Watch heard its audio.
         unheard = {item for item, turn in self.turns.items() if turn["role"] == "assistant" and not turn["final"]}
@@ -922,12 +944,16 @@ def create_voice_app(workspace, peer_factory=None):
     async def headers(request, call_next):
         response = await call_next(request)
         response.headers.update({"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+        if response.status_code < 400 and getattr(request.state, "session_expires", None):
+            response.headers["X-Scribe-Session-Expires"] = str(request.state.session_expires)
         return response
 
-    def account(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)):
+    def account(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(bearer)):
         if not credentials:
             fail(401, "Watch voice setup required")
-        return gateway.store.authenticate_hash(digest(credentials.credentials))
+        user = gateway.store.authenticate_hash(digest(credentials.credentials), renew=True)
+        request.state.session_expires = user["expires"]
+        return user
 
     @app.get("/voice/v1/health")
     def health():

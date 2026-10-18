@@ -161,6 +161,7 @@ private final class ContinuousAudioChunkWriter: @unchecked Sendable {
 
 @MainActor
 final class AudioRecorderService: NSObject, ObservableObject {
+    private var startingFromAction = false
     @Published private(set) var isRecording = false
     @Published private(set) var elapsedTime: TimeInterval = 0
     @Published private(set) var lastRecordingURL: URL?
@@ -225,6 +226,9 @@ final class AudioRecorderService: NSObject, ObservableObject {
     }
 
     func startRecording() async {
+        guard !startingFromAction else { return }
+        startingFromAction = true
+        defer { startingFromAction = false }
         guard !VoiceAudioDiagnosticReservation.shared.isHeld else {
             errorMessage = "End the Watch audio test before starting a meeting recording."
             return

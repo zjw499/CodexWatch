@@ -16,13 +16,15 @@ struct WatchVoiceHomeView: View {
                     }
                     Button { Task { await voice.open(assistantID: assistantID.isEmpty ? nil : assistantID) } } label: {
                         Label(voice.isActive ? "Open conversation" : "Talk", systemImage: "mic.fill")
-                    }.tint(ScribeTheme.red).disabled(!config.enabled || config.assistants.isEmpty || voice.setupState != .ready)
+                    }.tint(ScribeTheme.red).disabled(!config.enabled || config.assistants.isEmpty)
+                } else {
+                    Button("Talk") { Task { await voice.open() } }.tint(ScribeTheme.red)
                 }
                 NavigationLink("Voice history") { WatchVoiceHistoryView() }
                 NavigationLink("Test Watch audio") { WatchAudioDiagnosticView() }
                 if let message = voice.message { Text(message).font(.caption).foregroundStyle(ScribeTheme.muted) }
                 if voice.setupState != .ready { Text(voice.setupState.message).font(.caption) }
-                Button("Sync from iPhone") { WatchConnectivityTransferService.shared.requestVoiceSetup() }.font(.caption)
+                Button("Retry connection") { WatchConnectivityTransferService.shared.requestVoiceSetup() }.font(.caption)
                 Button("Refresh voice settings") { Task { await voice.refresh() } }.font(.caption)
                 Text("Watch build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown")")
                     .font(.caption2).foregroundStyle(ScribeTheme.muted)

@@ -144,13 +144,13 @@ struct PhoneSettingsView: View {
                     if config.assistants.isEmpty { Text("Enable voice on an assistant").tag("") }
                     ForEach(config.assistants) { Text($0.name).tag($0.id) }
                 }
-                Button("Connect Watch voice") { run { try await workspace.provisionWatchVoice() } }
+                Button("Retry Watch connection") { run { try await workspace.provisionWatchVoice() } }
                     .disabled(working || !config.enabled || config.assistants.isEmpty)
             }
             NavigationLink("Voice conversation history") { PhoneVoiceHistoryView() }
             NavigationLink("Watch audio reports") { PhoneVoiceDiagnosticsView() }
             if let message = workspace.voiceMessage { Text(message).font(.footnote).foregroundStyle(ScribeTheme.muted) }
-            Text("No code to enter. Keep Scribe Pilot open on your unlocked Watch during setup; the iPhone transfers access automatically and shows confirmation here. After setup, your Watch needs internet and the PC must be online. Text is saved; audio is not retained.")
+            Text("Voice connects automatically after iPhone sign-in. No setup code or connection button is required. Keep your unlocked Watch nearby for the initial transfer. Afterwards, your Watch needs internet and the PC must be online. Text is saved; audio is not retained.")
                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
         }
     }

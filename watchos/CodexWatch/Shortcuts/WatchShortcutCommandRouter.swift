@@ -1,4 +1,5 @@
 import Foundation
+import WatchKit
 
 enum WatchShortcutCommand: String, Codable {
     case startRecording
@@ -18,18 +19,28 @@ extension Notification.Name {
 @MainActor
 enum WatchShortcutCommandRouter {
     private static let pendingCommandKey = "ScribePilot.PendingWatchShortcutCommand"
+    private static var consuming = false
     private struct Pending: Codable {
         let command: WatchShortcutCommand
         let launch: VoiceLaunchRequest?
+        var ownerID: String? = nil
+        var expires: Double? = nil
     }
 
     static func enqueue(_ command: WatchShortcutCommand) {
-        UserDefaults.standard.set(command.rawValue, forKey: pendingCommandKey)
+        let pending = Pending(command: command, launch: nil, ownerID: RecordingQueueStore.shared.accountID,
+                              expires: Date().timeIntervalSince1970 + 60)
+        guard let data = try? JSONEncoder().encode(pending) else { return }
+        UserDefaults.standard.set(data, forKey: pendingCommandKey)
         NotificationCenter.default.post(name: .watchShortcutCommandQueued, object: nil)
     }
 
     static func enqueueVoice(assistantID: String? = nil, ownerID: String? = nil) {
         let launch = VoiceLaunchRequest(ownerID: ownerID ?? RecordingQueueStore.shared.accountID ?? "", assistantID: assistantID)
+        enqueueLaunch(launch)
+    }
+
+    static func enqueueLaunch(_ launch: VoiceLaunchRequest) {
         if let data = try? JSONEncoder().encode(Pending(command: .talkToAssistant, launch: launch)) {
             UserDefaults.standard.set(data, forKey: pendingCommandKey)
             NotificationCenter.default.post(name: .watchShortcutCommandQueued, object: nil)
@@ -43,14 +54,28 @@ enum WatchShortcutCommandRouter {
     }
 
     static func consumePendingCommand(using recorder: AudioRecorderService) async {
+        guard !consuming, WKExtension.shared().applicationState == .active else { return }
+        consuming = true
+        defer { consuming = false }
+        while UserDefaults.standard.object(forKey: pendingCommandKey) != nil {
+            guard WKExtension.shared().applicationState == .active else { return }
+            await consumeOne(using: recorder)
+        }
+    }
+
+    private static func consumeOne(using recorder: AudioRecorderService) async {
         let pending: Pending
         if let data = UserDefaults.standard.data(forKey: pendingCommandKey),
            let decoded = try? JSONDecoder().decode(Pending.self, from: data) { pending = decoded }
         else if let rawValue = UserDefaults.standard.string(forKey: pendingCommandKey),
                 let command = WatchShortcutCommand(rawValue: rawValue) { pending = Pending(command: command, launch: nil) }
-        else { return }
+        else { UserDefaults.standard.removeObject(forKey: pendingCommandKey); return }
 
         UserDefaults.standard.removeObject(forKey: pendingCommandKey)
+        if let expires = pending.expires,
+           (expires <= Date().timeIntervalSince1970 || pending.ownerID != RecordingQueueStore.shared.accountID) {
+            return
+        }
 
         switch pending.command {
         case .talkToAssistant:
@@ -71,7 +96,7 @@ enum WatchShortcutCommandRouter {
                 recorder.stopRecording()
             }
         case .resumeRecording:
-            if recorder.isRecording {
+            if recorder.isRecording, recorder.isPausedForInterruption {
                 recorder.resumeRecording()
             }
         case .retryUpload:

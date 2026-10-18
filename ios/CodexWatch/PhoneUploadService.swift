@@ -245,7 +245,10 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
             setStatus("Watch transfer unavailable: \(error.localizedDescription)")
         } else if activationState == .activated {
             setStatus("Ready for watch recordings")
-            Task { @MainActor in PhoneWorkspace.shared.syncWatchAccount() }
+            Task { @MainActor in
+                _ = await PhoneWorkspace.shared.automaticWatchContext()
+                PhoneWorkspace.shared.syncWatchAccount()
+            }
         }
     }
 
@@ -743,7 +746,8 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
         if message["command"] as? String == "voice-setup-request" {
-            Task { @MainActor in replyHandler(PhoneWorkspace.shared.watchAccountContext()) }
+            Task { @MainActor in replyHandler(await PhoneWorkspace.shared.automaticWatchContext(
+                repair: message["repair"] as? Bool == true, requestID: message["request_id"] as? String)) }
         } else {
             handleQueueCommand(message)
             replyHandler(["ok": true])
@@ -751,10 +755,21 @@ final class PhoneUploadService: NSObject, ObservableObject, WCSessionDelegate, U
     }
 
     func sessionReachabilityDidChange(_ session: WCSession) {
-        if session.isReachable { Task { @MainActor in PhoneWorkspace.shared.syncWatchAccount() } }
+        if session.isReachable { Task { @MainActor in
+            _ = await PhoneWorkspace.shared.automaticWatchContext()
+            PhoneWorkspace.shared.syncWatchAccount()
+        } }
     }
 
     private func handleQueueCommand(_ message: [String: Any]) {
+        if message["command"] as? String == "voice-setup-request" {
+            Task { @MainActor in
+                _ = await PhoneWorkspace.shared.automaticWatchContext(repair: message["repair"] as? Bool == true,
+                    requestID: message["request_id"] as? String)
+                PhoneWorkspace.shared.syncWatchAccount()
+            }
+            return
+        }
         if message["command"] as? String == "voice-setup-receipt" {
             Task { @MainActor in PhoneWorkspace.shared.receiveWatchVoiceReceipt(message) }
             return

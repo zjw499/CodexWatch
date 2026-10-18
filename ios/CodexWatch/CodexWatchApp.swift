@@ -45,7 +45,10 @@ struct CodexWatchApp: App {
             .task { await privacy.unlock() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background { privacy.lock() }
-                if phase == .active { Task { await privacy.unlock() } }
+                if phase == .active { Task {
+                    await privacy.unlock()
+                    await workspace.refresh()
+                } }
             }
         }
     }

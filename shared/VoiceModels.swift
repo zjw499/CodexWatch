@@ -52,9 +52,17 @@ struct VoiceDeviceCredential: Codable {
     let expires: Double
     let gateway_url: String
     let device_id: String
+    var canAuthenticate: Bool {
+        version == 1 && VoiceWire.validID(owner_id) && VoiceWire.validID(device_id)
+            && VoiceWire.gatewayURL(gateway_url) != nil && !token.isEmpty && expires.isFinite
+    }
     var valid: Bool {
-        version == 1 && expires > Date().timeIntervalSince1970 && VoiceWire.validID(owner_id) && VoiceWire.validID(device_id)
-            && VoiceWire.gatewayURL(gateway_url) != nil && !token.isEmpty
+        canAuthenticate && expires > Date().timeIntervalSince1970
+    }
+    func renewed(until expiry: Double) -> Self {
+        guard SessionRenewal.accepts(expiry, after: expires) else { return self }
+        return Self(version: version, token: token, owner_id: owner_id, expires: expiry,
+                    gateway_url: gateway_url, device_id: device_id)
     }
 }
 
@@ -102,6 +110,7 @@ struct VoiceSessionInfo: Decodable {
     let assistant_id: String
     let assistant_name: String
     let state: String
+    var message: String? = nil
     var web_search: Bool? = nil
     var playback_markers: Bool? = nil
 }
@@ -183,7 +192,7 @@ enum VoiceError: LocalizedError {
     case setup, connection, version, status(Int), microphone, audioBusy, audioRoute, audioConversion, slow, uploadBacklog, playbackBacklog
     var errorDescription: String? {
         switch self {
-        case .setup: return "Open Scribe Pilot on your iPhone and set up Watch voice in Settings."
+        case .setup: return VoiceSetupState.needsSetup.message
         case .connection: return "The voice connection ended. Check Watch internet and that your PC is online."
         case .version: return "Update Scribe Pilot to use this voice service."
         case .microphone: return "Allow microphone access in Watch Settings."
@@ -195,7 +204,8 @@ enum VoiceError: LocalizedError {
         case .playbackBacklog: return "Assistant playback could not keep up (NET-02). Start a new conversation."
         case let .status(code):
             switch code {
-            case 401: return "Voice access expired. Open Scribe Pilot on your iPhone to set it up again."
+            case 401: return "Sign in to Scribe Pilot on your iPhone to reconnect Watch voice automatically."
+            case 503: return "The PC voice service needs attention. Check its organization API connection."
             case 404: return "This assistant or conversation is unavailable. Choose an assistant in Settings."
             case 409: return "Voice is unavailable or a conversation is already active. Check Settings or end the current conversation."
             case 410: return "That connection ended. Start a new conversation."

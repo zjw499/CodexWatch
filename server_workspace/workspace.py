@@ -102,7 +102,8 @@ class WorkspaceConfig:
     retention_verified: bool = False
     safeguards_verified: bool = False
     approval_evidence: str = ""
-    session_seconds: int = 7 * 24 * 3600
+    # Renew on authenticated activity; a regularly used installation stays signed in.
+    session_seconds: int = 30 * 24 * 3600
     config_file: Path | None = None
     voice_enabled: bool = False
     voice_gateway_url: str = "https://zwyattpc.tail488e93.ts.net:8443/voice/v1"
@@ -285,10 +286,27 @@ class Workspace:
 
     def authenticate(self, token: str):
         with self.db() as db:
-            row = db.execute("SELECT u.id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>? AND u.active=1", (digest(token), time.time())).fetchone()
+            row = db.execute("SELECT u.id,u.username,u.role,s.expires FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>? AND u.active=1", (digest(token), time.time())).fetchone()
             if not row:
                 fail(401, "Sign in again")
-            return {**dict(row), "session_hash": digest(token)}
+            expires = self.renew_session(db, digest(token), row["id"])
+            return {**dict(row), "expires": expires, "session_hash": digest(token)}
+
+    def renew_session(self, db, session_hash: str, owner: str):
+        """Extend a live parent and its live devices without rotating or reviving tokens."""
+        now = time.time()
+        row = db.execute("SELECT s.expires FROM sessions s JOIN users u ON u.id=s.user_id "
+                         "WHERE s.hash=? AND s.user_id=? AND s.expires>? AND u.active=1",
+                         (session_hash, owner, now)).fetchone()
+        if not row:
+            fail(401, "Sign in again")
+        expires = row["expires"]
+        if expires - now < self.config.session_seconds / 2:
+            expires = now + self.config.session_seconds
+            db.execute("UPDATE sessions SET expires=MAX(expires,?) WHERE hash=? AND expires>?", (expires, session_hash, now))
+            db.execute("UPDATE voice_devices SET expires=MAX(expires,?) WHERE parent_session=? AND owner=? AND expires>?",
+                       (expires, session_hash, owner, now))
+        return expires
 
     def require_session(self, db, user):
         row = db.execute("SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.user_id=? AND s.expires>? AND u.active=1", (user["session_hash"], user["id"], time.time())).fetchone()
@@ -589,12 +607,16 @@ def create_app(workspace: Workspace, run_worker: bool = True):
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        if response.status_code < 400 and getattr(request.state, "session_expires", None):
+            response.headers["X-Scribe-Session-Expires"] = str(request.state.session_expires)
         return response
 
-    def account(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)):
+    def account(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(bearer)):
         if not credentials:
             fail(401, "Sign in required")
-        return workspace.authenticate(credentials.credentials)
+        user = workspace.authenticate(credentials.credentials)
+        request.state.session_expires = user["expires"]
+        return user
 
     def admin(user=Depends(account)):
         if user["role"] != "admin":

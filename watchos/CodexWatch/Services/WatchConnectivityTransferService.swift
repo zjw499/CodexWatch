@@ -363,7 +363,16 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
-        if message["command"] as? String == "workspace-account" {
+        if message["command"] as? String == "voice-end" {
+            Task { @MainActor in
+                guard let owner = message["owner_id"] as? String, owner == RecordingQueueStore.shared.accountID,
+                      let expiry = message["expires"] as? Double, expiry > Date().timeIntervalSince1970 else {
+                    replyHandler(["ok": false]); return
+                }
+                WatchVoiceService.shared.end()
+                replyHandler(["ok": true])
+            }
+        } else if message["command"] as? String == "workspace-account" {
             Task { @MainActor in replyHandler(self.applyWorkspaceAccount(message)) }
         } else {
             handleQueueMessage(message)
@@ -373,20 +382,53 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
 
     @MainActor
     func requestVoiceSetup() {
+        Task { @MainActor in _ = await ensureVoiceSetup() }
+    }
+
+    @MainActor private var voiceSetupTask: Task<Bool, Never>?
+
+    @MainActor
+    func ensureVoiceSetup(repair: Bool = false) async -> Bool {
+        if let task = voiceSetupTask { return await task.value }
+        let task = Task { @MainActor in await self.connectVoiceAutomatically(repair: repair) }
+        voiceSetupTask = task
+        defer { voiceSetupTask = nil }
+        return await task.value
+    }
+
+    @MainActor
+    private func connectVoiceAutomatically(repair: Bool) async -> Bool {
         let watch = WCSession.default
-        guard watch.activationState == .activated, watch.isReachable else {
-            WatchVoiceService.shared.showSetupMessage("Open Scribe Pilot on your iPhone and keep your Watch nearby, then tap Sync from iPhone again. No code is needed.")
-            return
+        if !repair, let saved = VoiceKeychain.read(), saved.valid,
+           saved.owner_id == RecordingQueueStore.shared.accountID { return true }
+        if repair { VoiceKeychain.clear() }
+        if !repair, watch.receivedApplicationContext["command"] as? String == "workspace-account" {
+            _ = applyWorkspaceAccount(watch.receivedApplicationContext)
         }
-        WatchVoiceService.shared.showSetupMessage("Checking voice setup with your iPhone…")
-        watch.sendMessage(["command": "voice-setup-request"], replyHandler: { reply in
-            Task { @MainActor in
-                guard reply["command"] as? String == "workspace-account" else { return }
-                _ = self.applyWorkspaceAccount(reply)
+        WatchVoiceService.shared.showSetupMessage("Connecting Watch voice automatically…")
+        let request: [String: Any] = ["command": "voice-setup-request", "repair": repair, "request_id": UUID().uuidString]
+        // Durable setup requests work when the phone is temporarily unreachable.
+        // Only setup is queued; conversations always require a fresh foreground launch.
+        if watch.activationState == .activated {
+            if watch.isReachable {
+                watch.sendMessage(request, replyHandler: { reply in
+                    Task { @MainActor in
+                        guard reply["command"] as? String == "workspace-account" else { return }
+                        _ = self.applyWorkspaceAccount(reply)
+                    }
+                }, errorHandler: { _ in })
+            } else if !watch.outstandingUserInfoTransfers.contains(where: { $0.userInfo["command"] as? String == "voice-setup-request" }) {
+                watch.transferUserInfo(request)
             }
-        }, errorHandler: { _ in
-            Task { @MainActor in WatchVoiceService.shared.showSetupMessage("The iPhone did not respond. Open Scribe Pilot on your iPhone, then tap Sync from iPhone again.") }
-        })
+        }
+        // WC callbacks and application-context delivery update Keychain on the main actor.
+        for _ in 0..<40 {
+            if Task.isCancelled { return false }
+            if let saved = VoiceKeychain.read(), saved.valid, saved.owner_id == RecordingQueueStore.shared.accountID { return true }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        WatchVoiceService.shared.showSetupMessage(VoiceSetupState.needsSetup.message)
+        return false
     }
 
     @MainActor
@@ -399,6 +441,10 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         RecordingQueueStore.shared.setAccount(owner)
         let result = WatchVoiceService.shared.applyAccount(owner: owner,
             configurationData: context["voice_config"] as? Data, credentialData: context["voice_credential"] as? Data)
+        if let launchData = context["voice_launch"] as? Data,
+           let launch = try? JSONDecoder().decode(VoiceLaunchRequest.self, from: launchData), launch.valid(owner: owner) {
+            WatchShortcutCommandRouter.enqueueLaunch(launch)
+        }
         UserDefaults.standard.set(context["username"] as? String ?? "", forKey: "ScribePilot.WorkspaceUsername")
         openAIReady = context["ready"] as? Bool ?? false
         if let status = context["meeting_status"] as? [String: String], status["recording_id"] == lastRecordingID {
