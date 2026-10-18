@@ -26,7 +26,7 @@ struct VoiceAssistantQuery: EntityQuery {
 // runs locally on the device executing the shortcut and always opens the app.
 struct TalkWatchAssistantIntent: AppIntent {
     static let title: LocalizedStringResource = "Talk to Assistant"
-    static let description = IntentDescription("Talk using your Apple Watch microphone and speaker. On iPhone, prepares the conversation for your Watch; open Scribe Pilot on the Watch to begin.")
+    static let description = IntentDescription("Start a live conversation using your Watch microphone and speaker. Other devices prepare a handoff to your Watch.")
     static let openAppWhenRun = true
     @available(iOS 26.0, watchOS 26.0, *)
     static let supportedModes: IntentModes = [.foreground(.immediate)]
@@ -47,7 +47,7 @@ struct TalkWatchAssistantIntent: AppIntent {
 
 struct StartRecordingIntent: AppIntent {
     static let title: LocalizedStringResource = "Record Meeting"
-    static let description = IntentDescription("Record on the device running this shortcut. Supports iPhone and Apple Watch.")
+    static let description = IntentDescription("Record a meeting on the device running this shortcut.")
     static let openAppWhenRun = true
     @available(iOS 26.0, watchOS 26.0, *)
     static let supportedModes: IntentModes = [.foreground(.immediate)]
