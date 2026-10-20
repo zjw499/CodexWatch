@@ -93,6 +93,7 @@ struct RecorderView: View {
 
 struct WatchRecordingQueueView: View {
     @EnvironmentObject private var queue: RecordingQueueStore
+    @EnvironmentObject private var recorder: AudioRecorderService
     var body: some View {
         List {
             Section {
@@ -108,6 +109,11 @@ struct WatchRecordingQueueView: View {
                         VStack(alignment: .leading, spacing: 5) {
                             Text(recording.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)
                             ScribeStateLabel(state: recording.state)
+                            let activeDuration = recorder.isRecording && recorder.activeRecordingID == recording.id ? recorder.elapsedTime : nil
+                            let durationText = recording.durationDescription(activeDuration: activeDuration)
+                            Label(durationText, systemImage: "clock")
+                                .font(.caption2).monospacedDigit().foregroundStyle(ScribeTheme.muted)
+                                .accessibilityLabel("Recording duration: \(durationText)")
                             Text(recording.createdAt, style: .time).font(.caption2).foregroundStyle(ScribeTheme.muted)
                         }.padding(.vertical, 3)
                     }

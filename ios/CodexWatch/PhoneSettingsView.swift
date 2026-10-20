@@ -90,6 +90,7 @@ struct PhoneSettingsView: View {
             if invitation {
                 TextField("Invitation code (32 characters)", text: $invitationCode)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                    .accessibilityLabel("Invitation code")
                 Text("Paste the full invitation code your administrator shared. Your username is used to sign in after account setup.")
                     .font(.footnote).foregroundStyle(ScribeTheme.muted)
             } else {

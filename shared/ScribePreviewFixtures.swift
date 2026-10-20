@@ -14,7 +14,7 @@ enum ScribePreviewFixtures {
             try Data(repeating: 0, count: 2048).write(to: audio)
             defer { try? FileManager.default.removeItem(at: audio) }
             let queued = UUID().uuidString
-            try queue.accept(fileURL: audio, id: queued, index: 0, isFinal: true, source: "Apple Watch")
+            try queue.accept(fileURL: audio, id: queued, index: 0, isFinal: true, source: "Apple Watch", duration: 83)
             try queue.rename(queued, title: "Team check-in")
             let completed = UUID().uuidString
             let fullPreview = ProcessInfo.processInfo.arguments.contains("-scribe-full-recording-preview")

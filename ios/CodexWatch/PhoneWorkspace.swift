@@ -75,6 +75,14 @@ struct WorkspaceRecording: Codable, Identifiable {
     let transcribed_seconds: Double?
     let transcription_complete: Bool?
     let quality_warning: String?
+
+    var recordedDuration: Double? {
+        if let duration, duration.isFinite, duration > 0 { return duration }
+        if transcription_complete == true, let transcribed_seconds, transcribed_seconds.isFinite, transcribed_seconds >= 0 {
+            return transcribed_seconds
+        }
+        return duration.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+    }
 }
 
 struct WorkspacePolicy: Codable {

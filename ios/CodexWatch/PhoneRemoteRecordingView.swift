@@ -122,7 +122,7 @@ struct PhoneRemoteRecordingView: View {
     private func audioControls(_ count: Int) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("Source audio", systemImage: "waveform").font(.headline)
-            if let duration = remote?.duration ?? queue.recording(recordingID)?.duration {
+            if let duration = remote?.recordedDuration ?? queue.recording(recordingID)?.duration {
                 Text("\(Duration.seconds(duration).formatted(.time(pattern: .minuteSecond))) · \(count) audio \(count == 1 ? "part" : "parts")")
                     .font(.caption).foregroundStyle(ScribeTheme.muted)
             }

@@ -230,10 +230,13 @@ struct PhoneMemosView: View {
                         Text(item.title).font(.subheadline.weight(.semibold)).foregroundStyle(.white).multilineTextAlignment(.leading)
                     }
                 } else { Text(item.title).font(.subheadline.weight(.semibold)) }
-                HStack(spacing: 7) {
-                    Text(item.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
-                    if let seconds = item.duration { Text("·"); Text(duration(seconds)).monospacedDigit() }
-                }.font(.caption2).foregroundStyle(ScribeTheme.muted)
+                Text(item.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
+                    .font(.caption2).foregroundStyle(ScribeTheme.muted)
+                let activeDuration = recorder.isRecording && recorder.activeRecordingID == item.id ? recorder.elapsedTime : nil
+                let durationText = item.durationDescription(activeDuration: activeDuration)
+                Label(durationText, systemImage: "clock")
+                    .font(.caption2).monospacedDigit().foregroundStyle(ScribeTheme.muted)
+                    .accessibilityLabel("Recording duration: \(durationText)")
                 if item.awaitingConnection {
                     Label("Waiting for PC", systemImage: "network").font(.caption.weight(.semibold)).foregroundStyle(ScribeTheme.muted)
                 } else { ScribeStateLabel(state: item.state) }

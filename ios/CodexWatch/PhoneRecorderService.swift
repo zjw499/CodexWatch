@@ -14,6 +14,7 @@ final class PhoneRecorderService: NSObject, ObservableObject {
     @Published var errorMessage: String?
 
     private var recorder: AVAudioRecorder?
+    var activeRecordingID: String? { recorder?.url.deletingPathExtension().lastPathComponent }
     private var starting = false
 
     func startRecording() async {

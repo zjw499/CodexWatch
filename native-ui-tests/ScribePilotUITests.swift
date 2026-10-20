@@ -11,6 +11,7 @@ final class ScribePilotUITests: XCTestCase {
         app.swipeUp()
         let actions = app.buttons["Actions for Team check-in"]
         XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Recording duration: 01:23")).firstMatch.exists)
         actions.tap()
         XCTAssertTrue(app.buttons["Rename"].waitForExistence(timeout: 15))
         app.buttons["Rename"].tap()

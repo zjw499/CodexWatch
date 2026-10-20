@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import Foundation
 
@@ -31,6 +32,22 @@ struct RecordingPart: Codable, Equatable {
     let index: Int
     let filename: String
     let isFinal: Bool
+    var duration: TimeInterval? = nil
+}
+
+enum RecordingDuration {
+    static func display(_ seconds: TimeInterval?) -> String {
+        guard let seconds, seconds.isFinite, seconds >= 0, seconds < Double(Int.max) else { return "Duration unavailable" }
+        let total = Int(seconds)
+        return total >= 3600 ? String(format: "%d:%02d:%02d", total / 3600, (total / 60) % 60, total % 60)
+            : String(format: "%02d:%02d", total / 60, total % 60)
+    }
+
+    static func measured(at url: URL) -> TimeInterval? {
+        guard let audio = try? AVAudioFile(forReading: url), audio.length >= 0,
+              audio.processingFormat.sampleRate.isFinite, audio.processingFormat.sampleRate > 0 else { return nil }
+        return Double(audio.length) / audio.processingFormat.sampleRate
+    }
 }
 
 struct QueuedRecording: Identifiable, Codable {
@@ -74,6 +91,13 @@ struct QueuedRecording: Identifiable, Codable {
     }
     var isWatch: Bool { source == "Apple Watch" }
     var canProcess: Bool { (isComplete || serverUploaded == true) && [.queued, .failed].contains(state) }
+
+    func durationDescription(activeDuration: TimeInterval? = nil) -> String {
+        let value = RecordingDuration.display(activeDuration ?? duration)
+        guard activeDuration == nil, duration != nil, value != "Duration unavailable",
+              state == .receiving, !isComplete, serverUploaded != true else { return value }
+        return "\(value) received"
+    }
 }
 
 enum RecordingQueueError: LocalizedError {
@@ -150,6 +174,10 @@ final class RecordingQueueStore: ObservableObject {
             // Fail closed: do not overwrite an unreadable queue with an empty snapshot.
             errorMessage = "Saved recordings are unavailable. Unlock your device and reopen Scribe Pilot."
             storageUnavailable = true
+        }
+        if !storageUnavailable {
+            do { try recoverDurations() }
+            catch { errorMessage = "Recording durations could not be saved. Your saved audio is still available." }
         }
     }
 
@@ -236,9 +264,11 @@ final class RecordingQueueStore: ObservableObject {
             try FileManager.default.copyItem(at: fileURL, to: destination)
         }
         try Self.protectFile(destination)
-        items[position].parts.append(RecordingPart(index: index, filename: filename, isFinal: isFinal))
+        items[position].parts.append(RecordingPart(index: index, filename: filename, isFinal: isFinal,
+                                                   duration: RecordingDuration.measured(at: destination)))
         if isFinal { items[position].finalIndex = index }
-        if let duration { items[position].duration = duration }
+        if let duration, duration.isFinite, duration >= 0 { items[position].duration = duration }
+        fillDuration(&items[position])
         items[position].state = items[position].isComplete ? .queued
             : (items[position].state == .recording && !isFinal ? .recording : .receiving)
         try commit(items, removed: removedIDs)
@@ -345,7 +375,10 @@ final class RecordingQueueStore: ObservableObject {
         items[position].transcript = transcript; items[position].summary = items[position].pendingSummary ?? summary; items[position].error = error
         if state != .queued || items[position].serverUploaded == true { items[position].serverUploaded = true }
         items[position].remotePartCount = partCount
-        items[position].duration = duration; items[position].serverUpdated = updated
+        if let duration, duration.isFinite, duration >= 0 {
+            items[position].duration = max(items[position].duration ?? 0, duration)
+        }
+        items[position].serverUpdated = updated
         if state == .ready {
             items[position].progress = 1
             if items[position].awaitingConnection && items[position].requestedRetranscription != true {
@@ -360,6 +393,31 @@ final class RecordingQueueStore: ObservableObject {
 
     private func audioDirectory(_ id: String) -> URL {
         root.appendingPathComponent("Audio", isDirectory: true).appendingPathComponent(id, isDirectory: true)
+    }
+
+    private func fillDuration(_ item: inout QueuedRecording) {
+        guard !item.parts.isEmpty else { return }
+        for index in item.parts.indices where item.parts[index].duration == nil {
+            item.parts[index].duration = RecordingDuration.measured(at: audioURL(item.id, part: item.parts[index]))
+        }
+        let durations = item.parts.compactMap(\.duration)
+        guard durations.count == item.parts.count, durations.allSatisfy({ $0.isFinite && $0 >= 0 }) else { return }
+        let measured = durations.reduce(0, +)
+        guard measured.isFinite else { return }
+        if item.duration == nil || item.duration?.isFinite != true || measured > (item.duration ?? 0) {
+            item.duration = measured
+        }
+    }
+
+    private func recoverDurations() throws {
+        var items = recordings
+        var changed = false
+        for index in items.indices {
+            if let duration = items[index].duration, duration.isFinite, duration > 0 { continue }
+            fillDuration(&items[index])
+            changed = changed || items[index].duration != recordings[index].duration
+        }
+        if changed { try commit(items, removed: removedIDs) }
     }
 
     private func newRecording(id: String, source: String) -> QueuedRecording {

@@ -157,7 +157,7 @@ final class PhoneOpenAIService: ObservableObject {
                 let previous = queue.recording(item.id)?.state
                 try queue.mergeRemote(id: item.id, owner: item.owner, title: item.title, source: item.source,
                     created: Date(timeIntervalSince1970: item.created), state: state, transcript: item.transcript,
-                    summary: item.summary, error: item.error, partCount: item.expected_parts, duration: item.duration, updated: item.updated)
+                    summary: item.summary, error: item.error, partCount: item.expected_parts, duration: item.recordedDuration, updated: item.updated)
                 if state == .ready && previous != .ready {
                     sendWatchCommand(["command": "recording-complete", "recording_id": item.id, "delete_audio": false])
                 }
