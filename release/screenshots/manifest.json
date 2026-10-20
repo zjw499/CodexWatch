@@ -1,0 +1,56 @@
+{
+  "source_commit": "2a21a258da9cc0233173d361fff1756b9faecca0",
+  "native_verification_run": "39371337829",
+  "synthetic_data_only": true,
+  "image_edits": false,
+  "screenshots": [
+    {
+      "file": "phone-capture.png",
+      "original": "5FFE19FF-049E-4862-82EC-231B911A390F.png",
+      "width": 1206,
+      "height": 2622,
+      "sha256": "6e9e17e5b0759c6865a7a72b0241ce461feb52d23c15b4d288b5720b6c566b22",
+      "visually_reviewed": true
+    },
+    {
+      "file": "phone-recording-review.png",
+      "original": "BE2AD7E1-86D5-4492-B2E1-75DF451320D3.png",
+      "width": 1206,
+      "height": 2622,
+      "sha256": "26f2bf550e011cf94350074365b97053bab9ce89223c16e7656e66c9b3700016",
+      "visually_reviewed": true
+    },
+    {
+      "file": "phone-transcript.png",
+      "original": "A1E4E703-61B0-4151-8EC7-02EBC88E8F60.png",
+      "width": 1206,
+      "height": 2622,
+      "sha256": "f44f3798cb6744e5d7e7be0388b52c12cd714a8bb166155c7fe03350ec7b4a73",
+      "visually_reviewed": true
+    },
+    {
+      "file": "watch-capture.png",
+      "original": "watch-capture.png",
+      "width": 416,
+      "height": 496,
+      "sha256": "502b5bdb4bd7117cc958a5701562b3ae45612aaaded9913c22be4e35598b1249",
+      "visually_reviewed": true
+    },
+    {
+      "file": "watch-queue.png",
+      "original": "watch-queue.png",
+      "width": 416,
+      "height": 496,
+      "sha256": "a49a4fbb855124627660996e3c109432d52c3202ff4cd3977c38415c920d2706",
+      "visually_reviewed": true
+    },
+    {
+      "file": "ipad-capture.png",
+      "width": 2064,
+      "height": 2752,
+      "sha256": "677e6d4fb64b97185131ad9084071465a51eba6d70dd80a2d0306130c0af2746",
+      "visually_reviewed": true,
+      "capture_run": "39372701669"
+    }
+  ]
+}

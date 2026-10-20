@@ -66,7 +66,8 @@ $env:PYTHONPATH='D:\CodexWatch'
 The company website serves those static pages only; workspace content does not go
 to that website. Keep its current production source unchanged when adding pages.
 
-The October 20 review environment is a separate DPAPI-encrypted database at
+The October 20 review environment uses a separate SQLite database with DPAPI-protected
+content fields at
 `D:\watch-audio-pipeline\.runtime\scribe-app-review`, served by the separate
 `Scribe Pilot Apple Review` scheduled task on loopback port 8792. Only
 `https://zwyattpc.tail488e93.ts.net:8443/app-review` routes to it. No production
@@ -84,6 +85,19 @@ external [release service check](https://github.com/zjw499/CodexWatch/actions/ru
 The signed [build 167 archive](https://github.com/zjw499/CodexWatch/actions/runs/39371362304)
 passed validation with matching privacy manifests in all three app bundles. This
 archive-only run did not upload to TestFlight or establish physical-device acceptance.
+
+The subsequent [build 168 pilot](https://github.com/zjw499/CodexWatch/actions/runs/39372248203)
+uploaded successfully, reached VALID with export compliance complete, and appears
+as Testing in the existing Personal Internal Testing group. Native verification
+passed 101 unit tests and 5 interface tests, in addition to 184 backend tests and
+10 release-gate tests. Build 168 is selected in the manually released App Store
+draft. This establishes internal beta availability; App Review and unlisted
+approval have not been submitted or granted.
+
+`release/screenshots/manifest.json` records six inspected, unedited synthetic-data
+screenshots: three iPhone, one iPad and two Watch. The iPad capture comes from the
+verified simulator app, with [separate capture evidence](https://github.com/zjw499/CodexWatch/actions/runs/39372701669).
+`release/testflight-notes.txt` contains the saved pilot testing instructions.
 
 Before App Review: confirm the legal-entity seller, privacy and age ratings, category,
 review credentials and reachable synthetic-data-only backend, signed archive and

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "source_commit": "c879f9fb306f20380b817c20c72d8a2f4669b604",
+  "workflow_run": "39372248203",
+  "archive": "ScribePilot-168.xcarchive.tar.gz",
+  "sha256": "6497e343488693725d0fa8c371520086ef13826da5eb96337ae0cc9d391598e6",
+  "bundle_id": "com.zachwyatt.codexwatch",
+  "version": "1.0",
+  "build_number": "168",
+  "mode": "administrator_pilot",
+  "watch_shortcuts_and_complications_verified": true
+}

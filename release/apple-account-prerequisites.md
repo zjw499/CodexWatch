@@ -44,3 +44,16 @@ requirements and Apple's unlisted approval are complete. The existing production
 server's consent flag remains off for old-client compatibility until the updated
 paired app is installed; external agency onboarding must wait for that flag to be
 enabled and verified.
+
+Build 1.0 (168) has passed native verification and Apple's processing and is Testing
+in the existing internal TestFlight group. It is selected in the App Store draft.
+App Review instructions and the published company phone/Scribe Pilot support email
+are saved. Entry of the synthetic-review credentials awaits explicit approval.
+
+Content Rights remains unsaved pending the owner's confirmation that participating
+agencies have permission to process their recordings and reference material. The
+form's affirmative answer includes an assertion that the necessary rights exist;
+do not infer those rights from an OpenAI BAA or a working API connection.
+
+All six inspected screenshots are saved in App Store Connect. Native verification,
+signed archive/upload, external release services and iPad capture workflows passed.
