@@ -510,6 +510,14 @@ jobs:
           if [[ "$DIAGNOSE_ONLY" == "true" ]]; then
             app_json="$(curl -fsSL "${auth[@]}" "$api/apps/$APP_ID")"
             echo "$app_json" | jq -c '{id: .data.id, name: .data.attributes.name, bundleId: .data.attributes.bundleId}'
+            echo "App Store release versions:"
+            versions_json="$(curl -fsSL "${auth[@]}" "$api/apps/$APP_ID/appStoreVersions?limit=10")"
+            echo "$versions_json" | jq -c '.data[] | {id, version: .attributes.versionString, platform: .attributes.platform, state: .attributes.appStoreState, releaseType: .attributes.releaseType}'
+            infos_json="$(curl -fsSL "${auth[@]}" "$api/apps/$APP_ID/appInfos?limit=10")"
+            echo "App information and privacy links:"
+            for info_id in $(echo "$infos_json" | jq -r '.data[].id'); do
+              curl -fsSL "${auth[@]}" "$api/appInfos/$info_id/appInfoLocalizations" | jq -c '.data[] | {id, locale: .attributes.locale, name: .attributes.name, subtitle: .attributes.subtitle, privacyPolicyUrl: .attributes.privacyPolicyUrl}'
+            done
             all_builds="$(curl -fsSL "${auth[@]}" -G "$api/builds" \
               --data-urlencode "filter[app]=$APP_ID" \
               --data-urlencode "sort=-uploadedDate" \

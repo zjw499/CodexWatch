@@ -436,8 +436,24 @@ final class WatchConnectivityTransferService: NSObject, ObservableObject, WCSess
         // Launches have a separate, expiring owner-bound envelope. Never apply
         // account credentials replayed from an older queued shortcut handoff.
         guard context["voice_launch"] == nil else { return ["ok": false] }
+        if let deleted = context["deleted_owners"] as? [String] {
+            let queue = RecordingQueueStore.shared
+            for deletedOwner in deleted where RecordingQueueStore.validID(deletedOwner) {
+                let owners = UserDefaults.standard.dictionary(forKey: "ScribePilot.WatchOwners") as? [String: String] ?? [:]
+                let ids = Set(owners.filter { $0.value == deletedOwner }.map(\.key))
+                    .union(queue.recordings.filter { $0.ownerID == deletedOwner }.map(\.id))
+                do {
+                    for id in ids { try removeRecording(id, notifyPhone: false) }
+                    try queue.deleteAccount(deletedOwner)
+                } catch {
+                    openAIReady = false
+                    statusMessage = "Account cleanup will retry when the Watch reconnects."
+                    return ["ok": false]
+                }
+            }
+        }
         let raw = context["owner_id"] as? String ?? ""
-        let owner = RecordingQueueStore.validID(raw) ? raw : nil
+        let owner = RecordingQueueStore.validID(raw) && !RecordingQueueStore.shared.deletedOwners.contains(raw) ? raw : nil
         if RecordingQueueStore.shared.accountID != owner {
             meetingStatus = nil; lastRecordingID = nil
         }

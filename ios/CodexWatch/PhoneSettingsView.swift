@@ -23,6 +23,12 @@ struct PhoneSettingsView: View {
             }
             if let user = workspace.user {
                 account(user)
+                if workspace.consentRequired {
+                    Section {
+                        NavigationLink("Review AI processing disclosure") { PhonePrivacyView() }
+                        Text("Accept the disclosure before sending recordings or conversations to OpenAI.").font(.footnote)
+                    }
+                }
                 models
                 assistants
                 watchVoice
@@ -45,6 +51,9 @@ struct PhoneSettingsView: View {
                     }
                 }
             } else { login }
+            Section {
+                NavigationLink("Privacy and account") { PhonePrivacyView() }
+            }
         }
         .scrollContentBackground(.hidden).background(ScribeTheme.background).tint(ScribeTheme.red)
         .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
@@ -62,7 +71,8 @@ struct PhoneSettingsView: View {
     private func account(_ user: WorkspaceUser) -> some View {
         Section("Account") {
             Label(user.username, systemImage: "person.crop.circle")
-            Text(user.isAdmin ? "Administrator · organization review enabled" : "Private recording workspace")
+            if let agency = user.agency_name { Text(agency).font(.subheadline) }
+            Text(user.isAdmin ? "Agency administrator · agency review enabled" : "Private recording workspace")
                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
             Label(workspace.processingEnabled ? "Organization connection ready" : "Organization approval pending",
                   systemImage: workspace.processingEnabled ? "lock.shield" : "clock")

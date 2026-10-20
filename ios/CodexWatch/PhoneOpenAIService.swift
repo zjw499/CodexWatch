@@ -39,7 +39,7 @@ final class PhoneOpenAIService: ObservableObject {
     func process(_ ids: [String], retranscribe: Bool = false) {
         let workspace = self.workspace
         guard let owner = workspace.user?.id, workspace.ready, !workspace.selectedAssistantID.isEmpty else {
-            queue.errorMessage = workspace.signedIn ? "Organization processing approval is pending, or no assistant is selected." : WorkspaceError.signIn.localizedDescription
+            queue.errorMessage = workspace.signedIn ? (workspace.consentRequired ? "Open Settings > Privacy and account to review the OpenAI processing disclosure." : "Organization processing approval is pending, or no assistant is selected.") : WorkspaceError.signIn.localizedDescription
             return
         }
         for id in ids {

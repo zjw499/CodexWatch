@@ -10,7 +10,12 @@ struct WorkspaceUser: Codable, Identifiable, Equatable {
     let id: String
     let username: String
     let role: String
+    var agency_id: String? = nil
+    var agency_name: String? = nil
+    var platform_operator: Bool? = nil
+    var consent_version: String? = nil
     var isAdmin: Bool { role == "admin" }
+    var isOperator: Bool { platform_operator == true }
 }
 
 struct WorkspaceCredential: Codable {
@@ -170,6 +175,8 @@ final class PhoneWorkspace: ObservableObject {
     static let defaultServer = "https://zwyattpc.tail488e93.ts.net/workspace"
     @Published private(set) var credential: WorkspaceCredential?
     @Published private(set) var processingEnabled = false
+    @Published private(set) var consentRequired = true
+    @Published private(set) var disclosure: WorkspaceDisclosure?
     @Published private(set) var assistants: [WorkspaceAssistant] = []
     @Published private(set) var transcriptionModels = ["gpt-4o-mini-transcribe", "gpt-4o-transcribe"]
     @Published private(set) var generationModels = ["gpt-4.1-mini", "gpt-4.1"]
@@ -189,6 +196,7 @@ final class PhoneWorkspace: ObservableObject {
         let transcription_models: [String]
         let generation_models: [String]
         let pending_generation_models: [String]?
+        let consent_required: Bool?
     }
     struct Assistants: Decodable { let assistants: [WorkspaceAssistant] }
     struct Recordings: Decodable { let recordings: [WorkspaceRecording] }
@@ -213,12 +221,13 @@ final class PhoneWorkspace: ObservableObject {
     #if DEBUG
     init(session: URLSession, credential: WorkspaceCredential, assistants: [WorkspaceAssistant]) {
         self.session = session; self.credential = credential; self.assistants = assistants
+        consentRequired = false // Synthetic native-test fixture only.
         processingEnabled = true; selectedAssistantID = assistants.first?.id ?? ""
     }
     #endif
     var user: WorkspaceUser? { credential?.user }
     var signedIn: Bool { credential != nil }
-    var ready: Bool { signedIn && processingEnabled && assistants.contains { $0.id == selectedAssistantID } }
+    var ready: Bool { signedIn && processingEnabled && !consentRequired && assistants.contains { $0.id == selectedAssistantID } }
     var selectedAssistant: WorkspaceAssistant? { assistants.first { $0.id == selectedAssistantID } }
 
     static func validServer(_ value: String) -> URL? {
@@ -245,6 +254,7 @@ final class PhoneWorkspace: ObservableObject {
         try WorkspaceKeychain.save(result)
         PhoneOpenAIService.shared.configurationChanged()
         credential = result
+        consentRequired = true; disclosure = nil
         voiceConfiguration = nil; voiceMessage = nil
         VoiceDescriptorCache.clear()
         CodexWatchShortcuts.updateAppShortcutParameters()
@@ -267,6 +277,7 @@ final class PhoneWorkspace: ObservableObject {
         try WorkspaceKeychain.remove()
         PhoneOpenAIService.shared.configurationChanged()
         credential = nil; processingEnabled = false; assistants = []; selectedAssistantID = ""; transcriptionContext = ""; pendingGenerationModels = []
+        consentRequired = true; disclosure = nil
         voiceConfiguration = nil; voiceMessage = nil
         VoiceDescriptorCache.clear()
         CodexWatchShortcuts.updateAppShortcutParameters()
@@ -279,6 +290,7 @@ final class PhoneWorkspace: ObservableObject {
     func watchAccountContext() -> [String: Any] {
         var context: [String: Any] = ["command": "workspace-account", "owner_id": user?.id ?? "",
                                     "username": user?.username ?? "", "ready": ready, "protected": true]
+        context["deleted_owners"] = RecordingQueueStore.shared.deletedOwners.sorted()
         if let config = voiceConfiguration, let saved = credential,
            let data = try? JSONEncoder().encode(config) {
             context["voice_config"] = data
@@ -376,11 +388,24 @@ final class PhoneWorkspace: ObservableObject {
         if ProcessInfo.processInfo.arguments.contains("-scribe-ui-preview") { return }
         #endif
         restoreSessionAfterUnlock()
+        if let owner = WorkspaceKeychain.read(String.self, account: "deleted-account-cleanup") {
+            do { try finishDeletedAccountCleanup(owner); try await signOut() }
+            catch { connectionMessage = "Your server account was deleted. Device cleanup will retry: \(error.localizedDescription)" }
+            return
+        }
         await revokePendingSessions()
         guard let saved = credential else { return }
         do {
             let me: Me = try await request("me")
             guard credential?.token == saved.token else { return }
+            if let current = credential {
+                let updated = WorkspaceCredential(token: current.token, user: me.user, expires: current.expires, server: current.server)
+                try WorkspaceKeychain.save(updated)
+                credential = updated
+            }
+            disclosure = try await request("disclosure")
+            guard credential?.token == saved.token else { return }
+            consentRequired = me.consent_required == true || me.user.consent_version != disclosure?.version
             processingEnabled = me.processing_enabled
             transcriptionModels = me.transcription_models; generationModels = me.generation_models
             pendingGenerationModels = me.pending_generation_models ?? []
@@ -404,6 +429,14 @@ final class PhoneWorkspace: ObservableObject {
 
     func refreshVoice() async {
         guard let captured = credential else { return }
+        guard !consentRequired else {
+            voiceConfiguration = nil
+            voiceMessage = "Review the OpenAI processing disclosure in Privacy and account before using voice."
+            VoiceDescriptorCache.clear()
+            try? WorkspaceKeychain.remove(account: "watch-voice")
+            syncWatchAccount()
+            return
+        }
         do {
             let config: VoiceConfiguration = try await request("voice/config")
             guard credential?.token == captured.token else { return }
@@ -445,6 +478,7 @@ final class PhoneWorkspace: ObservableObject {
 
     private func prepareWatchVoice() async throws {
         restoreSessionAfterUnlock()
+        guard !consentRequired else { throw WorkspaceError.status(409, "Review the OpenAI processing disclosure in Settings > Privacy and account.") }
         guard let captured = credential else { throw VoiceError.setup }
         guard UIApplication.shared.isProtectedDataAvailable else { throw VoiceError.setup }
         if voiceConfiguration == nil {
