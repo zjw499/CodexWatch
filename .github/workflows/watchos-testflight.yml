@@ -575,6 +575,23 @@ jobs:
           done < <(jq -r '.data[].id' <<< "$group_ids")
           [[ -n "$group_id" ]] || { echo "Internal testing group not found" >&2; exit 1; }
 
+          # Automatic internal groups reject explicit assignments. Verify the
+          # processed build is actually listed in the existing group instead.
+          if jq -e '.data.attributes.isInternalGroup == true and .data.attributes.hasAccessToAllBuilds == true' <<< "$group_json" >/dev/null; then
+            for access_attempt in $(seq 1 10); do
+              group_builds="$(curl --fail --silent --show-error --max-time 60 "${auth[@]}" \
+                "$api/betaGroups/$group_id/builds?limit=200")"
+              if jq -e --arg id "$build_id" '.data[] | select(.id == $id)' <<< "$group_builds" >/dev/null; then
+                echo "Verified build $BUILD_NUMBER is available in $BETA_GROUP_NAME (automatic internal group)."
+                exit 0
+              fi
+              echo "Build $BUILD_NUMBER is valid; waiting for automatic internal-group access."
+              [[ "$access_attempt" -lt 10 ]] && sleep 15
+            done
+            echo "Build $BUILD_NUMBER was not found in the automatic internal testing group." >&2
+            exit 1
+          fi
+
           assignment_response="$RUNNER_TEMP/testflight-assignment.json"
           assignment_status="$(curl --silent --show-error --max-time 60 -X POST "${auth[@]}" \
             -H "Content-Type: application/json" \
