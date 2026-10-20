@@ -117,9 +117,11 @@ a registered LLC/corporation and supplied a filed reinstatement for SKY DATA
 SERVICES LLC. Florida's live registry confirms ACTIVE status as of October 20.
 Apple's seller is still Individual pending membership conversion. The company
 D-U-N-S number has been retrieved directly from Dun & Bradstreet and entered in
-the prepared conversion form. Original formation records and available Apple
-teams were checked. The owner approved submission, but Apple requires the current
-Individual membership's Tax ID type, which remains pending. The updated Apple
+the submitted conversion form. Original formation records and available Apple
+teams were checked. After the owner approved submission and supplied the remaining
+required answer, Apple accepted the conversion request on October 20, 2026 and
+stated it would respond within one business day. Conversion approval remains
+pending. The updated Apple
 Developer Program License Agreement was accepted with separate owner approval;
 its warning remained cleared after a fresh account reload.
 

@@ -14,19 +14,20 @@ The original October 8, 2025 Articles of Organization were downloaded from Sunbi
 and visually inspected; they list the owner as an initial authorized member.
 Florida's fictitious-name search found no registration linked to the LLC, and
 the signed-in Apple account shows only the existing Individual team. These records
-support the prepared founder/cofounder, no-DBA and no-separate-membership answers.
-The Tax ID type associated with the current Individual membership is not displayed
-in the accessible account pages. The owner approved submission of the prepared
-membership-change request, but Apple requires the Tax ID-type answer before it
-will accept the form. That factual answer remains pending; no actual Tax ID is
-needed for this form.
+support the submitted founder/cofounder, no-DBA and no-separate-membership answers.
+The owner approved submission and supplied the remaining required membership
+answer. The conversion request was submitted on October 20, 2026. Apple's
+confirmation page states that it will review the request and respond within one
+business day. This confirms receipt of the request; organization conversion is
+still awaiting Apple's approval. No actual Tax ID was entered in this form.
 The filing images, addresses, D-U-N-S lookup email and tax identifier are not
 included in this repository.
 
 For an existing registered organization, the founder/cofounder can request an
 [individual-to-organization membership update](https://developer.apple.com/help/account/membership/updating-your-account-information/).
 Apple asks for the organization's D-U-N-S number and may request business documents.
-No conversion request or corporate registration has been submitted by this task.
+The membership-conversion request has been submitted. This task did not submit a
+corporate registration or a new paid-app agreement.
 
 The owner explicitly authorized acceptance of the updated Apple Developer Program
 License Agreement on October 20, 2026. It was accepted through the account's Agree
