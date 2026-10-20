@@ -43,8 +43,9 @@ targets:
     sources:
       - path: ios/CodexWatch
       - path: shared
-    resources:
       - path: privacy/PrivacyInfo.xcprivacy
+        buildPhase: resources
+    resources:
       - path: ios/CodexWatch/Assets.xcassets
       - path: ios/CodexWatch/Resources/watch-audio-ca.crt
     settings:
@@ -79,8 +80,8 @@ targets:
       Release: macos/CodexWatch/Config/WatchApp-Release.xcconfig
     sources:
       - path: macos/CodexWatch/Resources/Assets.xcassets
-    resources:
       - path: privacy/PrivacyInfo.xcprivacy
+        buildPhase: resources
     info:
       path: macos/CodexWatch/Support/WatchApp-Info.plist
       properties:
@@ -115,8 +116,8 @@ targets:
     sources:
       - path: watchos/CodexWatch
       - path: shared
-    resources:
       - path: privacy/PrivacyInfo.xcprivacy
+        buildPhase: resources
     info:
       path: macos/CodexWatch/Support/WatchExtension-Info.plist
       properties:
