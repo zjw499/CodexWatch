@@ -195,9 +195,12 @@ class DiagnosticStore:
 
     def history(self, owner, review=False):
         with self.w.db() as db:
-            rows = db.execute("SELECT id,owner,revision,created,updated FROM voice_diagnostics WHERE deleted=0 "
-                              + ("" if review else "AND owner=? ") + "ORDER BY updated DESC LIMIT 100",
-                              () if review else (owner,)).fetchall()
+            if review:
+                actor = self.w.access.agency(db, owner)
+                self.w.access.require_review(db, owner, owner)
+                rows = db.execute("SELECT v.id,v.owner,v.revision,v.created,v.updated FROM voice_diagnostics v JOIN users u ON u.id=v.owner WHERE v.deleted=0 AND u.agency_id=? ORDER BY v.updated DESC LIMIT 100", (actor["agency_id"],)).fetchall()
+            else:
+                rows = db.execute("SELECT id,owner,revision,created,updated FROM voice_diagnostics WHERE deleted=0 AND owner=? ORDER BY updated DESC LIMIT 100", (owner,)).fetchall()
             if review:
                 self.w.audit(db, owner, "admin-voice-diagnostics-history-reviewed", "voice-diagnostics")
             return {"reports": [dict(row) for row in rows]}
@@ -209,6 +212,8 @@ class DiagnosticStore:
                               (report_id,) if review else (report_id, owner)).fetchone()
             if not row:
                 fail(404, "Diagnostic report unavailable")
+            if review:
+                self.w.access.require_review(db, owner, row["owner"])
             if review:
                 self.w.audit(db, owner, "admin-voice-diagnostics-reviewed", report_id)
             return {"report": self.w.decode(row["content"]), "created": row["created"], "updated": row["updated"]}

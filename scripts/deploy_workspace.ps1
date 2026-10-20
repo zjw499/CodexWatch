@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string] $Version,
     [string] $PipelineRoot = "D:\watch-audio-pipeline",
-    [string] $KeyFile = "C:\Users\zjw49\Desktop\OPENAI_API_KEY.txt",
+    [string] $KeyFile = "D:\watch-audio-pipeline\.runtime\scribe-workspace\scribe-pilot-production.key",
     [switch] $InstallVoiceGateway,
     [switch] $VoiceGatewayOnly,
     [switch] $ExposeVoiceGateway
@@ -44,7 +44,7 @@ foreach ($sid in @($identity.User, (New-Object System.Security.Principal.Securit
 New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 $moduleDestination = Join-Path $releaseRoot "server_workspace"
 New-Item -ItemType Directory -Path $moduleDestination -Force | Out-Null
-$files = @('__init__.py', 'workspace.py', 'audio.py', 'voice.py', 'voice_stream.py', 'voice_tools.py', 'voice_diagnostics.py', 'knowledge.py', 'run.py', 'requirements.txt')
+$files = @('__init__.py', 'workspace.py', 'identity.py', 'release_api.py', 'audio.py', 'voice.py', 'voice_stream.py', 'voice_tools.py', 'voice_diagnostics.py', 'knowledge.py', 'run.py', 'requirements.txt')
 $manifest = @()
 foreach ($name in $files) {
     $source = Join-Path $sourceRoot "server_workspace\$name"
@@ -64,7 +64,16 @@ if (-not (Test-Path -LiteralPath $configuration)) {
         generation_models=@('gpt-4.1-mini','gpt-4.1','gpt-4.1-nano','gpt-6-astra','gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna','gpt-5.5','gpt-5.4-mini','gpt-5.4-nano')
         baa_verified=$true; retention_verified=$false; safeguards_verified=$false
         approval_evidence='Signed Sky Data Services OpenAI BAA verified October 2, 2026. Project retention and full PC safeguards remain unverified.'
+        require_ai_consent=$true
     } | ConvertTo-Json | Set-Content -LiteralPath $configuration -Encoding utf8
+}
+$existingConfiguration = Get-Content -LiteralPath $configuration -Raw | ConvertFrom-Json
+if ($existingConfiguration.key_file -ne $KeyFile) {
+    Copy-Item -LiteralPath $configuration -Destination (Join-Path $privateRoot 'workspace-config.previous.json') -Force
+    $existingConfiguration.key_file = $KeyFile
+    $temporaryConfiguration = Join-Path $privateRoot 'workspace-config.next.json'
+    $existingConfiguration | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $temporaryConfiguration -Encoding utf8
+    Move-Item -LiteralPath $temporaryConfiguration -Destination $configuration -Force
 }
 $decoder = (Get-Command ffmpeg -ErrorAction Stop).Source
 Set-Content -LiteralPath (Join-Path $privateRoot 'audio-decoder.txt') -Value $decoder -Encoding utf8 -NoNewline

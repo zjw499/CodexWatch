@@ -68,6 +68,11 @@ class VoiceStore:
         return VoicePolicy.model_validate(self.w.decode(row[0])) if row else VoicePolicy(enabled=self.w.config.voice_enabled)
 
     def available(self, owner: str | None = None) -> bool:
+        if owner:
+            try:
+                self.w.access.require_consent(owner)
+            except HTTPException:
+                return False
         policy = self.policy()
         approval = self.w.approval()
         with self.w.db() as db:
@@ -75,7 +80,7 @@ class VoiceStore:
             if row:
                 approval = self.w.decode(row[0])
             pilot = bool(policy.pilot_enabled and owner and db.execute(
-                "SELECT 1 FROM users WHERE id=? AND role='admin' AND active=1", (owner,)).fetchone())
+                "SELECT 1 FROM users WHERE id=? AND platform_operator=1 AND active=1", (owner,)).fetchone())
         configured = (approval.get("organization_id") == self.w.config.organization_id
                       and approval.get("project_id") == self.w.config.project_id
                       and all(approval.get(k) for k in ("baa_verified", "retention_verified", "safeguards_verified"))
@@ -86,6 +91,7 @@ class VoiceStore:
                     and valid_gateway(self.w.config.voice_gateway_url))
 
     def require_available(self, owner: str):
+        self.w.access.require_consent(owner)
         if not self.available(owner):
             fail(409, "Watch voice is awaiting organization approval or device acceptance")
 
@@ -163,8 +169,12 @@ class VoiceStore:
         identifier(conversation_id)
         with self.w.db() as db:
             row = db.execute("SELECT * FROM voice_conversations WHERE id=? AND deleted=0", (conversation_id,)).fetchone()
-            if not row or (row["owner"] != owner and not review):
+            if not row:
                 fail(404, "Conversation unavailable")
+            if row["owner"] != owner:
+                if not review:
+                    fail(404, "Conversation unavailable")
+                self.w.access.require_review(db, owner, row["owner"])
             if review and row["owner"] != owner:
                 self.w.audit(db, owner, "admin-voice-content-reviewed", conversation_id)
             return {**self.w.decode(row["content"]), "id": row["id"], "owner": row["owner"],
@@ -174,9 +184,12 @@ class VoiceStore:
         if offset < 0:
             fail(422, "Invalid offset")
         with self.w.db() as db:
-            rows = db.execute("SELECT * FROM voice_conversations WHERE deleted=0 "
-                              + ("" if review else "AND owner=? ") + "ORDER BY updated DESC LIMIT 100 OFFSET ?",
-                              (offset,) if review else (owner, offset)).fetchall()
+            if review:
+                actor = self.w.access.agency(db, owner)
+                self.w.access.require_review(db, owner, owner)
+                rows = db.execute("SELECT v.* FROM voice_conversations v JOIN users u ON u.id=v.owner WHERE v.deleted=0 AND u.agency_id=? ORDER BY v.updated DESC LIMIT 100 OFFSET ?", (actor["agency_id"], offset)).fetchall()
+            else:
+                rows = db.execute("SELECT * FROM voice_conversations WHERE deleted=0 AND owner=? ORDER BY updated DESC LIMIT 100 OFFSET ?", (owner, offset)).fetchall()
             if review:
                 self.w.audit(db, owner, "admin-voice-history-reviewed", "voice-history")
         result = []
@@ -333,6 +346,7 @@ def install_private_routes(app, workspace, account, admin):
 
     @app.put("/api/admin/voice/policy")
     def update_policy(body: VoicePolicy, user=Depends(admin)):
+        workspace.access.operator(user)
         if body.enabled and not (body.realtime_retention_verified and body.device_acceptance_verified and body.approval_evidence.strip()):
             fail(422, "Verify Realtime retention and physical Watch acceptance before enabling voice")
         if body.pilot_enabled and not (body.realtime_retention_verified and body.approval_evidence.strip()):
