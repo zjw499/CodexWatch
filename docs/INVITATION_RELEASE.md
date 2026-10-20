@@ -115,8 +115,11 @@ synthetic review login is saved in Apple's protected fields and remained populat
 after a draft reload. Credentials stay outside the repository. The owner confirmed
 a registered LLC/corporation and supplied a filed reinstatement for SKY DATA
 SERVICES LLC. Florida's live registry confirms ACTIVE status as of October 20.
-Apple's seller is still Individual pending D-U-N-S verification and membership
-conversion. The updated Apple
+Apple's seller is still Individual pending membership conversion. The company
+D-U-N-S number has been retrieved directly from Dun & Bradstreet and entered in
+the prepared conversion form. Original formation records and available Apple
+teams were checked. The owner approved submission, but Apple requires the current
+Individual membership's Tax ID type, which remains pending. The updated Apple
 Developer Program License Agreement was accepted with separate owner approval;
 its warning remained cleared after a fresh account reload.
 

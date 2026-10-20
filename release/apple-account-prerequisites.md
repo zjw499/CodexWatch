@@ -8,9 +8,20 @@ calls for a legal-entity seller for sensitive-information/healthcare apps. The
 current seller therefore needs to be resolved before submitting this healthcare
 release. The owner supplied a filed October 20 reinstatement for SKY DATA SERVICES
 LLC. Florida's live registry now confirms ACTIVE status and the reinstatement date.
-The verified legal name is entered in Apple's conversion form. The D-U-N-S number
-and remaining membership-form answers are still needed before submitting it.
-The filing image, addresses and tax identifier are not included in this repository.
+The verified legal name and D-U-N-S number are entered in Apple's conversion form.
+Dun & Bradstreet's direct lookup and email confirmed the number on October 20.
+The original October 8, 2025 Articles of Organization were downloaded from Sunbiz
+and visually inspected; they list the owner as an initial authorized member.
+Florida's fictitious-name search found no registration linked to the LLC, and
+the signed-in Apple account shows only the existing Individual team. These records
+support the prepared founder/cofounder, no-DBA and no-separate-membership answers.
+The Tax ID type associated with the current Individual membership is not displayed
+in the accessible account pages. The owner approved submission of the prepared
+membership-change request, but Apple requires the Tax ID-type answer before it
+will accept the form. That factual answer remains pending; no actual Tax ID is
+needed for this form.
+The filing images, addresses, D-U-N-S lookup email and tax identifier are not
+included in this repository.
 
 For an existing registered organization, the founder/cofounder can request an
 [individual-to-organization membership update](https://developer.apple.com/help/account/membership/updating-your-account-information/).
