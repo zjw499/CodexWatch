@@ -83,6 +83,7 @@ struct PhonePrivacyView: View {
                         Text("Disclosure version: \(disclosure.version)").font(.caption).foregroundStyle(ScribeTheme.muted)
                         if workspace.consentRequired {
                             Toggle("I understand and allow this information to be sent to OpenAI when I request AI processing", isOn: $consentChecked)
+                                .accessibilityIdentifier("ai-processing-permission")
                             Button("Allow AI processing") { run { try await workspace.updateProcessingConsent(accepted: true) } }
                                 .disabled(!consentChecked || busy)
                         } else {

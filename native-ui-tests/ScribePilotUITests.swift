@@ -102,6 +102,26 @@ final class ScribePilotUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Transcribe again"].waitForExistence(timeout: 5))
         screenshot("phone-retranscription-confirmation")
     }
+    func testProcessingDisclosureRequiresAnExplicitChoiceAndDeletionRequiresPassword() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-scribe-ui-preview", "-scribe-consent-preview"]
+        app.launch()
+        app.buttons["Open settings"].tap()
+        let review = app.buttons["Review AI processing disclosure"]
+        XCTAssertTrue(review.waitForExistence(timeout: 10))
+        if !review.isHittable { app.swipeUp() }
+        review.tap()
+        let allow = app.buttons["Allow AI processing"]
+        XCTAssertTrue(allow.waitForExistence(timeout: 10))
+        XCTAssertFalse(allow.isEnabled)
+        screenshot("phone-ai-processing-disclosure")
+        app.swipeUp()
+        let password = app.secureTextFields["Confirm your account password"]
+        XCTAssertTrue(password.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Delete account"].isEnabled)
+        screenshot("phone-account-deletion")
+    }
     private func screenshot(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name

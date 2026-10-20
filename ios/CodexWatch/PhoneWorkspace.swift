@@ -668,11 +668,18 @@ final class PhoneWorkspace: ObservableObject {
     #if DEBUG
     func loadPreview() {
         guard !ProcessInfo.processInfo.arguments.contains("-scribe-login-preview") else { return }
-        credential = WorkspaceCredential(token: "synthetic-preview", user: WorkspaceUser(id: "preview-user", username: "Alex", role: "admin"),
+        credential = WorkspaceCredential(token: "synthetic-preview", user: WorkspaceUser(id: "preview-user", username: "Alex", role: "admin", agency_id: "preview-agency", agency_name: "Example agency", platform_operator: true),
                                          expires: Date().timeIntervalSince1970 + 3600, server: Self.defaultServer)
         assistants = [WorkspaceAssistant(id: "preview-assistant", name: "Meeting notes", instructions: "Create concise notes and explicit follow-up actions.", model: "gpt-4.1-mini")]
         selectedAssistantID = "preview-assistant"
         processingEnabled = true
+        consentRequired = ProcessInfo.processInfo.arguments.contains("-scribe-consent-preview")
+        disclosure = WorkspaceDisclosure(version: "synthetic-preview", provider: "OpenAI",
+            text: "When you request AI processing, Scribe Pilot sends relevant recording audio, transcripts, conversation and selected reference material to OpenAI to produce a transcript or draft response. Review and correct clinical drafts before use. This preview contains synthetic information only.",
+            privacy_url: "https://www.skydataservice.com/scribe-pilot/privacy.html",
+            support_url: "https://www.skydataservice.com/scribe-pilot/support.html",
+            deletion_url: "https://www.skydataservice.com/scribe-pilot/account-deletion.html",
+            support_email: "zach@skydataservice.com")
         RecordingQueueStore.shared.setAccount("preview-user")
     }
     #endif
