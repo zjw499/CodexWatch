@@ -7,6 +7,7 @@ struct PhoneSettingsView: View {
     @State private var server = PhoneWorkspace.defaultServer
     @State private var invitation = false
     @State private var username = ""
+    @State private var invitationCode = ""
     @State private var password = ""
     @State private var repeatedPassword = ""
     @State private var working = false
@@ -86,23 +87,31 @@ struct PhoneSettingsView: View {
         Section("Account") {
             Picker("Access", selection: $invitation) { Text("Sign in").tag(false); Text("Accept invitation").tag(true) }.pickerStyle(.segmented)
             TextField("Private workspace address", text: $server).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-            TextField(invitation ? "Invitation code" : "Username", text: $username)
-                .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+            if invitation {
+                TextField("Invitation code (32 characters)", text: $invitationCode)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                Text("Paste the full invitation code your administrator shared. Your username is used to sign in after account setup.")
+                    .font(.footnote).foregroundStyle(ScribeTheme.muted)
+            } else {
+                TextField("Username", text: $username)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+            }
             SecureField(invitation ? "Choose password (12+ characters)" : "Password", text: $password)
                 .textContentType(invitation ? .newPassword : .password)
             if invitation { SecureField("Repeat password", text: $repeatedPassword).textContentType(.newPassword) }
             Button {
                 if invitation && password != repeatedPassword { errorMessage = "The passwords don't match."; return }
                 run {
-                    try await workspace.signIn(server: server, username: username, password: password, invitation: invitation)
-                    clearPasswords(); username = ""
+                    try await workspace.signIn(server: server, username: invitation ? invitationCode : username, password: password, invitation: invitation)
+                    clearPasswords(); username = ""; invitationCode = ""
                 }
             } label: {
                 HStack { Text(invitation ? "Create my account" : "Sign in"); Spacer(); if working { ProgressView() } }
-            }.disabled(working || recorder.isRecording || username.isEmpty || password.isEmpty)
+            }.disabled(working || recorder.isRecording || (invitation ? invitationCode.isEmpty : username.isEmpty) || password.isEmpty)
             Text("Connect to your organization's private network first. Your administrator provides the invitation and access.")
                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
         }
+        .onChange(of: invitation) { _, _ in clearPasswords(); errorMessage = nil }
     }
     private var models: some View {
         Section("Models") {
