@@ -36,7 +36,7 @@ struct PhoneSettingsView: View {
                 Section("Recording workflow") {
                     Label("Review, then tap Process", systemImage: "checkmark.circle")
                     Label("Audio and results kept until deleted", systemImage: "tray.full")
-                    Text("Record offline on your phone or Watch. Connect to the private network to upload and process on your PC.")
+                    Text("Record offline on your phone or Watch. Connect to the internet to upload and process. Your organization's PC must be online.")
                         .font(.footnote).foregroundStyle(ScribeTheme.muted)
                 }
                 if !RecordingQueueStore.shared.unassigned.isEmpty {
@@ -59,7 +59,7 @@ struct PhoneSettingsView: View {
         .scrollContentBackground(.hidden).background(ScribeTheme.background).tint(ScribeTheme.red)
         .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Done") { clearPasswords(); workspace.savePreferences(); dismiss() } } }
-        .task { server = workspace.credential?.server ?? PhoneWorkspace.defaultServer; await workspace.refresh() }
+        .task { server = workspace.connectionServer; await workspace.refresh() }
         .sheet(item: $editingAssistant) { assistant in NavigationStack { PhoneAssistantEditor(assistant: assistant) } }
         .confirmationDialog("Sign out of this workspace?", isPresented: $signingOut, titleVisibility: .visible) {
             Button("Sign out", role: .destructive) { run { try await workspace.signOut() } }
@@ -86,7 +86,9 @@ struct PhoneSettingsView: View {
     private var login: some View {
         Section("Account") {
             Picker("Access", selection: $invitation) { Text("Sign in").tag(false); Text("Accept invitation").tag(true) }.pickerStyle(.segmented)
-            TextField("Private workspace address", text: $server).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+            DisclosureGroup("Connection settings") {
+                TextField("Workspace address", text: $server).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+            }
             if invitation {
                 TextField("Invitation code (32 characters)", text: $invitationCode)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
@@ -109,7 +111,7 @@ struct PhoneSettingsView: View {
             } label: {
                 HStack { Text(invitation ? "Create my account" : "Sign in"); Spacer(); if working { ProgressView() } }
             }.disabled(working || recorder.isRecording || (invitation ? invitationCode.isEmpty : username.isEmpty) || password.isEmpty)
-            Text("Connect to your organization's private network first. Your administrator provides the invitation and access.")
+            Text("Scribe Pilot connects securely over the internet. No Tailscale app or VPN setup is needed. Your administrator provides your invitation.")
                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
         }
         .onChange(of: invitation) { _, _ in clearPasswords(); errorMessage = nil }

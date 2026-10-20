@@ -2,6 +2,11 @@ name: Verify public Scribe Pilot release services
 
 on:
   workflow_dispatch:
+    inputs:
+      public_app:
+        description: Also verify the production app connection without a Tailscale client
+        type: boolean
+        default: false
   push:
     branches: [feature/invitation-app-store]
     paths: ['.github/workflows/release-readiness.yml']
@@ -41,3 +46,25 @@ jobs:
               status, body = fetch(review + path)
               assert status == 401, 'Anonymous access was not denied: ' + path
           print('Review HTTPS reachable from GitHub; anonymous account/content/admin access denied.')
+
+      - name: Verify internet app access without VPN
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.public_app }}
+        shell: python
+        run: |
+          import json, urllib.request, urllib.error
+          base = 'https://zwyattpc.tail488e93.ts.net:8443/app'
+          def fetch(path):
+              try:
+                  with urllib.request.urlopen(base + path, timeout=30) as r:
+                      return r.status, r.read(), r.headers
+              except urllib.error.HTTPError as r:
+                  return r.code, r.read(), r.headers
+          status, body, headers = fetch('/api/health')
+          assert status == 200 and json.loads(body)['ok'] is True
+          for path in ('/api/me', '/api/recordings', '/api/assistants', '/api/admin/users', '/api/admin/recordings', '/api/operator/agencies', '/api/voice/config'):
+              status, _, headers = fetch(path)
+              assert status == 401, path
+              assert headers.get('Cache-Control') == 'no-store'
+          for path in ('/openapi.json', '/docs', '/workspace.sqlite3', '/voice/v1/health'):
+              assert fetch(path)[0] == 404, path
+          print('Production HTTPS app connection works from GitHub without Tailscale. Anonymous account, content and administrator requests are denied.')

@@ -1,15 +1,16 @@
 param(
     [Parameter(Mandatory=$true)][string] $PrivateRoot,
     [Parameter(Mandatory=$true)][string] $PythonPath,
-    [ValidateSet('serve','voice-serve')][string] $ServiceMode = 'serve'
+    [ValidateSet('serve','voice-serve','public-serve')][string] $ServiceMode = 'serve'
 )
 $ErrorActionPreference = 'Stop'
 $PrivateRoot = (Resolve-Path -LiteralPath $PrivateRoot).Path
 $PythonPath = (Resolve-Path -LiteralPath $PythonPath).Path
 $voice = $ServiceMode -eq 'voice-serve'
-$taskName = if ($voice) { 'Scribe Pilot Voice Gateway' } else { 'Scribe Pilot Workspace' }
-$servicePrefix = if ($voice) { 'voice' } else { 'service' }
-$supervisorName = if ($voice) { 'voice-supervise.ps1' } else { 'supervise.ps1' }
+$appGateway = $ServiceMode -eq 'public-serve'
+$taskName = if ($voice) { 'Scribe Pilot Voice Gateway' } elseif ($appGateway) { 'Scribe Pilot App Gateway' } else { 'Scribe Pilot Workspace' }
+$servicePrefix = if ($voice) { 'voice' } elseif ($appGateway) { 'app' } else { 'service' }
+$supervisorName = if ($voice) { 'voice-supervise.ps1' } elseif ($appGateway) { 'app-supervise.ps1' } else { 'supervise.ps1' }
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')

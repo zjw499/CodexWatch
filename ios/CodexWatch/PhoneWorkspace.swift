@@ -130,7 +130,7 @@ enum WorkspaceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .signIn: return "Sign in to your Scribe Pilot account."
-        case .server: return "Use your organization's private HTTPS workspace address."
+        case .server: return "Use your organization's HTTPS Scribe Pilot workspace address."
         case let .status(_, message): return message
         case .ownership: return "This recording belongs to another account. Sign in to its original account."
         case .missingAssistant: return "Choose an assistant in Settings before processing."
@@ -180,7 +180,8 @@ private final class WorkspaceNetworkDelegate: NSObject, URLSessionTaskDelegate {
 @MainActor
 final class PhoneWorkspace: ObservableObject {
     static let shared = PhoneWorkspace()
-    static let defaultServer = "https://zwyattpc.tail488e93.ts.net/workspace"
+    static let legacyServer = "https://zwyattpc.tail488e93.ts.net/workspace"
+    static let defaultServer = "https://zwyattpc.tail488e93.ts.net:8443/app"
     @Published private(set) var credential: WorkspaceCredential?
     @Published private(set) var processingEnabled = false
     @Published private(set) var consentRequired = true
@@ -237,13 +238,21 @@ final class PhoneWorkspace: ObservableObject {
     var signedIn: Bool { credential != nil }
     var ready: Bool { signedIn && processingEnabled && !consentRequired && assistants.contains { $0.id == selectedAssistantID } }
     var selectedAssistant: WorkspaceAssistant? { assistants.first { $0.id == selectedAssistantID } }
+    var connectionServer: String { Self.validServer(credential?.server ?? Self.defaultServer)?.absoluteString ?? Self.defaultServer }
 
     static func validServer(_ value: String) -> URL? {
         guard let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
               url.scheme == "https", let host = url.host, host.hasSuffix(".ts.net"),
-              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-              url.path == "/workspace" || url.path == "/workspace/" else { return nil }
-        return url
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else { return nil }
+        let publicApp = url.port == 8443 && ["/app", "/app/"].contains(url.path)
+        let privateApp = (url.port == nil || url.port == 443) && ["/workspace", "/workspace/"].contains(url.path)
+        guard publicApp || privateApp else { return nil }
+        // Existing sessions, cached assistants and pending sign-outs keep their
+        // account binding. Only the production network destination changes.
+        if privateApp && host.lowercased() == "zwyattpc.tail488e93.ts.net" { return URL(string: defaultServer) }
+        var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        parts?.path = publicApp ? "/app" : "/workspace"
+        return parts?.url
     }
 
     func signIn(server: String, username: String, password: String, invitation: Bool) async throws {
@@ -463,7 +472,7 @@ final class PhoneWorkspace: ObservableObject {
             syncWatchAccount()
         } catch {
             guard credential?.token == captured.token else { return }
-            voiceMessage = "Connect to the private workspace to refresh Watch voice settings."
+            voiceMessage = "Connect to the internet to refresh Watch voice settings."
         }
     }
 
@@ -620,7 +629,8 @@ final class PhoneWorkspace: ObservableObject {
     func rawRequest(_ path: String, method: String = "GET", body: Data? = nil, contentType: String = "application/json",
                     base: String? = nil, token: String? = nil, authenticated: Bool = true) async throws -> Data {
         let captured = credential
-        guard let server = base ?? captured?.server, let url = URL(string: server + "/api/" + path), Self.validServer(server) != nil else {
+        guard let server = base ?? captured?.server, let destination = Self.validServer(server),
+              let url = URL(string: destination.absoluteString + "/api/" + path) else {
             throw WorkspaceError.signIn
         }
         let authorization = token ?? captured?.token

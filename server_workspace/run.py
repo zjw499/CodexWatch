@@ -24,7 +24,7 @@ def load(path: Path) -> WorkspaceConfig:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("command", choices=["serve", "voice-serve", "bootstrap", "reset-password", "voice-diagnostics"])
+    parser.add_argument("command", choices=["serve", "voice-serve", "public-serve", "bootstrap", "reset-password", "voice-diagnostics"])
     parser.add_argument("--username", default="admin")
     parser.add_argument("--port", type=int)
     parser.add_argument("--report-id", help="Explicit diagnostic report UUID; otherwise review this account\'s latest report")
@@ -58,6 +58,13 @@ def main():
     elif args.command == "voice-diagnostics":
         from server_workspace.voice_diagnostics import DiagnosticStore
         print(json.dumps(DiagnosticStore(workspace).local_review(args.username, args.report_id), indent=2))
+    elif args.command == "public-serve":
+        from server_workspace.public_app import create_public_app, enabled
+        if not enabled(workspace):
+            raise SystemExit("Internet app access is disabled")
+        uvicorn.run(create_public_app(workspace), host="127.0.0.1", port=args.port or 8793,
+                    access_log=False, log_level="critical", limit_concurrency=64,
+                    proxy_headers=True, forwarded_allow_ips="127.0.0.1")
     elif args.command == "voice-serve":
         from server_workspace.voice import create_voice_app
         uvicorn.run(create_voice_app(workspace), host="127.0.0.1", port=args.port or 8791, access_log=False, log_level="critical")

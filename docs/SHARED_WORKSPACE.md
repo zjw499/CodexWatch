@@ -1,7 +1,7 @@
 # Scribe Pilot shared workspace
 
 Invited users sign in to private accounts. The iPhone and Watch record offline,
-and the phone uploads to the Windows PC over private-network HTTPS when the user
+and the phone uploads to the Windows PC over authenticated internet HTTPS when the user
 chooses Process. Only the PC calls OpenAI, through Sky Data Services' configured
 organization and project. Device API keys and shared receiver credentials are no
 longer part of this workflow.
@@ -15,9 +15,14 @@ code, and choose a password of at least 12 characters. The initial username is
 
 Use **Settings → Administrator workspace → Invite a user** to create invitations.
 Each invitation expires after seven days and can be accepted once. Share it with
-the intended person through an appropriate channel. Users also need access to
-the existing Tailscale network/device share; an app invitation does not grant
-network access. The PC must be online and its service account logged in.
+the intended person through an appropriate channel. Users do not need a Tailscale
+account, device share, VPN app or separate network setup. The app's default
+connection is provided automatically; existing saved sessions use it too. The
+PC must be online and its service account logged in. Advanced connection settings
+still support other private workspaces.
+
+See [Internet app connection](PUBLIC_APP_CONNECTION.md) for the separate app
+gateway, public-boundary verification, deployment and rollback.
 
 Administrators can review recordings, conversations and diagnostics within their
 own agency through Agency review. That access is recorded. Ordinary library routes

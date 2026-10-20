@@ -30,7 +30,7 @@ struct PhoneWorkspaceAdminView: View {
                 if let invitation {
                     Text("Username: \(invitation.username)").font(.footnote)
                     Text(invitation.code).font(.system(.footnote, design: .monospaced)).textSelection(.enabled).privacySensitive()
-                    ShareLink(item: "Scribe Pilot invitation\nServer: \(workspace.credential?.server ?? PhoneWorkspace.defaultServer)\nUsername: \(invitation.username)\nInvitation code: \(invitation.code)\nExpires in 7 days. In Settings choose Accept invitation and set your password.") {
+                    ShareLink(item: "Scribe Pilot invitation\nServer: \(workspace.connectionServer)\nUsername: \(invitation.username)\nInvitation code: \(invitation.code)\nExpires in 7 days. In Settings choose Accept invitation and set your password. No VPN setup is needed.") {
                         Label("Share invitation", systemImage: "square.and.arrow.up")
                     }
                 }

@@ -45,7 +45,7 @@ struct PhoneAgencyManagementView: View {
                 if let invitation {
                     Text("\(invitation.username) · expires in \(invitation.expires_in_days) days").font(.footnote)
                     Text(invitation.code).font(.system(.footnote, design: .monospaced)).textSelection(.enabled).privacySensitive()
-                    ShareLink("Share invitation", item: "Scribe Pilot invitation\nAgency: \(agencies.first { $0.id == selectedAgency }?.name ?? "Agency")\nServer: \(workspace.credential?.server ?? PhoneWorkspace.defaultServer)\nUsername: \(invitation.username)\nInvitation code: \(invitation.code)\nExpires in 7 days. In Settings choose Accept invitation and set your password.")
+                    ShareLink("Share invitation", item: "Scribe Pilot invitation\nAgency: \(agencies.first { $0.id == selectedAgency }?.name ?? "Agency")\nServer: \(workspace.connectionServer)\nUsername: \(invitation.username)\nInvitation code: \(invitation.code)\nExpires in 7 days. In Settings choose Accept invitation and set your password. No VPN setup is needed.")
                 }
             }
             Section("Agencies") {

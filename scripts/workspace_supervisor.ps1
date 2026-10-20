@@ -1,16 +1,17 @@
 param(
     [Parameter(Mandatory=$true)][string] $PrivateRoot,
     [Parameter(Mandatory=$true)][string] $PythonPath,
-    [ValidateSet('serve','voice-serve')][string] $ServiceMode = 'serve'
+    [ValidateSet('serve','voice-serve','public-serve')][string] $ServiceMode = 'serve'
 )
 $ErrorActionPreference = 'Stop'
 $PrivateRoot = (Resolve-Path -LiteralPath $PrivateRoot).Path
 $configuration = Join-Path $PrivateRoot 'workspace-config.json'
 $voice = $ServiceMode -eq 'voice-serve'
-$servicePrefix = if ($voice) { 'voice' } else { 'service' }
-$servicePort = if ($voice) { 8791 } else { 8790 }
+$appGateway = $ServiceMode -eq 'public-serve'
+$servicePrefix = if ($voice) { 'voice' } elseif ($appGateway) { 'app' } else { 'service' }
+$servicePort = if ($voice) { 8791 } elseif ($appGateway) { 8793 } else { 8790 }
 $healthPath = if ($voice) { '/voice/v1/health' } else { '/api/health' }
-$supervisorPrefix = if ($voice) { 'voice-supervisor' } else { 'supervisor' }
+$supervisorPrefix = if ($voice) { 'voice-supervisor' } elseif ($appGateway) { 'app-supervisor' } else { 'supervisor' }
 $lock = $null
 try {
     $lock = [System.IO.File]::Open((Join-Path $PrivateRoot "$supervisorPrefix.lock"), 'OpenOrCreate', 'ReadWrite', 'None')
@@ -53,6 +54,7 @@ try {
             if ($voice -and (Test-Path -LiteralPath (Join-Path $PrivateRoot 'voice-active-source.txt'))) {
                 $sourcePointer = Join-Path $PrivateRoot 'voice-active-source.txt'
             }
+            if ($appGateway) { $sourcePointer = Join-Path $PrivateRoot 'app-active-source.txt' }
             $selected = (Get-Content -LiteralPath $sourcePointer -Raw).Trim()
             $env:PYTHONPATH = $selected
             foreach ($stream in @('stdout', 'stderr')) {

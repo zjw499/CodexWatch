@@ -4,12 +4,20 @@ param(
     [string] $KeyFile = "D:\watch-audio-pipeline\.runtime\scribe-workspace\scribe-pilot-production.key",
     [switch] $InstallVoiceGateway,
     [switch] $VoiceGatewayOnly,
-    [switch] $ExposeVoiceGateway
+    [switch] $ExposeVoiceGateway,
+    [switch] $InstallAppGateway,
+    [switch] $AppGatewayOnly,
+    [switch] $ExposeAppGateway
 )
 $ErrorActionPreference = "Stop"
 if ($Version -notmatch '^[a-f0-9]{40}$') { throw "Use the verified source commit SHA" }
 if ($VoiceGatewayOnly -and -not $InstallVoiceGateway) { throw "Voice-only deployment requires InstallVoiceGateway" }
 if ($ExposeVoiceGateway -and -not $InstallVoiceGateway) { throw "Install the scoped voice gateway before exposing it" }
+if ($AppGatewayOnly -and -not $InstallAppGateway) { throw "App-only deployment requires InstallAppGateway" }
+if ($ExposeAppGateway -and -not $InstallAppGateway) { throw "Install the app gateway before exposing it" }
+if ($AppGatewayOnly -and $VoiceGatewayOnly) { throw "Choose one gateway-only deployment mode" }
+if ($AppGatewayOnly -and $InstallVoiceGateway) { throw "App-only deployment cannot restart the voice gateway" }
+if ($VoiceGatewayOnly -and $InstallAppGateway) { throw "Voice-only deployment cannot restart the app gateway" }
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $sourceCommit = (& git -C $sourceRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $sourceCommit -ne $Version) { throw 'Deploy only the selected checkout commit' }
@@ -44,7 +52,7 @@ foreach ($sid in @($identity.User, (New-Object System.Security.Principal.Securit
 New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 $moduleDestination = Join-Path $releaseRoot "server_workspace"
 New-Item -ItemType Directory -Path $moduleDestination -Force | Out-Null
-$files = @('__init__.py', 'workspace.py', 'identity.py', 'release_api.py', 'audio.py', 'voice.py', 'voice_stream.py', 'voice_tools.py', 'voice_diagnostics.py', 'knowledge.py', 'run.py', 'requirements.txt')
+$files = @('__init__.py', 'workspace.py', 'identity.py', 'release_api.py', 'audio.py', 'voice.py', 'voice_stream.py', 'voice_tools.py', 'voice_diagnostics.py', 'knowledge.py', 'public_app.py', 'run.py', 'requirements.txt')
 $manifest = @()
 foreach ($name in $files) {
     $source = Join-Path $sourceRoot "server_workspace\$name"
@@ -86,7 +94,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $privateRoot 'workspace.sqlite3'))) 
     & $python -m server_workspace.run --config $configuration bootstrap
     if ($LASTEXITCODE -ne 0) { throw "Administrator bootstrap failed" }
 }
-if (-not $VoiceGatewayOnly) {
+if (-not $VoiceGatewayOnly -and -not $AppGatewayOnly) {
     $pointer = Join-Path $privateRoot "active-source.txt"
     if (Test-Path -LiteralPath $pointer) { Copy-Item -LiteralPath $pointer -Destination (Join-Path $privateRoot 'previous-source.txt') -Force }
     Set-Content -LiteralPath $pointer -Value $releaseRoot -NoNewline
@@ -104,6 +112,20 @@ if ($ExposeVoiceGateway) {
     # A separate HTTPS port leaves the private 443 workspace/legacy routes intact.
     & $tailscale funnel --bg --https=8443 http://127.0.0.1:8791
     if ($LASTEXITCODE -ne 0) { throw "Voice is installed locally; the node still needs Tailscale Funnel authorization" }
+}
+if ($InstallAppGateway) {
+    $appPointer = Join-Path $privateRoot 'app-active-source.txt'
+    if (Test-Path -LiteralPath $appPointer) { Copy-Item -LiteralPath $appPointer -Destination (Join-Path $privateRoot 'app-previous-source.txt') -Force }
+    Set-Content -LiteralPath $appPointer -Value $releaseRoot -NoNewline
+    Set-Content -LiteralPath (Join-Path $privateRoot 'public-app.enabled') -Value 'enabled' -NoNewline
+    & (Join-Path $PSScriptRoot 'install_workspace_supervisor.ps1') -PrivateRoot $privateRoot -PythonPath $python -ServiceMode 'public-serve'
+}
+if ($ExposeAppGateway) {
+    # Add only the authenticated app path. Existing voice/review handlers and
+    # private 443 routes retain their own listeners and service lifetimes.
+    & $tailscale funnel --bg --yes --https=8443 --set-path=/app http://127.0.0.1:8793
+    if ($LASTEXITCODE -ne 0) { throw "App gateway is installed locally; public HTTPS routing failed" }
+    Write-Output 'Internet app connection: https://zwyattpc.tail488e93.ts.net:8443/app'
 }
 Write-Output "Workspace release installed: $Version"
 Write-Output "Private HTTPS: https://zwyattpc.tail488e93.ts.net/workspace"
