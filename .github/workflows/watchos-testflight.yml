@@ -315,6 +315,7 @@ jobs:
           APP_PATH="$(find "$RUNNER_TEMP/CodexWatch.xcarchive/Products/Applications" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -d "$APP_PATH"
           codesign --verify --deep --strict "$APP_PATH"
+          python3 scripts/verify_privacy_manifest.py "$APP_PATH"
           CA_PATH="$(find "$APP_PATH" -type f -name 'watch-audio-ca.crt' -print -quit)"
           test -n "$CA_PATH"
           echo "iPhone upload CA found at app-relative path: ${CA_PATH#"$APP_PATH/"}"

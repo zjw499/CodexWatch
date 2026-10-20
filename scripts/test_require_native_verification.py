@@ -11,7 +11,7 @@ import require_native_verification as gate
 
 
 class NativeReleaseGateTests(unittest.TestCase):
-    def run_gate(self, *, changed_watch=False, conclusion="success", workflow="Verify Scribe Pilot phone and Watch", pilot=False, required_conclusion="success"):
+    def run_gate(self, *, changed_watch=False, changed_privacy=False, conclusion="success", workflow="Verify Scribe Pilot phone and Watch", pilot=False, required_conclusion="success"):
         def response(request, timeout):
             path = request.full_url.split("/repos/example/app/", 1)[1]
             if path == "actions/runs/123":
@@ -24,7 +24,7 @@ class NativeReleaseGateTests(unittest.TestCase):
                 value = {"commit": {"tree": {"sha": path.split("/")[-1]}}}
             elif path.startswith("git/trees/"):
                 tested = path.endswith("tested")
-                value = {"tree": [{"path": p, "sha": "different" if p == "watchos" and tested and changed_watch else p + "-blob"}
+                value = {"tree": [{"path": p, "sha": "different" if tested and ((p == "watchos" and changed_watch) or (p == "privacy" and changed_privacy)) else p + "-blob"}
                                   for p in gate.SOURCE_PATHS] + [{"path": ".github", "sha": "different-release-workflow" if tested else "new-release-workflow"}]}
             elif path.startswith("contents/.github/workflows/native-verify.yml?ref="):
                 value = {"sha": "same-native-workflow"}
@@ -46,6 +46,10 @@ class NativeReleaseGateTests(unittest.TestCase):
     def test_a_passing_run_for_different_watch_source_cannot_release(self):
         with self.assertRaisesRegex(RuntimeError, "different app source"):
             self.run_gate(changed_watch=True)
+
+    def test_a_changed_privacy_declaration_requires_matching_native_verification(self):
+        with self.assertRaisesRegex(RuntimeError, "different app source"):
+            self.run_gate(changed_privacy=True)
 
     def test_failed_or_cancelled_native_run_blocks_distribution(self):
         for conclusion in ("failure", "cancelled", "timed_out"):

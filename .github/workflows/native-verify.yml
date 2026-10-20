@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [feature/gunmetal-red-openai, feature/shared-ai-workspace, feature/complete-recordings, fix/workspace-recovery, feature/watch-voice-assistants, feature/invitation-app-store]
-    paths: ['ios/**', 'watchos/**', 'shared/**', 'native-tests/**', 'native-ui-tests/**', 'server_workspace/**', 'project.yml']
+    paths: ['ios/**', 'watchos/**', 'shared/**', 'native-tests/**', 'native-ui-tests/**', 'server_workspace/**', 'privacy/**', 'project.yml', 'scripts/require_native_verification.py']
 jobs:
   native:
     runs-on: macos-26-intel
@@ -21,6 +21,7 @@ jobs:
           python3 -m venv .workspace-test
           .workspace-test/bin/pip install -r server_workspace/requirements.txt pytest
           .workspace-test/bin/python -m pytest server_workspace/tests -q
+          python3 -m unittest discover -s scripts -p 'test_require_native_verification.py' -q
       - name: Generate native project
         run: |
           command -v xcodegen || brew install xcodegen

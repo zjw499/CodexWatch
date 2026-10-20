@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 
 
-SOURCE_PATHS = {"ios", "watchos", "shared", "native-tests", "native-ui-tests", "server_workspace", "project.yml"}
+SOURCE_PATHS = {"ios", "watchos", "shared", "native-tests", "native-ui-tests", "server_workspace", "privacy", "project.yml"}
 REQUIRED_STEPS = {"Verify workspace isolation and durable jobs", "Build phone and Watch and run queue tests"}
 
 

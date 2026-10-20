@@ -14,6 +14,8 @@
   "distribution_intent": "UNLISTED",
   "initial_access": "Agency invitation required; no public registration",
   "primary_category_proposal": "MEDICAL",
+  "secondary_category": "PRODUCTIVITY",
+  "age_rating_override": "EIGHTEEN_PLUS",
   "tracking": false,
-  "linked_data_for_app_functionality": ["Health", "Audio Data", "Other User Content", "User ID", "Other Diagnostic Data", "Product Interaction"]
+  "linked_data_for_app_functionality": ["Health", "Sensitive Info", "Audio Data", "Other User Content", "User ID", "Device ID", "Other Diagnostic Data", "Performance Data", "Product Interaction"]
 }
