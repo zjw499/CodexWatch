@@ -5,12 +5,14 @@ request bodies never change the caller's membership or review scope.
 """
 from __future__ import annotations
 
+import json
 import re
 import secrets
 import time
 import uuid
 
 from .workspace import digest, fail
+from fastapi import HTTPException
 
 
 CONSENT_VERSION = "2026-10-20"
@@ -72,6 +74,35 @@ class AgencyAccess:
         if not row or not row["active"]:
             fail(401, "Sign in again")
         return row
+
+    def invitation_attempt(self, value, status):
+        """Keep fixed diagnostic labels, never the code, password, or IP address."""
+        detail = {"support_id": str(uuid.uuid4()), "status": status,
+                  "input_characters": len(value), "shared_message": bool(re.search(r"invitation\s+code\s*:", value, re.IGNORECASE)),
+                  "reason": "accepted" if status == 200 else "invalid_format"}
+        try:
+            code = invitation_code(value)
+        except HTTPException:
+            code = None
+        with self.w.db() as db:
+            invite = db.execute("SELECT i.used,i.expires,i.agency_id,a.active FROM invites i LEFT JOIN agencies a ON a.id=i.agency_id WHERE i.hash=?",
+                                (digest(code),)).fetchone() if code else None
+            if status != 200 and code:
+                if not invite:
+                    detail["reason"] = "unrecognized_code"
+                elif invite["used"]:
+                    detail["reason"] = "already_used"
+                elif invite["expires"] <= time.time():
+                    detail["reason"] = "expired"
+                elif not invite["active"]:
+                    detail["reason"] = "agency_unavailable"
+                else:
+                    detail["reason"] = "active_code_rejected"
+            if status == 429:
+                detail["reason"] = "rate_limited"
+            self.w.audit(db, "registration", "invitation-acceptance", json.dumps(detail, separators=(",", ":")),
+                         agency_id=invite["agency_id"] if invite else DEFAULT_AGENCY)
+        return detail["support_id"]
 
     def operator(self, user):
         with self.w.db() as db:

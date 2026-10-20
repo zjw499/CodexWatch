@@ -1,4 +1,5 @@
 """Invitation acceptance uses synthetic agencies, accounts, and credentials."""
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -106,3 +107,31 @@ def test_invalid_invitation_never_creates_an_account(setup, invalid):
     assert response.status_code == 400
     with workspace.db() as db:
         assert not db.execute("SELECT 1 FROM users WHERE username='new-admin'").fetchone()
+
+
+@pytest.mark.parametrize("attempt", ["accepted", "invalid_format", "unrecognized_code", "already_used", "expired", "agency_unavailable"])
+def test_invitation_diagnostics_explain_failure_without_recording_credentials(setup, attempt):
+    workspace, client, _, (_, headers), _, _ = setup
+    agency, issued = agency_invite(client, headers)
+    code, password = issued, "private-synthetic-password"
+    if attempt == "invalid_format":
+        code = "synthetic-not-an-invitation"
+    elif attempt == "unrecognized_code":
+        code = "0" * 32
+    elif attempt == "already_used":
+        with workspace.db() as db:
+            db.execute("UPDATE invites SET used=1 WHERE username='new-admin'")
+    elif attempt == "expired":
+        with workspace.db() as db:
+            db.execute("UPDATE invites SET expires=? WHERE username='new-admin'", (time.time() - 1,))
+    elif attempt == "agency_unavailable":
+        with workspace.db() as db:
+            db.execute("UPDATE agencies SET active=0 WHERE id=?", (agency,))
+    response = client.post("/api/register", json={"code": code, "password": password})
+    assert response.status_code == (200 if attempt == "accepted" else 400)
+    assert response.headers["X-Scribe-Support-ID"]
+    with workspace.db() as db:
+        target = db.execute("SELECT target FROM audit WHERE action='invitation-acceptance' ORDER BY id DESC LIMIT 1").fetchone()[0]
+    detail = json.loads(target)
+    assert detail["reason"] == attempt and detail["support_id"] == response.headers["X-Scribe-Support-ID"]
+    assert issued not in target and code not in target and password not in target

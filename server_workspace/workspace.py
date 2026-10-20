@@ -685,9 +685,22 @@ def create_app(workspace: Workspace, run_worker: bool = True):
         return {"status": "ok", "ok": True, "api_version": "2"}
 
     @app.post("/api/register")
-    def register(body: RegisterBody, request: Request):
-        workspace.rate_limit("register:"+digest(request.client.host if request.client else "unknown"), 20)
-        return workspace.register(body.code.strip(), body.password)
+    def register(body: RegisterBody, request: Request, response: Response):
+        try:
+            workspace.rate_limit("register:"+digest(request.client.host if request.client else "unknown"), 20)
+            result = workspace.register(body.code.strip(), body.password)
+        except HTTPException as error:
+            try:
+                support_id = workspace.access.invitation_attempt(body.code, error.status_code)
+                error.headers = {**(error.headers or {}), "X-Scribe-Support-ID": support_id}
+            except Exception:
+                pass  # Diagnostic storage must not change registration results.
+            raise
+        try:
+            response.headers["X-Scribe-Support-ID"] = workspace.access.invitation_attempt(body.code, 200)
+        except Exception:
+            pass
+        return result
 
     @app.post("/api/login")
     def login(body: LoginBody, request: Request):
