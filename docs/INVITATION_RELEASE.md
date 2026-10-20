@@ -44,6 +44,13 @@ clients cannot reach the new consent screen. Do not release to external agency
 users until server enforcement is enabled and verified. Consent is versioned;
 withdrawal revokes Watch tokens, ends sessions and cancels queued processing.
 
+Production enforcement was enabled on October 20 after the owner reported updating
+the paired apps. The workspace and voice gateway both returned healthy after
+restart. An authenticated request using a nonexistent recording was denied with
+409 at the consent gate before content access or a provider call. The owner account
+still requires a server-recorded acceptance; an installation report or checked
+toggle alone is not that receipt. No acceptance was inserted by release tooling.
+
 Ordinary account deletion checks the current password, revokes sessions, erases
 active encrypted content and retains identifier-only tombstones/security audit.
 Phone and Watch queues persist deleted-owner markers so late transfers cannot
@@ -98,6 +105,15 @@ approval have not been submitted or granted.
 screenshots: three iPhone, one iPad and two Watch. The iPad capture comes from the
 verified simulator app, with [separate capture evidence](https://github.com/zjw499/CodexWatch/actions/runs/39372701669).
 `release/testflight-notes.txt` contains the saved pilot testing instructions.
+
+Apple's nine-category privacy declaration is published with the owner's approval.
+Content Rights is saved following confirmation of authorized content only. The
+synthetic review login is saved in Apple's protected fields and remained populated
+after a draft reload. Credentials stay outside the repository. The owner confirmed
+a registered LLC/corporation; Apple's seller is still Individual pending the legal
+entity and D-U-N-S verification and membership conversion. The updated Apple
+Developer Program License Agreement was accepted with separate owner approval;
+its warning remained cleared after a fresh account reload.
 
 Before App Review: confirm the legal-entity seller, privacy and age ratings, category,
 review credentials and reachable synthetic-data-only backend, signed archive and

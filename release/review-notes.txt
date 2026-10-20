@@ -22,6 +22,15 @@ and authentication boundaries passed an external-runner check. Keep the review b
 available throughout review and revoke the review accounts after release. Do not submit
 until review credentials have been entered and the signed build/screenshots are ready.
 
+October 20 status: build 168 and all six screenshots are saved. The synthetic review
+credentials are saved in Apple's protected fields following owner authorization.
+The privacy declaration is published and the authorized-content declaration saved.
+The updated Apple Developer Program License Agreement was accepted with explicit
+owner approval, and Apple's warning remained cleared after a fresh reload.
+Production server consent enforcement is enabled; actual owner acceptance still
+needs a server receipt. Seller conversion and the remaining acceptance gates below
+must be resolved before App Review submission.
+
 The AI-processing disclosure is in Settings > Privacy and account. The user must
 accept it before the new app sends content for AI processing. OpenAI requests are
 made by the backend through a project-owned service account. Responses storage is
