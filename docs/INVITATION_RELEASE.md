@@ -48,8 +48,11 @@ Production enforcement was enabled on October 20 after the owner reported updati
 the paired apps. The workspace and voice gateway both returned healthy after
 restart. An authenticated request using a nonexistent recording was denied with
 409 at the consent gate before content access or a provider call. The owner account
-still requires a server-recorded acceptance; an installation report or checked
-toggle alone is not that receipt. No acceptance was inserted by release tooling.
+subsequently accepted disclosure version 2026-10-20 in the app. Its receipt and audit
+event were verified, and the live API now reports consent_required=false while
+enforcement remains enabled. A nonexistent-record probe passed consent checking
+and returned 404 without content access or a provider call. No acceptance was
+inserted by release tooling.
 
 Ordinary account deletion checks the current password, revokes sessions, erases
 active encrypted content and retains identifier-only tombstones/security audit.
@@ -110,8 +113,10 @@ Apple's nine-category privacy declaration is published with the owner's approval
 Content Rights is saved following confirmation of authorized content only. The
 synthetic review login is saved in Apple's protected fields and remained populated
 after a draft reload. Credentials stay outside the repository. The owner confirmed
-a registered LLC/corporation; Apple's seller is still Individual pending the legal
-entity and D-U-N-S verification and membership conversion. The updated Apple
+a registered LLC/corporation and supplied a filed reinstatement for SKY DATA
+SERVICES LLC. Florida's live registry confirms ACTIVE status as of October 20.
+Apple's seller is still Individual pending D-U-N-S verification and membership
+conversion. The updated Apple
 Developer Program License Agreement was accepted with separate owner approval;
 its warning remained cleared after a fresh account reload.
 

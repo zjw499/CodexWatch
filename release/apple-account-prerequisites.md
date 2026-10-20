@@ -6,9 +6,11 @@ Team ID: `HQURNU73BB`. App Store Connect app: `6789821399`.
 Apple's [review guidance](https://developer.apple.com/app-store/review/)
 calls for a legal-entity seller for sensitive-information/healthcare apps. The
 current seller therefore needs to be resolved before submitting this healthcare
-release. The owner confirmed that Sky Data Services is a registered LLC/corporation.
-The exact legal entity, current business documents and D-U-N-S number still need
-to be confirmed for Apple's membership conversion.
+release. The owner supplied a filed October 20 reinstatement for SKY DATA SERVICES
+LLC. Florida's live registry now confirms ACTIVE status and the reinstatement date.
+The verified legal name is entered in Apple's conversion form. The D-U-N-S number
+and remaining membership-form answers are still needed before submitting it.
+The filing image, addresses and tax identifier are not included in this repository.
 
 For an existing registered organization, the founder/cofounder can request an
 [individual-to-organization membership update](https://developer.apple.com/help/account/membership/updating-your-account-information/).
@@ -46,9 +48,12 @@ complete. The owner reported updating both paired apps. Production consent
 enforcement is now enabled, both services restarted successfully, and their health
 endpoints returned 200. A live synthetic request referencing no existing recording
 was rejected with 409 by the consent gate, without reading content or calling a
-provider. The account's actual acceptance receipt is still pending verification;
-do not create an acceptance on the owner's behalf. Existing proxy routes and the
-production service-account key were preserved.
+provider. The owner's acceptance receipt and matching consent audit event are now
+recorded for version 2026-10-20. Live HTTPS /api/me reports consent_required=false
+while server enforcement remains enabled. A second request referencing a
+nonexistent recording passed the consent gate and returned 404, without reading
+content or making a provider call. Both service health checks remain 200.
+Existing proxy routes and the production service-account key were preserved.
 
 Build 1.0 (168) has passed native verification and Apple's processing and is Testing
 in the existing internal TestFlight group. It is selected in the App Store draft.

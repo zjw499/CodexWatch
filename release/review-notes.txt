@@ -27,9 +27,12 @@ credentials are saved in Apple's protected fields following owner authorization.
 The privacy declaration is published and the authorized-content declaration saved.
 The updated Apple Developer Program License Agreement was accepted with explicit
 owner approval, and Apple's warning remained cleared after a fresh reload.
-Production server consent enforcement is enabled; actual owner acceptance still
-needs a server receipt. Seller conversion and the remaining acceptance gates below
-must be resolved before App Review submission.
+Production server consent enforcement is enabled. The owner's app acceptance,
+matching audit event and live API consent status are now verified. The filed LLC
+reinstatement is reflected as ACTIVE in Florida's live registry. Apple's seller
+conversion still needs the D-U-N-S number and remaining form answers. Seller
+conversion and the remaining acceptance gates below must be resolved before App
+Review submission.
 
 The AI-processing disclosure is in Settings > Privacy and account. The user must
 accept it before the new app sends content for AI processing. OpenAI requests are
