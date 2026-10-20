@@ -48,7 +48,7 @@ jobs:
           print('Review HTTPS reachable from GitHub; anonymous account/content/admin access denied.')
 
       - name: Verify internet app access without VPN
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.public_app }}
+        if: ${{ github.event_name == 'push' || inputs.public_app }}
         shell: python
         run: |
           import json, urllib.request, urllib.error
