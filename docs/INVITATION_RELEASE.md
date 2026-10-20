@@ -66,6 +66,25 @@ $env:PYTHONPATH='D:\CodexWatch'
 The company website serves those static pages only; workspace content does not go
 to that website. Keep its current production source unchanged when adding pages.
 
+The October 20 review environment is a separate DPAPI-encrypted database at
+`D:\watch-audio-pipeline\.runtime\scribe-app-review`, served by the separate
+`Scribe Pilot Apple Review` scheduled task on loopback port 8792. Only
+`https://zwyattpc.tail488e93.ts.net:8443/app-review` routes to it. No production
+content or sessions were copied. Review credentials are stored in the restricted
+directory as `review-credentials.dpapi`; enter them only in Apple's protected
+review fields. Review accounts are scoped to the synthetic review agency and are
+not platform operators. The review server enforces AI consent and disables voice.
+Existing private workspace, legacy upload, voice and other proxy routes were
+compared with the saved route configuration and remain unchanged.
+
+A synthetic spoken recording passed upload, OpenAI transcription and summary
+generation. The disclosure was reset so the reviewer must explicitly consent.
+The public policy pages and review health/authentication boundary passed the
+external [release service check](https://github.com/zjw499/CodexWatch/actions/runs/39372143037).
+The signed [build 167 archive](https://github.com/zjw499/CodexWatch/actions/runs/39371362304)
+passed validation with matching privacy manifests in all three app bundles. This
+archive-only run did not upload to TestFlight or establish physical-device acceptance.
+
 Before App Review: confirm the legal-entity seller, privacy and age ratings, category,
 review credentials and reachable synthetic-data-only backend, signed archive and
 screenshots, consent enforcement, operational backup/deletion practices, and physical

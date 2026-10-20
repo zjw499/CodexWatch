@@ -19,9 +19,11 @@ the intended person through an appropriate channel. Users also need access to
 the existing Tailscale network/device share; an app invitation does not grant
 network access. The PC must be online and its service account logged in.
 
-Administrators can review other users' recordings through Organization review.
-That access is recorded. Ordinary library routes do not grant administrators
-implicit cross-user access. Administrators may revoke sessions or disable users.
+Administrators can review recordings, conversations and diagnostics within their
+own agency through Agency review. That access is recorded. Ordinary library routes
+do not grant administrators implicit cross-user access. Administrators may revoke
+sessions or disable members of their own agency. The platform operator creates
+agencies and manages the shared processing and voice policies.
 The PC operator retains physical and operating-system access to stored data.
 
 ## Assistants, models, results, and email
@@ -49,11 +51,15 @@ are unaffected. Incomplete recordings need missing audio before processing.
 
 ## Processing approval and storage
 
-The OpenAI key remains in the existing external key file. Runtime configuration
+The OpenAI key belongs to the project-owned `scribe-pilot-production` service
+account and is stored outside the repository in the protected runtime folder. Runtime configuration
 contains its path, the approved organization/project, and model allowlists.
 The application never returns the key to clients. All new AI requests use
 `/v1/audio/transcriptions` and foreground `/v1/responses` with `store:false`.
 Conversation history and assistant definitions remain on the PC.
+
+See [Invitation release](INVITATION_RELEASE.md) for versioned processing consent,
+account deletion, agency invitations and the unlisted App Store release gates.
 
 The signed BAA has been verified. On October 2, 2026, the owner confirmed that
 retention and PC safeguards are verified for the configured organization/project.

@@ -1,0 +1,16 @@
+Scribe Pilot is for invited staff at participating agencies. We intend to request unlisted distribution after submitting the finished app for review. An installation link does not grant access; there is no public registration or in-app purchase.
+
+Review environment (no VPN needed):
+https://zwyattpc.tail488e93.ts.net:8443/app-review
+
+In the iPhone app, open Settings > Account, select Sign in, and replace Private workspace address with the review URL above. Enter the dedicated review username and password provided in the review-credentials fields. The account is an administrator in a separate synthetic-data-only review agency and cannot access production data.
+
+Open Settings > Privacy and account to review and accept the AI processing disclosure before processing. Consent starts unchecked. This server enforces consent and supports withdrawal. OpenAI credentials remain on the service; users do not supply API keys. Generated text is a draft requiring human review.
+
+The Library contains a synthetic training recording with a transcript and draft notes. To test new processing, record a short synthetic sample, open it, and tap Process. Choose Meeting notes and the available transcription model. Listen to the source audio, review the transcript, and use Edit results to correct the draft notes. Please do not enter patient information in the review environment.
+
+Settings > Administrator workspace provides agency user management and invitations. Create a disposable user with a one-use invitation to test the ordinary-user account-deletion flow. Settings > Privacy and account contains consent withdrawal and password-confirmed account deletion. Minimal security records and deletion tombstones remain; paired Watch cleanup runs when it reconnects.
+
+Apple Watch recording and saved-audio transfer require a paired compatible Watch. Live assistant voice is disabled in the review workspace. Recording/transcription/documentation assistance is the submitted functionality; the app does not independently diagnose, recommend treatment or monitor physiology.
+
+Public support, privacy and deletion instructions are linked in the app and store record. The separate review backend will remain available during review.

@@ -2,15 +2,25 @@ Scribe Pilot is an invitation-only service for agency staff. We intend to reques
 unlisted App Store distribution. Downloading the app does not grant workspace access.
 There is no public account registration and the app does not sell digital features.
 
-For review, provide a dedicated account in a synthetic-data-only agency, a reachable
-review backend and its access instructions, and a password through App Store Connect's
-protected review-credentials fields. Do not place a password in this repository.
-Review access must cover sign-in, recording upload, transcription, assistant selection,
-draft review, agency administration, consent withdrawal and account deletion.
+Review uses a separate synthetic-data-only workspace. In the iPhone app, open
+Settings > Account, keep Sign in selected, and replace Private workspace address with:
+https://zwyattpc.tail488e93.ts.net:8443/app-review
+Use the dedicated username and password supplied through App Store Connect's protected
+review-credentials fields. No VPN is needed for this review workspace. Do not place a
+password in this repository or use patient information in the review workspace.
 
-The current private workspace requires approved network access. Do not submit this
-packet until Apple has a working review route; a URL on a private network alone is
-insufficient. Keep the review backend available throughout review.
+After sign-in, open Settings > Privacy and account and accept the processing disclosure
+before testing AI processing. A synthetic training recording is already in the library.
+Test new recording upload, transcription, assistant selection, draft review and editing.
+The review account is an agency administrator and can invite a disposable user for
+testing consent withdrawal and account deletion. It has no production account or data
+access. Live Watch voice is disabled in this review workspace.
+
+The production workspace retains its approved private-network access. The review
+workspace has a separate database and server-enforced consent. Its public HTTPS health
+and authentication boundaries passed an external-runner check. Keep the review backend
+available throughout review and revoke the review accounts after release. Do not submit
+until review credentials have been entered and the signed build/screenshots are ready.
 
 The AI-processing disclosure is in Settings > Privacy and account. The user must
 accept it before the new app sends content for AI processing. OpenAI requests are
