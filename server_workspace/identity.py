@@ -5,6 +5,7 @@ request bodies never change the caller's membership or review scope.
 """
 from __future__ import annotations
 
+import re
 import secrets
 import time
 import uuid
@@ -14,6 +15,21 @@ from .workspace import digest, fail
 
 CONSENT_VERSION = "2026-10-20"
 DEFAULT_AGENCY = "sky-data-services"
+
+
+def invitation_code(value: str) -> str:
+    """Accept a code or the app's shared invitation without changing its case."""
+    # Messaging apps may wrap a code or insert invisible formatting marks.
+    value = value.translate(dict.fromkeys(map(ord, "\u200b\u200e\u200f\u2060\ufeff")))
+    candidate = re.sub(r"\s+", "", value).strip("\"'`")
+    if re.fullmatch(r"[A-Za-z0-9_-]{32}", candidate):
+        return candidate
+    labels = list(re.finditer(r"\binvitation\s+code\s*:", value, re.IGNORECASE))
+    if len(labels) == 1:
+        match = re.match(r"\s*((?:[A-Za-z0-9_-]\s*){32})(?![A-Za-z0-9_-])", value[labels[0].end():])
+        if match:
+            return re.sub(r"\s+", "", match[1])
+    fail(400, "Invitation is invalid or expired")
 
 
 class AgencyAccess:

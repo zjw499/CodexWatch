@@ -242,6 +242,7 @@ class Workspace:
             fail(422, "Use a username of 3–64 letters, numbers, dots, underscores, or hyphens")
         code = secrets.token_urlsafe(24)
         with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
             if actor != "local-bootstrap":
                 caller = self.access.agency(db, actor)
                 agency_id = agency_id or caller["agency_id"]
@@ -254,17 +255,23 @@ class Workspace:
                 fail(409, "Username already exists")
             if db.execute("SELECT 1 FROM invites WHERE username=? AND agency_id<>? AND used=0 AND expires>?", (username, agency_id, time.time())).fetchone():
                 fail(409, "Username is reserved by an existing invitation")
-            db.execute("DELETE FROM invites WHERE username=? AND used=0", (username,))
             initial_operator = int(actor == "local-bootstrap" and role == "admin" and not db.execute("SELECT 1 FROM users LIMIT 1").fetchone())
+            # Resending the same membership must not silently invalidate a code
+            # already shared. A role change still revokes the prior invitation.
+            db.execute("DELETE FROM invites WHERE username=? AND used=0 AND (expires<=? OR agency_id<>? OR role<>? OR platform_operator<>?)",
+                       (username, time.time(), agency_id, role, initial_operator))
             db.execute("INSERT INTO invites(hash,username,role,expires,used,agency_id,platform_operator) VALUES(?,?,?,?,0,?,?)", (digest(code), username, role, time.time()+7*86400, agency_id, initial_operator))
             self.audit(db, actor, "invite-created", username, agency_id=agency_id)
         return {"code": code, "username": username, "expires_in_days": 7, "agency_id": agency_id}
 
     def register(self, code: str, password: str):
+        from .identity import invitation_code
+        code = invitation_code(code)
         if len(password) < 12 or len(password) > 256:
             fail(422, "Choose a password of 12–256 characters")
         hashed = self.password_hash(password)
         with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM invites WHERE hash=? AND used=0 AND expires>?", (digest(code), time.time())).fetchone()
             if not row:
                 fail(400, "Invitation is invalid or expired")
@@ -274,7 +281,9 @@ class Workspace:
                 fail(409, "Username already exists")
             user_id = str(uuid.uuid4())
             db.execute("INSERT INTO users(id,username,password,role,active,agency_id,platform_operator) VALUES(?,?,?,?,1,?,?)", (user_id, row["username"], hashed, row["role"], row["agency_id"], row["platform_operator"]))
-            db.execute("UPDATE invites SET used=1 WHERE hash=?", (digest(code),))
+            # The first successful redemption consumes every invitation for this
+            # account, including copies issued after an earlier shared code.
+            db.execute("UPDATE invites SET used=1 WHERE username=?", (row["username"],))
             assistant_id = str(uuid.uuid4())
             db.execute("INSERT INTO assistants VALUES(?,?,?)", (assistant_id, user_id, self.encode({
                 "name": "Meeting notes", "instructions": DEFAULT_INSTRUCTIONS, "model": self.config.generation_models[0]
@@ -559,7 +568,7 @@ class LoginBody(BaseModel):
 
 
 class RegisterBody(BaseModel):
-    code: str = Field(max_length=128)
+    code: str = Field(max_length=4096)
     password: str = Field(min_length=12, max_length=256)
 
 
