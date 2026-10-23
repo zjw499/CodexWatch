@@ -1,6 +1,21 @@
 import XCTest
 
 final class ScribePilotUITests: XCTestCase {
+    func testUploadedRecordingShowsActualTranscriptionProgress() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-scribe-ui-preview", "-scribe-processing-preview"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Your recordings"].waitForExistence(timeout: 15))
+        app.swipeUp()
+        XCTAssertTrue(app.staticTexts["02:00 of 10:00 transcribed"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Transcribing on PC")).firstMatch.exists)
+        let progress = app.progressIndicators["Transcription progress"]
+        XCTAssertTrue(progress.exists)
+        XCTAssertFalse((progress.value as? String)?.contains("100") == true)
+        screenshot("phone-transcription-progress")
+    }
+
     func testAssistantSummaryRendersMarkdownAndKeepsEditableSource() {
         continueAfterFailure = false
         let app = XCUIApplication()

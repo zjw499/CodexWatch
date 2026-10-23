@@ -81,6 +81,33 @@ struct QueuedRecording: Identifiable, Codable {
     var retryAfter: Date?
     var retryAttempts: Int?
     var requestedProcessingID: String?
+    var transcribedSeconds: Double?
+    var transcriptionComplete: Bool?
+    var processingStage: String?
+
+    var processingStatus: String {
+        if serverUploaded != true { return "Uploading audio" }
+        if processingStage == "queued" { return "Waiting for PC processing" }
+        if processingStage == "retrying" { return "Retrying PC processing" }
+        if processingStage == "summarizing" || transcriptionComplete == true { return "Creating summary" }
+        return "Transcribing on PC"
+    }
+
+    /// Upload completion is independent of transcription and summary completion.
+    var processingFraction: Double? {
+        guard state == .processing else { return nil }
+        if serverUploaded != true { return progress.isFinite ? min(1, max(0, progress)) : nil }
+        guard transcriptionComplete != true, processingStage != "summarizing",
+              let elapsed = transcribedSeconds, elapsed.isFinite, elapsed >= 0,
+              let duration, duration.isFinite, duration > 0 else { return nil }
+        return min(0.99, elapsed / duration)
+    }
+
+    var processingDetail: String? {
+        guard serverUploaded == true, let elapsed = transcribedSeconds, elapsed.isFinite, elapsed >= 0,
+              let duration, duration.isFinite, duration > 0 else { return nil }
+        return "\(RecordingDuration.display(min(elapsed, duration))) of \(RecordingDuration.display(duration)) transcribed"
+    }
 
     var awaitingConnection: Bool { retryAfter != nil && (processingRequested == true || importRequested == true) }
 
@@ -358,7 +385,9 @@ final class RecordingQueueStore: ObservableObject {
 
     func mergeRemote(id: String, owner: String, title: String, source: String, created: Date,
                      state: RecordingState, transcript: String, summary: String, error: String?,
-                     partCount: Int, duration: Double?, updated: Double) throws {
+                     partCount: Int, duration: Double?, updated: Double,
+                     transcribedSeconds: Double? = nil, transcriptionComplete: Bool? = nil,
+                     processingStage: String? = nil) throws {
         guard Self.validID(id), Self.validID(owner), !deletedOwners.contains(owner), !isRemoved(id) else { return }
         var items = recordings
         let position: Int
@@ -379,6 +408,9 @@ final class RecordingQueueStore: ObservableObject {
             items[position].duration = max(items[position].duration ?? 0, duration)
         }
         items[position].serverUpdated = updated
+        items[position].transcribedSeconds = transcribedSeconds
+        items[position].transcriptionComplete = transcriptionComplete
+        items[position].processingStage = processingStage
         if state == .ready {
             items[position].progress = 1
             if items[position].awaitingConnection && items[position].requestedRetranscription != true {

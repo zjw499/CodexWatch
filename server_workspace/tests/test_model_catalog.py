@@ -21,6 +21,9 @@ def test_generation_preserves_privacy_and_gives_reasoning_room_for_a_final_answe
     def response(request):
         body = json.loads(request.read())
         assert body["model"] == model and body["store"] is False
+        assert body["instructions"].startswith("Formatting re-enabled\n")
+        assert "as Markdown" in body["instructions"] and "without an outer code fence" in body["instructions"]
+        assert "Preserve custom narrative" in body["instructions"]
         assert "tools" not in body and body["input"][0]["role"] == "user"
         if model.startswith(("gpt-5", "gpt-6")):
             assert body["reasoning"] == {"effort": "low"} and body["max_output_tokens"] >= 12000

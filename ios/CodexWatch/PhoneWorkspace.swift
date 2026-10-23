@@ -75,6 +75,7 @@ struct WorkspaceRecording: Codable, Identifiable {
     let transcribed_seconds: Double?
     let transcription_complete: Bool?
     let quality_warning: String?
+    var processing_stage: String? = nil
 
     var recordedDuration: Double? {
         if let duration, duration.isFinite, duration > 0 { return duration }

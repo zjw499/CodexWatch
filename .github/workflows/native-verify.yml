@@ -81,9 +81,23 @@ jobs:
             xcrun xcresulttool export attachments --path native-results.xcresult --output-path native-screenshots || true
           fi
       - uses: actions/upload-artifact@v4
+        id: verification-artifact
         if: always()
+        continue-on-error: true
         with:
           name: scribe-native-verification
+          path: |
+            native-build.log
+            native-results.xcresult
+            native-screenshots
+            DerivedData/Build/Products/Debug-iphonesimulator/*.app
+            DerivedData/Build/Products/Debug-watchsimulator/*.app
+      - name: Retry verification artifact retention
+        if: always() && steps.verification-artifact.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scribe-native-verification
+          overwrite: true
           path: |
             native-build.log
             native-results.xcresult

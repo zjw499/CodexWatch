@@ -16,6 +16,13 @@ enum ScribePreviewFixtures {
             let queued = UUID().uuidString
             try queue.accept(fileURL: audio, id: queued, index: 0, isFinal: true, source: "Apple Watch", duration: 83)
             try queue.rename(queued, title: "Team check-in")
+            if ProcessInfo.processInfo.arguments.contains("-scribe-processing-preview") {
+                try queue.update(queued) {
+                    $0.state = .processing; $0.serverUploaded = true; $0.progress = 1
+                    $0.duration = 600; $0.transcribedSeconds = 120
+                    $0.transcriptionComplete = false; $0.processingStage = "transcribing"
+                }
+            }
             let completed = UUID().uuidString
             let fullPreview = ProcessInfo.processInfo.arguments.contains("-scribe-full-recording-preview")
             try queue.accept(fileURL: audio, id: completed, index: 0, isFinal: !fullPreview, source: fullPreview ? "Apple Watch" : "iPhone", ownerID: fullPreview ? "preview-user" : nil)
