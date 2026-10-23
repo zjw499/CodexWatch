@@ -1,6 +1,48 @@
 import XCTest
 
 final class ScribePilotUITests: XCTestCase {
+    func testUploadedRecordingShowsActualTranscriptionProgress() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-scribe-ui-preview", "-scribe-processing-preview"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Your recordings"].waitForExistence(timeout: 15))
+        app.swipeUp()
+        XCTAssertTrue(app.staticTexts["02:00 of 10:00 transcribed"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Transcribing on PC")).firstMatch.exists)
+        let progress = app.progressIndicators["Transcription progress"]
+        XCTAssertTrue(progress.exists)
+        XCTAssertFalse((progress.value as? String)?.contains("100") == true)
+        screenshot("phone-transcription-progress")
+    }
+
+    func testAssistantSummaryRendersMarkdownAndKeepsEditableSource() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-scribe-ui-preview", "-scribe-full-recording-preview", "-scribe-markdown-preview"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Your recordings"].waitForExistence(timeout: 15))
+        app.segmentedControls.buttons["Library · 1"].tap()
+        if !app.buttons["Project kickoff"].isHittable { app.swipeUp() }
+        app.buttons["Project kickoff"].tap()
+        XCTAssertTrue(app.staticTexts["Meeting overview"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["# Meeting overview"].exists)
+        XCTAssertTrue(app.staticTexts["The team reviewed the project timeline."].exists)
+        screenshot("phone-assistant-markdown-summary")
+        app.swipeUp()
+        XCTAssertTrue(app.descendants(matching: .any)["scribe-markdown-table"].firstMatch.waitForExistence(timeout: 5))
+        screenshot("phone-assistant-markdown-table")
+        let edit = app.buttons["Edit results"]
+        for _ in 0..<3 where !edit.isHittable { app.swipeUp() }
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        edit.tap()
+        let editor = app.textViews.firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertTrue((editor.value as? String)?.contains("# Meeting overview") == true)
+        XCTAssertTrue((editor.value as? String)?.contains("**project timeline**") == true)
+        app.buttons["Cancel"].tap()
+    }
+
     func testQueueRenameRemoveAndSettingsScreens() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -11,6 +53,7 @@ final class ScribePilotUITests: XCTestCase {
         app.swipeUp()
         let actions = app.buttons["Actions for Team check-in"]
         XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Recording duration: 01:23")).firstMatch.exists)
         actions.tap()
         XCTAssertTrue(app.buttons["Rename"].waitForExistence(timeout: 15))
         app.buttons["Rename"].tap()
@@ -101,6 +144,26 @@ final class ScribePilotUITests: XCTestCase {
         transcribe.tap()
         XCTAssertTrue(app.buttons["Transcribe again"].waitForExistence(timeout: 5))
         screenshot("phone-retranscription-confirmation")
+    }
+    func testProcessingDisclosureRequiresAnExplicitChoiceAndDeletionRequiresPassword() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-scribe-ui-preview", "-scribe-consent-preview"]
+        app.launch()
+        app.buttons["Open settings"].tap()
+        let review = app.buttons["Review AI processing disclosure"]
+        XCTAssertTrue(review.waitForExistence(timeout: 10))
+        if !review.isHittable { app.swipeUp() }
+        review.tap()
+        let allow = app.buttons["Allow AI processing"]
+        XCTAssertTrue(allow.waitForExistence(timeout: 10))
+        XCTAssertFalse(allow.isEnabled)
+        screenshot("phone-ai-processing-disclosure")
+        app.swipeUp()
+        let password = app.secureTextFields["Confirm your account password"]
+        XCTAssertTrue(password.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Delete account"].isEnabled)
+        screenshot("phone-account-deletion")
     }
     private func screenshot(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())

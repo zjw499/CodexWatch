@@ -2,8 +2,8 @@ name: Verify Scribe Pilot phone and Watch
 on:
   workflow_dispatch:
   push:
-    branches: [feature/gunmetal-red-openai, feature/shared-ai-workspace, feature/complete-recordings, fix/workspace-recovery, feature/watch-voice-assistants]
-    paths: ['ios/**', 'watchos/**', 'shared/**', 'native-tests/**', 'native-ui-tests/**', 'server_workspace/**', 'project.yml']
+    branches: [feature/gunmetal-red-openai, feature/shared-ai-workspace, feature/complete-recordings, fix/workspace-recovery, feature/watch-voice-assistants, feature/invitation-app-store]
+    paths: ['ios/**', 'watchos/**', 'shared/**', 'native-tests/**', 'native-ui-tests/**', 'server_workspace/**', 'privacy/**', 'project.yml', 'scripts/require_native_verification.py', 'scripts/verify_markdown_rendering.py']
 jobs:
   native:
     runs-on: macos-26-intel
@@ -16,11 +16,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Preflight Siri shortcut descriptions
         run: python3 scripts/verify_watch_voice_metadata.py --source-only
+      - name: Verify Markdown rendering
+        run: python3 scripts/verify_markdown_rendering.py
       - name: Verify workspace isolation and durable jobs
         run: |
           python3 -m venv .workspace-test
           .workspace-test/bin/pip install -r server_workspace/requirements.txt pytest
           .workspace-test/bin/python -m pytest server_workspace/tests -q
+          python3 -m unittest discover -s scripts -p 'test_require_native_verification.py' -q
       - name: Generate native project
         run: |
           command -v xcodegen || brew install xcodegen
@@ -78,9 +81,23 @@ jobs:
             xcrun xcresulttool export attachments --path native-results.xcresult --output-path native-screenshots || true
           fi
       - uses: actions/upload-artifact@v4
+        id: verification-artifact
         if: always()
+        continue-on-error: true
         with:
           name: scribe-native-verification
+          path: |
+            native-build.log
+            native-results.xcresult
+            native-screenshots
+            DerivedData/Build/Products/Debug-iphonesimulator/*.app
+            DerivedData/Build/Products/Debug-watchsimulator/*.app
+      - name: Retry verification artifact retention
+        if: always() && steps.verification-artifact.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scribe-native-verification
+          overwrite: true
           path: |
             native-build.log
             native-results.xcresult

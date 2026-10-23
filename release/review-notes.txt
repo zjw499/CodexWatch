@@ -1,0 +1,63 @@
+Scribe Pilot is an invitation-only service for agency staff. We intend to request
+unlisted App Store distribution. Downloading the app does not grant workspace access.
+There is no public account registration and the app does not sell digital features.
+
+Review uses a separate synthetic-data-only workspace. In the iPhone app, open
+Settings > Account, keep Sign in selected, and replace Private workspace address with:
+https://zwyattpc.tail488e93.ts.net:8443/app-review
+Use the dedicated username and password supplied through App Store Connect's protected
+review-credentials fields. No VPN is needed for this review workspace. Do not place a
+password in this repository or use patient information in the review workspace.
+
+After sign-in, open Settings > Privacy and account and accept the processing disclosure
+before testing AI processing. A synthetic training recording is already in the library.
+Test new recording upload, transcription, assistant selection, draft review and editing.
+The review account is an agency administrator and can invite a disposable user for
+testing consent withdrawal and account deletion. It has no production account or data
+access. Live Watch voice is disabled in this review workspace.
+
+The production workspace retains its approved private-network access. The review
+workspace has a separate database and server-enforced consent. Its public HTTPS health
+and authentication boundaries passed an external-runner check. Keep the review backend
+available throughout review and revoke the review accounts after release. Do not submit
+until review credentials have been entered and the signed build/screenshots are ready.
+
+October 20 status: build 168 and all six screenshots are saved. The synthetic review
+credentials are saved in Apple's protected fields following owner authorization.
+The privacy declaration is published and the authorized-content declaration saved.
+The updated Apple Developer Program License Agreement was accepted with explicit
+owner approval, and Apple's warning remained cleared after a fresh reload.
+Production server consent enforcement is enabled. The owner's app acceptance,
+matching audit event and live API consent status are now verified. The filed LLC
+reinstatement is reflected as ACTIVE in Florida's live registry. Apple's seller
+conversion still needs the D-U-N-S number and remaining form answers. Seller
+conversion and the remaining acceptance gates below must be resolved before App
+Review submission.
+
+The AI-processing disclosure is in Settings > Privacy and account. The user must
+accept it before the new app sends content for AI processing. OpenAI requests are
+made by the backend through a project-owned service account. Responses storage is
+disabled. Do not describe the project as zero retention or claim app-wide HIPAA
+certification. The signed BAA and approved retention apply to the configured API
+organization and project; the service operator is responsible for the full workflow.
+
+Generated clinical text is a draft requiring review. This is documentation assistance,
+not an independent diagnosis or treatment function. Patient information must not be
+used in review accounts, screenshots, support requests or release evidence.
+
+Live Watch voice remains gated until retention and physical-device acceptance are
+recorded. An operator-only pilot can be distributed for device testing. Simulator
+success does not establish microphone, speaker, interruption or independent-network
+acceptance on a physical Watch.
+
+In Settings > Privacy and account, ordinary users can delete their account and active
+content after confirming their password. The platform owner can start a deletion
+request and transfer infrastructure ownership through support before completion.
+Minimal security audit records and deletion tombstones remain; exports and historical
+backups are not recalled. Paired Watch cleanup applies when it reconnects.
+
+Verify the Apple Developer seller is the appropriate legal entity before submission.
+Configure manual release, finish privacy and age-rating declarations, upload the
+validated release screenshots and build, and submit the completed app for review.
+Then request unlisted distribution at https://developer.apple.com/contact/request/unlisted-app/
+and keep manual release until unlisted approval is confirmed.

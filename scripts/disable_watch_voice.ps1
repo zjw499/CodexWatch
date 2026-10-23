@@ -22,6 +22,6 @@ foreach ($candidate in @($candidates | Sort-Object -Unique)) {
         }
     }
 }
-& 'C:\Program Files\Tailscale\tailscale.exe' funnel --https=8443 off
-if ($LASTEXITCODE -ne 0) { throw 'Gateway stopped; verify the 8443 Funnel listener was removed' }
+& 'C:\Program Files\Tailscale\tailscale.exe' serve --bg --yes --https=8443 --set-path=/ off
+if ($LASTEXITCODE -ne 0) { throw 'Gateway stopped; verify its root route was removed' }
 Write-Output 'Watch voice is offline. Private workspace routing, recordings, and encrypted voice history are retained.'

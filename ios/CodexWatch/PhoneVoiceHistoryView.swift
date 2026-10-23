@@ -49,7 +49,8 @@ struct PhoneVoiceConversationView: View {
                     ForEach(conversation.turns ?? []) { turn in
                         VStack(alignment: .leading, spacing: 5) {
                             Text(turn.role == "user" ? "You" : "Assistant").font(.caption.bold()).foregroundStyle(ScribeTheme.red)
-                            Text(turn.text).privacySensitive().textSelection(.enabled)
+                            if turn.role == "assistant" { ScribeMarkdownView(turn.text).privacySensitive().textSelection(.enabled) }
+                            else { Text(turn.text).privacySensitive().textSelection(.enabled) }
                             ForEach(turn.sources ?? []) { source in
                                 if let url = source.link { Link(source.title, destination: url).font(.footnote) }
                                 else { Label(source.title, systemImage: "doc.text").font(.footnote).privacySensitive() }

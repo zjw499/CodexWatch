@@ -1,0 +1,70 @@
+name: Verify public Scribe Pilot release services
+
+on:
+  workflow_dispatch:
+    inputs:
+      public_app:
+        description: Also verify the production app connection without a Tailscale client
+        type: boolean
+        default: false
+  push:
+    branches: [feature/invitation-app-store]
+    paths: ['.github/workflows/release-readiness.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  release-services:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify public policy pages and isolated review gateway
+        shell: python
+        run: |
+          import json
+          import urllib.error
+          import urllib.request
+
+          def fetch(url):
+              try:
+                  with urllib.request.urlopen(url, timeout=30) as response:
+                      return response.status, response.read()
+              except urllib.error.HTTPError as error:
+                  return error.code, b''
+
+          company = 'https://www.skydataservice.com/scribe-pilot'
+          for page in ('privacy.html', 'support.html', 'account-deletion.html'):
+              status, body = fetch(company + '/' + page)
+              assert status == 200 and b'Scribe Pilot' in body, page
+              print('Public page verified: ' + page)
+
+          review = 'https://zwyattpc.tail488e93.ts.net:8443/app-review'
+          status, body = fetch(review + '/api/health')
+          assert status == 200 and json.loads(body)['ok'] is True, 'Review health'
+          for path in ('/api/me', '/api/recordings', '/api/admin/users', '/api/admin/recordings'):
+              status, body = fetch(review + path)
+              assert status == 401, 'Anonymous access was not denied: ' + path
+          print('Review HTTPS reachable from GitHub; anonymous account/content/admin access denied.')
+
+      - name: Verify internet app access without VPN
+        if: ${{ github.event_name == 'push' || inputs.public_app }}
+        shell: python
+        run: |
+          import json, urllib.request, urllib.error
+          base = 'https://zwyattpc.tail488e93.ts.net:8443/app'
+          def fetch(path):
+              try:
+                  with urllib.request.urlopen(base + path, timeout=30) as r:
+                      return r.status, r.read(), r.headers
+              except urllib.error.HTTPError as r:
+                  return r.code, r.read(), r.headers
+          status, body, headers = fetch('/api/health')
+          assert status == 200 and json.loads(body)['ok'] is True
+          for path in ('/api/me', '/api/recordings', '/api/assistants', '/api/admin/users', '/api/admin/recordings', '/api/operator/agencies', '/api/voice/config'):
+              status, _, headers = fetch(path)
+              assert status == 401, path
+              assert headers.get('Cache-Control') == 'no-store'
+          for path in ('/openapi.json', '/docs', '/workspace.sqlite3', '/voice/v1/health'):
+              assert fetch(path)[0] == 404, path
+          print('Production HTTPS app connection works from GitHub without Tailscale. Anonymous account, content and administrator requests are denied.')

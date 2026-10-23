@@ -1,0 +1,22 @@
+App: Scribe Pilot
+App Store Connect app ID: 6789821399
+Bundle ID: com.zachwyatt.codexwatch
+Organization: Sky Data Services (confirm exact Apple-enrolled legal name)
+
+Audience: Staff and administrators at participating agencies who have been invited
+to the service by their agency administrator. Initial distribution is invitation based.
+
+Why unlisted: The app supports a defined group of participating agencies and has no
+public registration or general consumer onboarding. Agencies may use individually
+owned devices and may not all participate in Apple Business Manager or use MDM.
+An unlisted link lets those invited staff install the same reviewed app while the
+service enforces agency membership and account access.
+
+Access controls: A link permits installation only. The backend requires a valid
+one-use agency invitation to create an account. Invitations expire after seven days.
+Users authenticate with their own account; administrators manage only their agency.
+No OpenAI API key is distributed to end users.
+
+Readiness: Submit this request only after the final app has been submitted to App
+Review and the app record, review access, screenshots and privacy information are
+complete. Do not present a beta build as a finished unlisted app.

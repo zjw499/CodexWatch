@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import Foundation
 
@@ -31,6 +32,22 @@ struct RecordingPart: Codable, Equatable {
     let index: Int
     let filename: String
     let isFinal: Bool
+    var duration: TimeInterval? = nil
+}
+
+enum RecordingDuration {
+    static func display(_ seconds: TimeInterval?) -> String {
+        guard let seconds, seconds.isFinite, seconds >= 0, seconds < Double(Int.max) else { return "Duration unavailable" }
+        let total = Int(seconds)
+        return total >= 3600 ? String(format: "%d:%02d:%02d", total / 3600, (total / 60) % 60, total % 60)
+            : String(format: "%02d:%02d", total / 60, total % 60)
+    }
+
+    static func measured(at url: URL) -> TimeInterval? {
+        guard let audio = try? AVAudioFile(forReading: url), audio.length >= 0,
+              audio.processingFormat.sampleRate.isFinite, audio.processingFormat.sampleRate > 0 else { return nil }
+        return Double(audio.length) / audio.processingFormat.sampleRate
+    }
 }
 
 struct QueuedRecording: Identifiable, Codable {
@@ -64,6 +81,33 @@ struct QueuedRecording: Identifiable, Codable {
     var retryAfter: Date?
     var retryAttempts: Int?
     var requestedProcessingID: String?
+    var transcribedSeconds: Double?
+    var transcriptionComplete: Bool?
+    var processingStage: String?
+
+    var processingStatus: String {
+        if serverUploaded != true { return "Uploading audio" }
+        if processingStage == "queued" { return "Waiting for PC processing" }
+        if processingStage == "retrying" { return "Retrying PC processing" }
+        if processingStage == "summarizing" || transcriptionComplete == true { return "Creating summary" }
+        return "Transcribing on PC"
+    }
+
+    /// Upload completion is independent of transcription and summary completion.
+    var processingFraction: Double? {
+        guard state == .processing else { return nil }
+        if serverUploaded != true { return progress.isFinite ? min(1, max(0, progress)) : nil }
+        guard transcriptionComplete != true, processingStage != "summarizing",
+              let elapsed = transcribedSeconds, elapsed.isFinite, elapsed >= 0,
+              let duration, duration.isFinite, duration > 0 else { return nil }
+        return min(0.99, elapsed / duration)
+    }
+
+    var processingDetail: String? {
+        guard serverUploaded == true, let elapsed = transcribedSeconds, elapsed.isFinite, elapsed >= 0,
+              let duration, duration.isFinite, duration > 0 else { return nil }
+        return "\(RecordingDuration.display(min(elapsed, duration))) of \(RecordingDuration.display(duration)) transcribed"
+    }
 
     var awaitingConnection: Bool { retryAfter != nil && (processingRequested == true || importRequested == true) }
 
@@ -74,6 +118,13 @@ struct QueuedRecording: Identifiable, Codable {
     }
     var isWatch: Bool { source == "Apple Watch" }
     var canProcess: Bool { (isComplete || serverUploaded == true) && [.queued, .failed].contains(state) }
+
+    func durationDescription(activeDuration: TimeInterval? = nil) -> String {
+        let value = RecordingDuration.display(activeDuration ?? duration)
+        guard activeDuration == nil, duration != nil, value != "Duration unavailable",
+              state == .receiving, !isComplete, serverUploaded != true else { return value }
+        return "\(value) received"
+    }
 }
 
 enum RecordingQueueError: LocalizedError {
@@ -102,8 +153,10 @@ final class RecordingQueueStore: ObservableObject {
         var recordings: [QueuedRecording]
         var removedIDs: Set<String>
         var removedOwners: [String: String]?
+        var deletedOwners: Set<String>?
     }
     private(set) var removedOwners: [String: String] = [:]
+    private(set) var deletedOwners: Set<String> = []
     @Published private(set) var accountID: String? = UserDefaults.standard.string(forKey: "ScribePilot.WorkspaceOwner")
 
     init(root: URL? = nil) {
@@ -117,7 +170,10 @@ final class RecordingQueueStore: ObservableObject {
                 recordings = snapshot.recordings
                 removedIDs = snapshot.removedIDs
                 removedOwners = snapshot.removedOwners ?? [:]
-                for index in recordings.indices where recordings[index].state == .processing {
+                deletedOwners = snapshot.deletedOwners ?? []
+                // A PC job continues independently when the phone app closes.
+                // Only unfinished local uploads need to return to the retry queue.
+                for index in recordings.indices where recordings[index].state == .processing && recordings[index].serverUploaded != true {
                     recordings[index].state = .queued
                     recordings[index].error = "Processing was interrupted. Tap Process to continue."
                 }
@@ -148,6 +204,10 @@ final class RecordingQueueStore: ObservableObject {
             errorMessage = "Saved recordings are unavailable. Unlock your device and reopen Scribe Pilot."
             storageUnavailable = true
         }
+        if !storageUnavailable {
+            do { try recoverDurations() }
+            catch { errorMessage = "Recording durations could not be saved. Your saved audio is still available." }
+        }
     }
 
     var visibleRecordings: [QueuedRecording] {
@@ -164,11 +224,11 @@ final class RecordingQueueStore: ObservableObject {
     func isRemoved(_ id: String) -> Bool { removedIDs.contains(id) }
 
     func setAccount(_ id: String?) {
-        accountID = id
-        UserDefaults.standard.set(id, forKey: "ScribePilot.WorkspaceOwner")
+        accountID = id.flatMap { deletedOwners.contains($0) ? nil : $0 }
+        UserDefaults.standard.set(accountID, forKey: "ScribePilot.WorkspaceOwner")
     }
     func assign(_ id: String, owner: String) throws {
-        guard Self.validID(owner), recording(id)?.ownerID == nil else { throw RecordingQueueError.invalidRecording }
+        guard Self.validID(owner), !deletedOwners.contains(owner), recording(id)?.ownerID == nil else { throw RecordingQueueError.invalidRecording }
         try update(id) { $0.ownerID = owner }
     }
     func acknowledgeDeletion(_ id: String) throws {
@@ -197,7 +257,7 @@ final class RecordingQueueStore: ObservableObject {
     func accept(fileURL: URL, id: String, index: Int, isFinal: Bool, source: String, duration: TimeInterval? = nil, ownerID: String? = nil) throws -> Bool {
         guard Self.validID(id), index >= 0, index < 100_000 else { throw RecordingQueueError.invalidRecording }
         guard !storageUnavailable else { throw RecordingQueueError.persistence }
-        guard !isRemoved(id) else { return false }
+        guard !isRemoved(id), ownerID.map({ !deletedOwners.contains($0) }) ?? true else { return false }
         var items = recordings
         let position: Int
         if let existing = items.firstIndex(where: { $0.id == id }) { position = existing }
@@ -233,9 +293,11 @@ final class RecordingQueueStore: ObservableObject {
             try FileManager.default.copyItem(at: fileURL, to: destination)
         }
         try Self.protectFile(destination)
-        items[position].parts.append(RecordingPart(index: index, filename: filename, isFinal: isFinal))
+        items[position].parts.append(RecordingPart(index: index, filename: filename, isFinal: isFinal,
+                                                   duration: RecordingDuration.measured(at: destination)))
         if isFinal { items[position].finalIndex = index }
-        if let duration { items[position].duration = duration }
+        if let duration, duration.isFinite, duration >= 0 { items[position].duration = duration }
+        fillDuration(&items[position])
         items[position].state = items[position].isComplete ? .queued
             : (items[position].state == .recording && !isFinal ? .recording : .receiving)
         try commit(items, removed: removedIDs)
@@ -305,14 +367,30 @@ final class RecordingQueueStore: ObservableObject {
         if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
     }
 
+    /// Persist the owner tombstone before purging so delayed Watch transfers and
+    /// server replies cannot recreate a deleted account's local content.
+    func deleteAccount(_ owner: String) throws {
+        guard Self.validID(owner) else { throw RecordingQueueError.invalidRecording }
+        let ids = Set(recordings.filter { $0.ownerID == owner }.map(\.id))
+        guard !recordings.contains(where: { ids.contains($0.id) && $0.state == .recording }) else { throw RecordingQueueError.stillRecording }
+        let previous = deletedOwners
+        deletedOwners.insert(owner)
+        do { try commit(recordings.filter { $0.ownerID != owner }, removed: removedIDs.union(ids)) }
+        catch { deletedOwners = previous; throw error }
+        if accountID == owner { setAccount(nil) }
+        for id in ids { try purgeAudio(id) }
+    }
+
     func audioURL(_ id: String, part: RecordingPart) -> URL {
         audioDirectory(id).appendingPathComponent(part.filename)
     }
 
     func mergeRemote(id: String, owner: String, title: String, source: String, created: Date,
                      state: RecordingState, transcript: String, summary: String, error: String?,
-                     partCount: Int, duration: Double?, updated: Double) throws {
-        guard Self.validID(id), Self.validID(owner), !isRemoved(id) else { return }
+                     partCount: Int, duration: Double?, updated: Double,
+                     transcribedSeconds: Double? = nil, transcriptionComplete: Bool? = nil,
+                     processingStage: String? = nil) throws {
+        guard Self.validID(id), Self.validID(owner), !deletedOwners.contains(owner), !isRemoved(id) else { return }
         var items = recordings
         let position: Int
         if let index = items.firstIndex(where: { $0.id == id }) {
@@ -328,7 +406,13 @@ final class RecordingQueueStore: ObservableObject {
         items[position].transcript = transcript; items[position].summary = items[position].pendingSummary ?? summary; items[position].error = error
         if state != .queued || items[position].serverUploaded == true { items[position].serverUploaded = true }
         items[position].remotePartCount = partCount
-        items[position].duration = duration; items[position].serverUpdated = updated
+        if let duration, duration.isFinite, duration >= 0 {
+            items[position].duration = max(items[position].duration ?? 0, duration)
+        }
+        items[position].serverUpdated = updated
+        items[position].transcribedSeconds = transcribedSeconds
+        items[position].transcriptionComplete = transcriptionComplete
+        items[position].processingStage = processingStage
         if state == .ready {
             items[position].progress = 1
             if items[position].awaitingConnection && items[position].requestedRetranscription != true {
@@ -345,6 +429,31 @@ final class RecordingQueueStore: ObservableObject {
         root.appendingPathComponent("Audio", isDirectory: true).appendingPathComponent(id, isDirectory: true)
     }
 
+    private func fillDuration(_ item: inout QueuedRecording) {
+        guard !item.parts.isEmpty else { return }
+        for index in item.parts.indices where item.parts[index].duration == nil {
+            item.parts[index].duration = RecordingDuration.measured(at: audioURL(item.id, part: item.parts[index]))
+        }
+        let durations = item.parts.compactMap(\.duration)
+        guard durations.count == item.parts.count, durations.allSatisfy({ $0.isFinite && $0 >= 0 }) else { return }
+        let measured = durations.reduce(0, +)
+        guard measured.isFinite else { return }
+        if item.duration == nil || item.duration?.isFinite != true || measured > (item.duration ?? 0) {
+            item.duration = measured
+        }
+    }
+
+    private func recoverDurations() throws {
+        var items = recordings
+        var changed = false
+        for index in items.indices {
+            if let duration = items[index].duration, duration.isFinite, duration > 0 { continue }
+            fillDuration(&items[index])
+            changed = changed || items[index].duration != recordings[index].duration
+        }
+        if changed { try commit(items, removed: removedIDs) }
+    }
+
     private func newRecording(id: String, source: String) -> QueuedRecording {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM d, h:mm a"
@@ -355,7 +464,7 @@ final class RecordingQueueStore: ObservableObject {
     private func commit(_ items: [QueuedRecording], removed: Set<String>) throws {
         guard !storageUnavailable else { throw RecordingQueueError.persistence }
         do {
-            let data = try JSONEncoder().encode(Snapshot(recordings: items, removedIDs: removed, removedOwners: removedOwners))
+            let data = try JSONEncoder().encode(Snapshot(recordings: items, removedIDs: removed, removedOwners: removedOwners, deletedOwners: deletedOwners))
             let url = root.appendingPathComponent("queue.json")
             try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
             try Self.protectFile(url)

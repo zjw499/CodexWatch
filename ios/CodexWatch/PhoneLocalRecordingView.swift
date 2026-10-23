@@ -53,7 +53,7 @@ struct PhoneLocalRecordingView: View {
                     if let notes = item.summary, !notes.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Label("Meeting notes", systemImage: "text.alignleft").font(.headline).foregroundStyle(ScribeTheme.red)
-                            Text(notes).textSelection(.enabled)
+                            ScribeMarkdownView(notes).textSelection(.enabled)
                         }.frame(maxWidth: .infinity, alignment: .leading).scribePanel()
                     }
                     VStack(alignment: .leading, spacing: 12) {

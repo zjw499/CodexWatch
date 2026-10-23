@@ -1,0 +1,9 @@
+Invitation pilot 1.0 (168)
+
+Agency administrators can manage invitations, members and reviewed records within their own agency. Settings now includes AI-processing permission, withdrawal and password-confirmed account deletion for ordinary users.
+
+After updating your paired iPhone and Watch, connect to your approved private workspace. Open Settings > Privacy and account and review the OpenAI processing disclosure before processing recordings.
+
+Use synthetic information for pilot testing. Record on the phone and Watch, review the saved audio, upload it and verify the complete transcript and draft notes. Test interruption recovery and offline transfer. For the operator-only Watch voice pilot, verify microphone capture, speaker playback, interruption handling and independent networking on the physical Watch.
+
+Physical Watch acceptance remains pending. Generated clinical text requires human review. External agency onboarding will follow server consent enforcement and the remaining release requirements.

@@ -230,14 +230,25 @@ struct PhoneMemosView: View {
                         Text(item.title).font(.subheadline.weight(.semibold)).foregroundStyle(.white).multilineTextAlignment(.leading)
                     }
                 } else { Text(item.title).font(.subheadline.weight(.semibold)) }
-                HStack(spacing: 7) {
-                    Text(item.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
-                    if let seconds = item.duration { Text("·"); Text(duration(seconds)).monospacedDigit() }
-                }.font(.caption2).foregroundStyle(ScribeTheme.muted)
+                Text(item.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
+                    .font(.caption2).foregroundStyle(ScribeTheme.muted)
+                let activeDuration = recorder.isRecording && recorder.activeRecordingID == item.id ? recorder.elapsedTime : nil
+                let durationText = item.durationDescription(activeDuration: activeDuration)
+                Label(durationText, systemImage: "clock")
+                    .font(.caption2).monospacedDigit().foregroundStyle(ScribeTheme.muted)
+                    .accessibilityLabel("Recording duration: \(durationText)")
                 if item.awaitingConnection {
                     Label("Waiting for PC", systemImage: "network").font(.caption.weight(.semibold)).foregroundStyle(ScribeTheme.muted)
-                } else { ScribeStateLabel(state: item.state) }
-                if item.state == .processing { ProgressView(value: item.progress).tint(ScribeTheme.red) }
+                } else { ScribeStateLabel(state: item.state, title: item.state == .processing ? item.processingStatus : nil) }
+                if item.state == .processing {
+                    if let fraction = item.processingFraction {
+                        ProgressView(value: fraction).tint(ScribeTheme.red)
+                            .accessibilityLabel(item.serverUploaded == true ? "Transcription progress" : "Audio upload progress")
+                    } else { ProgressView().tint(ScribeTheme.red) }
+                    if let detail = item.processingDetail {
+                        Text(detail).font(.caption2).monospacedDigit().foregroundStyle(ScribeTheme.muted)
+                    }
+                }
                 if let error = item.error { Text(error).font(.caption).foregroundStyle(ScribeTheme.muted) }
                 if item.state == .receiving, let final = item.finalIndex {
                     Text("\(item.parts.count) of \(final + 1) audio parts received").font(.caption2).foregroundStyle(ScribeTheme.muted)

@@ -298,13 +298,17 @@ file-based spoken answers remains pending.
 ## Runtime and API
 
 The private workspace remains at `https://zwyattpc.tail488e93.ts.net/workspace`
-on HTTPS 443. Only private `/api/voice/*` routes provision devices, set defaults,
-and provide phone history. `/api/admin/voice/*` provides policy and audited review.
+on HTTPS 443. Account-authenticated `/api/voice/*` routes provision devices, set
+defaults and provide phone history. They are also available through the separate
+internet app gateway; users do not need Tailscale. `/api/admin/voice/*` provides
+policy and audited review under the same account and agency restrictions.
 
 The separate `voice-serve` process binds `127.0.0.1:8791`, serving only
-`/voice/v1/*`. Tailscale Funnel uses a separate HTTPS 8443 listener. It exposes no
-workspace login, recording, upload, or administration routes. Tailscale Serve 443
-and the legacy 8789 pipeline are preserved.
+`/voice/v1/*`. Tailscale Funnel uses a separate HTTPS 8443 listener. The voice
+process exposes no workspace login, recording, upload or administration routes.
+The separate app gateway under `/app` provides those account-authenticated native
+features. Tailscale Serve 443 and the legacy 8789 pipeline are preserved. See
+[Internet app connection](PUBLIC_APP_CONNECTION.md).
 
 The Watch sends PCM16 little-endian mono 24 kHz in 200 ms HTTPS POST batches,
 and receives versioned JSON events over a streaming HTTPS SSE response. The PC

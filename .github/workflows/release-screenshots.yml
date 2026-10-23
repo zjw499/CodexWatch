@@ -1,0 +1,53 @@
+name: Capture Scribe Pilot iPad release screenshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      native_verification_run:
+        description: Successful native verification run for the same app source
+        required: true
+        type: string
+  push:
+    branches: [feature/invitation-app-store]
+    paths: ['.github/workflows/release-screenshots.yml']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  ipad-screenshot:
+    runs-on: macos-26-intel
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require matching completed native verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_VERIFICATION_RUN: ${{ inputs.native_verification_run || '39371337829' }}
+        run: python3 scripts/require_native_verification.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: scribe-native-verification
+          run-id: ${{ inputs.native_verification_run || '39371337829' }}
+          github-token: ${{ github.token }}
+          path: native-verification
+      - name: Capture native iPad screen with synthetic fixtures
+        run: |
+          set -euo pipefail
+          IPAD_ID=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; d=json.load(sys.stdin); print(next(v["udid"] for k,vs in d["devices"].items() if "iOS" in k for v in vs if "iPad Pro 13-inch" in v["name"]))')
+          APP=$(find native-verification/DerivedData/Build/Products/Debug-iphonesimulator -maxdepth 1 -type d -name 'Scribe Pilot.app' -print -quit)
+          test -n "$APP"
+          xcrun simctl boot "$IPAD_ID" || true
+          xcrun simctl bootstatus "$IPAD_ID" -b
+          xcrun simctl status_bar "$IPAD_ID" override --time '9:41' --batteryState charged --batteryLevel 100
+          xcrun simctl install "$IPAD_ID" "$APP"
+          xcrun simctl launch "$IPAD_ID" com.zachwyatt.codexwatch -scribe-ui-preview
+          sleep 8
+          mkdir -p release-screenshots
+          xcrun simctl io "$IPAD_ID" screenshot release-screenshots/ipad-capture.png
+          sips -g pixelWidth -g pixelHeight release-screenshots/ipad-capture.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scribe-ipad-release-screenshot
+          path: release-screenshots/*.png

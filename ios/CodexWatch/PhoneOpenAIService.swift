@@ -39,7 +39,7 @@ final class PhoneOpenAIService: ObservableObject {
     func process(_ ids: [String], retranscribe: Bool = false) {
         let workspace = self.workspace
         guard let owner = workspace.user?.id, workspace.ready, !workspace.selectedAssistantID.isEmpty else {
-            queue.errorMessage = workspace.signedIn ? "Organization processing approval is pending, or no assistant is selected." : WorkspaceError.signIn.localizedDescription
+            queue.errorMessage = workspace.signedIn ? (workspace.consentRequired ? "Open Settings > Privacy and account to review the OpenAI processing disclosure." : "Organization processing approval is pending, or no assistant is selected.") : WorkspaceError.signIn.localizedDescription
             return
         }
         for id in ids {
@@ -53,6 +53,8 @@ final class PhoneOpenAIService: ObservableObject {
                     $0.requestedRetranscription = retranscribe
                     $0.requestedProcessingID = UUID().uuidString
                     $0.retryAfter = nil; $0.retryAttempts = nil; $0.error = nil; $0.state = .queued
+                    $0.processingStage = "queued"
+                    if retranscribe { $0.transcribedSeconds = nil; $0.transcriptionComplete = false }
                 }
             } catch { queue.errorMessage = error.localizedDescription; continue }
             if id != activeID && !requestedIDs.contains(id) { requestedIDs.append(id) }
@@ -157,7 +159,9 @@ final class PhoneOpenAIService: ObservableObject {
                 let previous = queue.recording(item.id)?.state
                 try queue.mergeRemote(id: item.id, owner: item.owner, title: item.title, source: item.source,
                     created: Date(timeIntervalSince1970: item.created), state: state, transcript: item.transcript,
-                    summary: item.summary, error: item.error, partCount: item.expected_parts, duration: item.duration, updated: item.updated)
+                    summary: item.summary, error: item.error, partCount: item.expected_parts, duration: item.recordedDuration, updated: item.updated,
+                    transcribedSeconds: item.transcribed_seconds, transcriptionComplete: item.transcription_complete,
+                    processingStage: item.processing_stage ?? (item.state == "queued" ? "queued" : nil))
                 if state == .ready && previous != .ready {
                     sendWatchCommand(["command": "recording-complete", "recording_id": item.id, "delete_audio": false])
                 }

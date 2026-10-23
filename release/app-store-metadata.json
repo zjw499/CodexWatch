@@ -1,0 +1,21 @@
+{
+  "app_id": "6789821399",
+  "bundle_id": "com.zachwyatt.codexwatch",
+  "locale": "en-US",
+  "name": "Scribe Pilot",
+  "subtitle": "Record, transcribe and review",
+  "description": "Scribe Pilot helps invited agency staff capture audio on iPhone or Apple Watch, request a transcript, and prepare a draft for review.\n\nRecord offline and transfer saved audio from your paired Apple Watch. Review the recording, choose your assistant, and request processing through your agency workspace. Create assistant instructions and add approved reference material for the work you do.\n\nEach user signs in with an invitation and a personal account. Agency administrators manage their own agency's invitations, users and records. OpenAI credentials stay on the service.\n\nBefore AI processing, the app explains which information is sent to OpenAI and asks for permission. Privacy, processing-permission and account-deletion controls are available in Settings.\n\nAn invitation and access to your agency's approved workspace are required. Apple Watch features require a compatible paired Watch and network access for processing. Live assistant voice is available only where the service operator has enabled and verified it.\n\nGenerated transcripts and responses may contain errors. An authorized clinician must review and correct clinical drafts before use. Scribe Pilot does not independently diagnose, recommend treatment or replace professional judgment.",
+  "keywords": "scribe,transcription,recording,voice,notes,agency,documentation,watch",
+  "support_url": "https://www.skydataservice.com/scribe-pilot/support.html",
+  "privacy_policy_url": "https://www.skydataservice.com/scribe-pilot/privacy.html",
+  "privacy_choices_url": "https://www.skydataservice.com/scribe-pilot/account-deletion.html",
+  "copyright": "2026 Sky Data Services",
+  "release_type": "MANUAL",
+  "distribution_intent": "UNLISTED",
+  "initial_access": "Agency invitation required; no public registration",
+  "primary_category_proposal": "MEDICAL",
+  "secondary_category": "PRODUCTIVITY",
+  "age_rating_override": "EIGHTEEN_PLUS",
+  "tracking": false,
+  "linked_data_for_app_functionality": ["Health", "Sensitive Info", "Audio Data", "Other User Content", "User ID", "Device ID", "Other Diagnostic Data", "Performance Data", "Product Interaction"]
+}

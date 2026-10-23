@@ -7,6 +7,7 @@ struct PhoneSettingsView: View {
     @State private var server = PhoneWorkspace.defaultServer
     @State private var invitation = false
     @State private var username = ""
+    @State private var invitationCode = ""
     @State private var password = ""
     @State private var repeatedPassword = ""
     @State private var working = false
@@ -23,13 +24,19 @@ struct PhoneSettingsView: View {
             }
             if let user = workspace.user {
                 account(user)
+                if workspace.consentRequired {
+                    Section {
+                        NavigationLink("Review AI processing disclosure") { PhonePrivacyView() }
+                        Text("Accept the disclosure before sending recordings or conversations to OpenAI.").font(.footnote)
+                    }
+                }
                 models
                 assistants
                 watchVoice
                 Section("Recording workflow") {
                     Label("Review, then tap Process", systemImage: "checkmark.circle")
                     Label("Audio and results kept until deleted", systemImage: "tray.full")
-                    Text("Record offline on your phone or Watch. Connect to the private network to upload and process on your PC.")
+                    Text("Record offline on your phone or Watch. Connect to the internet to upload and process. Your organization's PC must be online.")
                         .font(.footnote).foregroundStyle(ScribeTheme.muted)
                 }
                 if !RecordingQueueStore.shared.unassigned.isEmpty {
@@ -45,11 +52,14 @@ struct PhoneSettingsView: View {
                     }
                 }
             } else { login }
+            Section {
+                NavigationLink("Privacy and account") { PhonePrivacyView() }
+            }
         }
         .scrollContentBackground(.hidden).background(ScribeTheme.background).tint(ScribeTheme.red)
         .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Done") { clearPasswords(); workspace.savePreferences(); dismiss() } } }
-        .task { server = workspace.credential?.server ?? PhoneWorkspace.defaultServer; await workspace.refresh() }
+        .task { server = workspace.connectionServer; await workspace.refresh() }
         .sheet(item: $editingAssistant) { assistant in NavigationStack { PhoneAssistantEditor(assistant: assistant) } }
         .confirmationDialog("Sign out of this workspace?", isPresented: $signingOut, titleVisibility: .visible) {
             Button("Sign out", role: .destructive) { run { try await workspace.signOut() } }
@@ -62,7 +72,8 @@ struct PhoneSettingsView: View {
     private func account(_ user: WorkspaceUser) -> some View {
         Section("Account") {
             Label(user.username, systemImage: "person.crop.circle")
-            Text(user.isAdmin ? "Administrator · organization review enabled" : "Private recording workspace")
+            if let agency = user.agency_name { Text(agency).font(.subheadline) }
+            Text(user.isAdmin ? "Agency administrator · agency review enabled" : "Private recording workspace")
                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
             Label(workspace.processingEnabled ? "Organization connection ready" : "Organization approval pending",
                   systemImage: workspace.processingEnabled ? "lock.shield" : "clock")
@@ -75,24 +86,35 @@ struct PhoneSettingsView: View {
     private var login: some View {
         Section("Account") {
             Picker("Access", selection: $invitation) { Text("Sign in").tag(false); Text("Accept invitation").tag(true) }.pickerStyle(.segmented)
-            TextField("Private workspace address", text: $server).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-            TextField(invitation ? "Invitation code" : "Username", text: $username)
-                .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+            DisclosureGroup("Connection settings") {
+                TextField("Workspace address", text: $server).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+            }
+            if invitation {
+                TextField("Invitation code (32 characters)", text: $invitationCode)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                    .accessibilityLabel("Invitation code")
+                Text("Paste the full invitation code your administrator shared. Your username is used to sign in after account setup.")
+                    .font(.footnote).foregroundStyle(ScribeTheme.muted)
+            } else {
+                TextField("Username", text: $username)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+            }
             SecureField(invitation ? "Choose password (12+ characters)" : "Password", text: $password)
                 .textContentType(invitation ? .newPassword : .password)
             if invitation { SecureField("Repeat password", text: $repeatedPassword).textContentType(.newPassword) }
             Button {
                 if invitation && password != repeatedPassword { errorMessage = "The passwords don't match."; return }
                 run {
-                    try await workspace.signIn(server: server, username: username, password: password, invitation: invitation)
-                    clearPasswords(); username = ""
+                    try await workspace.signIn(server: server, username: invitation ? invitationCode : username, password: password, invitation: invitation)
+                    clearPasswords(); username = ""; invitationCode = ""
                 }
             } label: {
                 HStack { Text(invitation ? "Create my account" : "Sign in"); Spacer(); if working { ProgressView() } }
-            }.disabled(working || recorder.isRecording || username.isEmpty || password.isEmpty)
-            Text("Connect to your organization's private network first. Your administrator provides the invitation and access.")
+            }.disabled(working || recorder.isRecording || (invitation ? invitationCode.isEmpty : username.isEmpty) || password.isEmpty)
+            Text("Scribe Pilot connects securely over the internet. No Tailscale app or VPN setup is needed. Your administrator provides your invitation.")
                 .font(.footnote).foregroundStyle(ScribeTheme.muted)
         }
+        .onChange(of: invitation) { _, _ in clearPasswords(); errorMessage = nil }
     }
     private var models: some View {
         Section("Models") {

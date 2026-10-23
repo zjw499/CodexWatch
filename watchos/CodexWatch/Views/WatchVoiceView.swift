@@ -141,7 +141,8 @@ struct WatchVoiceHistoryDetailView: View {
                 ForEach(conversation.turns ?? []) { turn in
                     VStack(alignment: .leading) {
                         Text(turn.role == "user" ? "You" : "Assistant").font(.caption.bold()).foregroundStyle(ScribeTheme.red)
-                        Text(turn.text).font(.caption).privacySensitive()
+                        if turn.role == "assistant" { ScribeMarkdownView(turn.text).font(.caption).privacySensitive() }
+                        else { Text(turn.text).font(.caption).privacySensitive() }
                         ForEach(turn.sources ?? []) { source in
                             if let url = source.link { Link(source.title, destination: url).font(.caption2) }
                             else { Label(source.title, systemImage: "doc.text").font(.caption2).privacySensitive() }

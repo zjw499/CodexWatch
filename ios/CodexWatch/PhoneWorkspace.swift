@@ -10,7 +10,12 @@ struct WorkspaceUser: Codable, Identifiable, Equatable {
     let id: String
     let username: String
     let role: String
+    var agency_id: String? = nil
+    var agency_name: String? = nil
+    var platform_operator: Bool? = nil
+    var consent_version: String? = nil
     var isAdmin: Bool { role == "admin" }
+    var isOperator: Bool { platform_operator == true }
 }
 
 struct WorkspaceCredential: Codable {
@@ -70,6 +75,15 @@ struct WorkspaceRecording: Codable, Identifiable {
     let transcribed_seconds: Double?
     let transcription_complete: Bool?
     let quality_warning: String?
+    var processing_stage: String? = nil
+
+    var recordedDuration: Double? {
+        if let duration, duration.isFinite, duration > 0 { return duration }
+        if transcription_complete == true, let transcribed_seconds, transcribed_seconds.isFinite, transcribed_seconds >= 0 {
+            return transcribed_seconds
+        }
+        return duration.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+    }
 }
 
 struct WorkspacePolicy: Codable {
@@ -117,7 +131,7 @@ enum WorkspaceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .signIn: return "Sign in to your Scribe Pilot account."
-        case .server: return "Use your organization's private HTTPS workspace address."
+        case .server: return "Use your organization's HTTPS Scribe Pilot workspace address."
         case let .status(_, message): return message
         case .ownership: return "This recording belongs to another account. Sign in to its original account."
         case .missingAssistant: return "Choose an assistant in Settings before processing."
@@ -167,9 +181,12 @@ private final class WorkspaceNetworkDelegate: NSObject, URLSessionTaskDelegate {
 @MainActor
 final class PhoneWorkspace: ObservableObject {
     static let shared = PhoneWorkspace()
-    static let defaultServer = "https://zwyattpc.tail488e93.ts.net/workspace"
+    static let legacyServer = "https://zwyattpc.tail488e93.ts.net/workspace"
+    static let defaultServer = "https://zwyattpc.tail488e93.ts.net:8443/app"
     @Published private(set) var credential: WorkspaceCredential?
     @Published private(set) var processingEnabled = false
+    @Published private(set) var consentRequired = true
+    @Published private(set) var disclosure: WorkspaceDisclosure?
     @Published private(set) var assistants: [WorkspaceAssistant] = []
     @Published private(set) var transcriptionModels = ["gpt-4o-mini-transcribe", "gpt-4o-transcribe"]
     @Published private(set) var generationModels = ["gpt-4.1-mini", "gpt-4.1"]
@@ -189,6 +206,7 @@ final class PhoneWorkspace: ObservableObject {
         let transcription_models: [String]
         let generation_models: [String]
         let pending_generation_models: [String]?
+        let consent_required: Bool?
     }
     struct Assistants: Decodable { let assistants: [WorkspaceAssistant] }
     struct Recordings: Decodable { let recordings: [WorkspaceRecording] }
@@ -213,20 +231,29 @@ final class PhoneWorkspace: ObservableObject {
     #if DEBUG
     init(session: URLSession, credential: WorkspaceCredential, assistants: [WorkspaceAssistant]) {
         self.session = session; self.credential = credential; self.assistants = assistants
+        consentRequired = false // Synthetic native-test fixture only.
         processingEnabled = true; selectedAssistantID = assistants.first?.id ?? ""
     }
     #endif
     var user: WorkspaceUser? { credential?.user }
     var signedIn: Bool { credential != nil }
-    var ready: Bool { signedIn && processingEnabled && assistants.contains { $0.id == selectedAssistantID } }
+    var ready: Bool { signedIn && processingEnabled && !consentRequired && assistants.contains { $0.id == selectedAssistantID } }
     var selectedAssistant: WorkspaceAssistant? { assistants.first { $0.id == selectedAssistantID } }
+    var connectionServer: String { Self.validServer(credential?.server ?? Self.defaultServer)?.absoluteString ?? Self.defaultServer }
 
     static func validServer(_ value: String) -> URL? {
         guard let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
               url.scheme == "https", let host = url.host, host.hasSuffix(".ts.net"),
-              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-              url.path == "/workspace" || url.path == "/workspace/" else { return nil }
-        return url
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else { return nil }
+        let publicApp = url.port == 8443 && ["/app", "/app/"].contains(url.path)
+        let privateApp = (url.port == nil || url.port == 443) && ["/workspace", "/workspace/"].contains(url.path)
+        guard publicApp || privateApp else { return nil }
+        // Existing sessions, cached assistants and pending sign-outs keep their
+        // account binding. Only the production network destination changes.
+        if privateApp && host.lowercased() == "zwyattpc.tail488e93.ts.net" { return URL(string: defaultServer) }
+        var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        parts?.path = publicApp ? "/app" : "/workspace"
+        return parts?.url
     }
 
     func signIn(server: String, username: String, password: String, invitation: Bool) async throws {
@@ -245,6 +272,7 @@ final class PhoneWorkspace: ObservableObject {
         try WorkspaceKeychain.save(result)
         PhoneOpenAIService.shared.configurationChanged()
         credential = result
+        consentRequired = true; disclosure = nil
         voiceConfiguration = nil; voiceMessage = nil
         VoiceDescriptorCache.clear()
         CodexWatchShortcuts.updateAppShortcutParameters()
@@ -267,6 +295,7 @@ final class PhoneWorkspace: ObservableObject {
         try WorkspaceKeychain.remove()
         PhoneOpenAIService.shared.configurationChanged()
         credential = nil; processingEnabled = false; assistants = []; selectedAssistantID = ""; transcriptionContext = ""; pendingGenerationModels = []
+        consentRequired = true; disclosure = nil
         voiceConfiguration = nil; voiceMessage = nil
         VoiceDescriptorCache.clear()
         CodexWatchShortcuts.updateAppShortcutParameters()
@@ -279,6 +308,7 @@ final class PhoneWorkspace: ObservableObject {
     func watchAccountContext() -> [String: Any] {
         var context: [String: Any] = ["command": "workspace-account", "owner_id": user?.id ?? "",
                                     "username": user?.username ?? "", "ready": ready, "protected": true]
+        context["deleted_owners"] = RecordingQueueStore.shared.deletedOwners.sorted()
         if let config = voiceConfiguration, let saved = credential,
            let data = try? JSONEncoder().encode(config) {
             context["voice_config"] = data
@@ -376,11 +406,24 @@ final class PhoneWorkspace: ObservableObject {
         if ProcessInfo.processInfo.arguments.contains("-scribe-ui-preview") { return }
         #endif
         restoreSessionAfterUnlock()
+        if let owner = WorkspaceKeychain.read(String.self, account: "deleted-account-cleanup") {
+            do { try finishDeletedAccountCleanup(owner); try await signOut() }
+            catch { connectionMessage = "Your server account was deleted. Device cleanup will retry: \(error.localizedDescription)" }
+            return
+        }
         await revokePendingSessions()
         guard let saved = credential else { return }
         do {
             let me: Me = try await request("me")
             guard credential?.token == saved.token else { return }
+            if let current = credential {
+                let updated = WorkspaceCredential(token: current.token, user: me.user, expires: current.expires, server: current.server)
+                try WorkspaceKeychain.save(updated)
+                credential = updated
+            }
+            disclosure = try await request("disclosure")
+            guard credential?.token == saved.token else { return }
+            consentRequired = me.consent_required == true || me.user.consent_version != disclosure?.version
             processingEnabled = me.processing_enabled
             transcriptionModels = me.transcription_models; generationModels = me.generation_models
             pendingGenerationModels = me.pending_generation_models ?? []
@@ -404,6 +447,14 @@ final class PhoneWorkspace: ObservableObject {
 
     func refreshVoice() async {
         guard let captured = credential else { return }
+        guard !consentRequired else {
+            voiceConfiguration = nil
+            voiceMessage = "Review the OpenAI processing disclosure in Privacy and account before using voice."
+            VoiceDescriptorCache.clear()
+            try? WorkspaceKeychain.remove(account: "watch-voice")
+            syncWatchAccount()
+            return
+        }
         do {
             let config: VoiceConfiguration = try await request("voice/config")
             guard credential?.token == captured.token else { return }
@@ -422,7 +473,7 @@ final class PhoneWorkspace: ObservableObject {
             syncWatchAccount()
         } catch {
             guard credential?.token == captured.token else { return }
-            voiceMessage = "Connect to the private workspace to refresh Watch voice settings."
+            voiceMessage = "Connect to the internet to refresh Watch voice settings."
         }
     }
 
@@ -445,6 +496,7 @@ final class PhoneWorkspace: ObservableObject {
 
     private func prepareWatchVoice() async throws {
         restoreSessionAfterUnlock()
+        guard !consentRequired else { throw WorkspaceError.status(409, "Review the OpenAI processing disclosure in Settings > Privacy and account.") }
         guard let captured = credential else { throw VoiceError.setup }
         guard UIApplication.shared.isProtectedDataAvailable else { throw VoiceError.setup }
         if voiceConfiguration == nil {
@@ -578,7 +630,8 @@ final class PhoneWorkspace: ObservableObject {
     func rawRequest(_ path: String, method: String = "GET", body: Data? = nil, contentType: String = "application/json",
                     base: String? = nil, token: String? = nil, authenticated: Bool = true) async throws -> Data {
         let captured = credential
-        guard let server = base ?? captured?.server, let url = URL(string: server + "/api/" + path), Self.validServer(server) != nil else {
+        guard let server = base ?? captured?.server, let destination = Self.validServer(server),
+              let url = URL(string: destination.absoluteString + "/api/" + path) else {
             throw WorkspaceError.signIn
         }
         let authorization = token ?? captured?.token
@@ -634,11 +687,18 @@ final class PhoneWorkspace: ObservableObject {
     #if DEBUG
     func loadPreview() {
         guard !ProcessInfo.processInfo.arguments.contains("-scribe-login-preview") else { return }
-        credential = WorkspaceCredential(token: "synthetic-preview", user: WorkspaceUser(id: "preview-user", username: "Alex", role: "admin"),
+        credential = WorkspaceCredential(token: "synthetic-preview", user: WorkspaceUser(id: "preview-user", username: "Alex", role: "admin", agency_id: "preview-agency", agency_name: "Example agency", platform_operator: true),
                                          expires: Date().timeIntervalSince1970 + 3600, server: Self.defaultServer)
         assistants = [WorkspaceAssistant(id: "preview-assistant", name: "Meeting notes", instructions: "Create concise notes and explicit follow-up actions.", model: "gpt-4.1-mini")]
         selectedAssistantID = "preview-assistant"
         processingEnabled = true
+        consentRequired = ProcessInfo.processInfo.arguments.contains("-scribe-consent-preview")
+        disclosure = WorkspaceDisclosure(version: "synthetic-preview", provider: "OpenAI",
+            text: "When you request AI processing, Scribe Pilot sends relevant recording audio, transcripts, conversation and selected reference material to OpenAI to produce a transcript or draft response. Review and correct clinical drafts before use. This preview contains synthetic information only.",
+            privacy_url: "https://www.skydataservice.com/scribe-pilot/privacy.html",
+            support_url: "https://www.skydataservice.com/scribe-pilot/support.html",
+            deletion_url: "https://www.skydataservice.com/scribe-pilot/account-deletion.html",
+            support_email: "zach@skydataservice.com")
         RecordingQueueStore.shared.setAccount("preview-user")
     }
     #endif

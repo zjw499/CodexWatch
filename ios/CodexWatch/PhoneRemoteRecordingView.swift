@@ -30,7 +30,7 @@ struct PhoneRemoteRecordingView: View {
                     Text("\(remote?.assistant_name ?? "Assistant") · \(model)").font(.caption).foregroundStyle(ScribeTheme.muted)
                 }
                 if audioPartCount > 0 { audioControls(audioPartCount) }
-                contentPanel("Results", icon: "text.alignleft", text: summary.isEmpty ? "Results will appear after processing." : summary)
+                contentPanel("Results", icon: "text.alignleft", text: summary.isEmpty ? "Results will appear after processing." : summary, markdown: true)
                 if !review {
                     HStack {
                         Button("Edit results") { resultDraft = summary; editingResult = true }
@@ -60,7 +60,8 @@ struct PhoneRemoteRecordingView: View {
                         ForEach(remote?.chat ?? []) { turn in
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(turn.role == "user" ? "You" : "Assistant").font(.caption.bold()).foregroundStyle(ScribeTheme.muted)
-                                Text(turn.content).textSelection(.enabled)
+                                if turn.role == "assistant" { ScribeMarkdownView(turn.content).textSelection(.enabled) }
+                                else { Text(turn.content).textSelection(.enabled) }
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
                                 .background(turn.role == "user" ? ScribeTheme.raised : ScribeTheme.background, in: RoundedRectangle(cornerRadius: 12))
                         }
@@ -113,16 +114,17 @@ struct PhoneRemoteRecordingView: View {
             Button("Transcribe again") { PhoneOpenAIService.shared.process([recordingID], retranscribe: true) }
         } message: { Text("Uses the transcription model and vocabulary in Settings. The new transcript and assistant results will replace the current versions after processing.") }
     }
-    private func contentPanel(_ label: String, icon: String, text: String) -> some View {
+    private func contentPanel(_ label: String, icon: String, text: String, markdown: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Label(label, systemImage: icon).font(.headline).foregroundStyle(ScribeTheme.red)
-            Text(text).textSelection(.enabled)
+            if markdown { ScribeMarkdownView(text).textSelection(.enabled) }
+            else { Text(text).textSelection(.enabled) }
         }.frame(maxWidth: .infinity, alignment: .leading).scribePanel()
     }
     private func audioControls(_ count: Int) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("Source audio", systemImage: "waveform").font(.headline)
-            if let duration = remote?.duration ?? queue.recording(recordingID)?.duration {
+            if let duration = remote?.recordedDuration ?? queue.recording(recordingID)?.duration {
                 Text("\(Duration.seconds(duration).formatted(.time(pattern: .minuteSecond))) · \(count) audio \(count == 1 ? "part" : "parts")")
                     .font(.caption).foregroundStyle(ScribeTheme.muted)
             }

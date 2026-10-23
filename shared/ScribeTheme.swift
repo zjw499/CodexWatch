@@ -24,8 +24,9 @@ extension View {
 
 struct ScribeStateLabel: View {
     let state: RecordingState
+    var title: String? = nil
     var body: some View {
-        Label(state.label, systemImage: state.icon)
+        Label(title ?? state.label, systemImage: state.icon)
             .font(.caption.weight(.semibold))
             .foregroundStyle(state == .failed ? ScribeTheme.red : ScribeTheme.muted)
     }

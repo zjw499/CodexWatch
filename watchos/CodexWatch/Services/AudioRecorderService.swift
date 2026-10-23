@@ -173,6 +173,7 @@ final class AudioRecorderService: NSObject, ObservableObject {
     private var audioEngine: AVAudioEngine?
     private var chunkWriter: ContinuousAudioChunkWriter?
     private var recordingID: String?
+    var activeRecordingID: String? { recordingID }
     private var chunkIndex = 0
     private var completedDuration: TimeInterval = 0
     private var recoveryTask: Task<Void, Never>?

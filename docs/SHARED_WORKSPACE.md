@@ -1,7 +1,7 @@
 # Scribe Pilot shared workspace
 
 Invited users sign in to private accounts. The iPhone and Watch record offline,
-and the phone uploads to the Windows PC over private-network HTTPS when the user
+and the phone uploads to the Windows PC over authenticated internet HTTPS when the user
 chooses Process. Only the PC calls OpenAI, through Sky Data Services' configured
 organization and project. Device API keys and shared receiver credentials are no
 longer part of this workflow.
@@ -15,13 +15,20 @@ code, and choose a password of at least 12 characters. The initial username is
 
 Use **Settings → Administrator workspace → Invite a user** to create invitations.
 Each invitation expires after seven days and can be accepted once. Share it with
-the intended person through an appropriate channel. Users also need access to
-the existing Tailscale network/device share; an app invitation does not grant
-network access. The PC must be online and its service account logged in.
+the intended person through an appropriate channel. Users do not need a Tailscale
+account, device share, VPN app or separate network setup. The app's default
+connection is provided automatically; existing saved sessions use it too. The
+PC must be online and its service account logged in. Advanced connection settings
+still support other private workspaces.
 
-Administrators can review other users' recordings through Organization review.
-That access is recorded. Ordinary library routes do not grant administrators
-implicit cross-user access. Administrators may revoke sessions or disable users.
+See [Internet app connection](PUBLIC_APP_CONNECTION.md) for the separate app
+gateway, public-boundary verification, deployment and rollback.
+
+Administrators can review recordings, conversations and diagnostics within their
+own agency through Agency review. That access is recorded. Ordinary library routes
+do not grant administrators implicit cross-user access. Administrators may revoke
+sessions or disable members of their own agency. The platform operator creates
+agencies and manages the shared processing and voice policies.
 The PC operator retains physical and operating-system access to stored data.
 
 ## Assistants, models, results, and email
@@ -49,11 +56,15 @@ are unaffected. Incomplete recordings need missing audio before processing.
 
 ## Processing approval and storage
 
-The OpenAI key remains in the existing external key file. Runtime configuration
+The OpenAI key belongs to the project-owned `scribe-pilot-production` service
+account and is stored outside the repository in the protected runtime folder. Runtime configuration
 contains its path, the approved organization/project, and model allowlists.
 The application never returns the key to clients. All new AI requests use
 `/v1/audio/transcriptions` and foreground `/v1/responses` with `store:false`.
 Conversation history and assistant definitions remain on the PC.
+
+See [Invitation release](INVITATION_RELEASE.md) for versioned processing consent,
+account deletion, agency invitations and the unlisted App Store release gates.
 
 The signed BAA has been verified. On October 2, 2026, the owner confirmed that
 retention and PC safeguards are verified for the configured organization/project.

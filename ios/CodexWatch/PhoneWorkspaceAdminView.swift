@@ -14,6 +14,13 @@ struct PhoneWorkspaceAdminView: View {
     @State private var disabling: WorkspaceManagedUser?
     var body: some View {
         Form {
+            Section("Agency") {
+                Text(workspace.user?.agency_name ?? "Your agency")
+                Text("Invitations, account administration and content review below apply to this agency.").font(.footnote).foregroundStyle(ScribeTheme.muted)
+                if workspace.user?.isOperator == true {
+                    NavigationLink("Manage agencies") { PhoneAgencyManagementView() }
+                }
+            }
             Section("Invite a user") {
                 TextField("Username", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled()
                 Picker("Role", selection: $role) { Text("User").tag("user"); Text("Administrator").tag("admin") }
@@ -23,7 +30,7 @@ struct PhoneWorkspaceAdminView: View {
                 if let invitation {
                     Text("Username: \(invitation.username)").font(.footnote)
                     Text(invitation.code).font(.system(.footnote, design: .monospaced)).textSelection(.enabled).privacySensitive()
-                    ShareLink(item: "Scribe Pilot invitation\nServer: \(workspace.credential?.server ?? PhoneWorkspace.defaultServer)\nUsername: \(invitation.username)\nInvitation code: \(invitation.code)\nExpires in 7 days. In Settings choose Accept invitation and set your password.") {
+                    ShareLink(item: "Scribe Pilot invitation\nServer: \(workspace.connectionServer)\nUsername: \(invitation.username)\nInvitation code: \(invitation.code)\nExpires in 7 days. In Settings choose Accept invitation and set your password. No VPN setup is needed.") {
                         Label("Share invitation", systemImage: "square.and.arrow.up")
                     }
                 }
@@ -41,7 +48,7 @@ struct PhoneWorkspaceAdminView: View {
                     }
                 }
             }
-            Section("Shared OpenAI approval") {
+            if workspace.user?.isOperator == true { Section("Shared OpenAI approval") {
                 Text("Organization: \(policy.organization_id)").font(.caption).textSelection(.enabled)
                 Text("Project: \(policy.project_id)").font(.caption).textSelection(.enabled)
                 Toggle("Signed BAA verified", isOn: $policy.baa_verified)
@@ -52,12 +59,12 @@ struct PhoneWorkspaceAdminView: View {
                 Text("These controls record your organization's verification. They do not provision OpenAI retention. Keep retention unconfirmed until the actual org/project setting is verified. No patient information belongs in this evidence field.")
                     .font(.footnote).foregroundStyle(ScribeTheme.muted)
                 Link("OpenAI HIPAA requirements", destination: URL(string: "https://help.openai.com/en/articles/20001069-hipaa-eligible-products-and-functionality")!)
-            }
-            Section("Organization review") {
-                NavigationLink("Watch voice policy") { PhoneVoicePolicyView() }
-                NavigationLink("Review all users' voice conversations") { PhoneVoiceHistoryView(review: true) }
+            } }
+            Section("Agency review") {
+                if workspace.user?.isOperator == true { NavigationLink("Watch voice policy") { PhoneVoicePolicyView() } }
+                NavigationLink("Review agency voice conversations") { PhoneVoiceHistoryView(review: true) }
                 NavigationLink("Review Watch audio reports") { PhoneVoiceDiagnosticsView(review: true) }
-                NavigationLink("Review all users' recordings") {
+                NavigationLink("Review agency recordings") {
                     List(recordings) { recording in
                         NavigationLink { PhoneRemoteRecordingView(recordingID: recording.id, review: true) } label: {
                             VStack(alignment: .leading, spacing: 4) {
@@ -66,7 +73,7 @@ struct PhoneWorkspaceAdminView: View {
                                     .font(.caption).foregroundStyle(ScribeTheme.muted)
                             }
                         }
-                    }.scrollContentBackground(.hidden).background(ScribeTheme.background).navigationTitle("Organization recordings")
+                    }.scrollContentBackground(.hidden).background(ScribeTheme.background).navigationTitle("Agency recordings")
                     .task { run { recordings = try await workspace.remoteRecordings(review: true) } }
                 }
                 NavigationLink("Audit log") { PhoneWorkspaceAuditView() }
@@ -91,7 +98,7 @@ struct PhoneWorkspaceAdminView: View {
     private func load() async {
         do {
             let response: PhoneWorkspace.Users = try await workspace.request("admin/users"); users = response.users
-            policy = try await workspace.request("admin/policy")
+            if workspace.user?.isOperator == true { policy = try await workspace.request("admin/policy") }
         } catch { message = error.localizedDescription }
     }
     private func run(_ operation: @escaping @MainActor () async throws -> Void) {

@@ -13,7 +13,7 @@ struct PhoneVoicePolicyView: View {
                 Toggle("Realtime Modified Retention verified", isOn: $policy.realtime_retention_verified)
                 Toggle("Physical Watch audio and network tests passed", isOn: $policy.device_acceptance_verified)
                 TextField("Verification evidence / reference", text: $policy.approval_evidence, axis: .vertical).lineLimit(3...6)
-                Text("The pilot permits only administrators after Realtime retention is verified. Enable voice for everyone after Watch mic, speaker, echo handling, and phone-free tests pass.")
+                Text("The pilot permits only the platform operator after Realtime retention is verified. Enable voice for agency users after Watch mic, speaker, echo handling, and phone-free tests pass.")
                     .font(.footnote).foregroundStyle(ScribeTheme.muted)
             }
             Section("Conversation limits") {

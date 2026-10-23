@@ -14,8 +14,15 @@ enum ScribePreviewFixtures {
             try Data(repeating: 0, count: 2048).write(to: audio)
             defer { try? FileManager.default.removeItem(at: audio) }
             let queued = UUID().uuidString
-            try queue.accept(fileURL: audio, id: queued, index: 0, isFinal: true, source: "Apple Watch")
+            try queue.accept(fileURL: audio, id: queued, index: 0, isFinal: true, source: "Apple Watch", duration: 83)
             try queue.rename(queued, title: "Team check-in")
+            if ProcessInfo.processInfo.arguments.contains("-scribe-processing-preview") {
+                try queue.update(queued) {
+                    $0.state = .processing; $0.serverUploaded = true; $0.progress = 1
+                    $0.duration = 600; $0.transcribedSeconds = 120
+                    $0.transcriptionComplete = false; $0.processingStage = "transcribing"
+                }
+            }
             let completed = UUID().uuidString
             let fullPreview = ProcessInfo.processInfo.arguments.contains("-scribe-full-recording-preview")
             try queue.accept(fileURL: audio, id: completed, index: 0, isFinal: !fullPreview, source: fullPreview ? "Apple Watch" : "iPhone", ownerID: fullPreview ? "preview-user" : nil)
@@ -29,6 +36,24 @@ enum ScribePreviewFixtures {
                 $0.protectedWorkflow = false
                 $0.transcript = "We reviewed the project timeline. Alex will prepare the agenda for Friday. The next check-in is Monday."
                 $0.summary = "Overview\nThe team reviewed the project timeline.\n\nFollow-up\nPrepare the agenda for Friday.\n\nNext meeting\nMonday."
+                if ProcessInfo.processInfo.arguments.contains("-scribe-markdown-preview") {
+                    $0.summary = """
+                    # Meeting overview
+
+                    The team reviewed the **project timeline**.
+
+                    ## Follow-up
+                    - **Alex** will prepare the agenda.
+                      - Share the draft before Friday.
+
+                    1. Confirm the next check-in.
+                    2. Send the calendar invite.
+
+                    | Owner | Due |
+                    | :--- | ---: |
+                    | Alex | Friday |
+                    """
+                }
             }
         } catch { queue.errorMessage = error.localizedDescription }
         #endif
