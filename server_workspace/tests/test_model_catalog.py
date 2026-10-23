@@ -32,7 +32,32 @@ def test_generation_preserves_privacy_and_gives_reasoning_room_for_a_final_answe
         return httpx.Response(200, json={"status": "completed", "output": [
             {"type": "reasoning", "summary": []}, {"content": [{"type": "output_text", "text": "Friday follow-up"}]}]})
     value = provider(tmp_path, monkeypatch, response)
-    assert asyncio.run(value.generate(model, "Make notes", "Agenda Friday", [])) == "Friday follow-up"
+    assert asyncio.run(value.generate(model, "Make notes", "Agenda Friday", [])) == "**Friday follow-up**"
+
+
+@pytest.mark.parametrize("source", [
+    "A single narrative paragraph with every original word and punctuation retained.",
+    "  First paragraph stays here.\n\nSecond paragraph stays separate.",
+    "Unicode: café, 日本語, and an exact value of 3.5 remain unchanged.",
+])
+def test_plain_narrative_summary_gets_markdown_without_rewriting(source):
+    from server_workspace.workspace import markdown_summary
+    formatted = markdown_summary(source)
+    assert formatted.count("**") == 2
+    assert formatted.replace("**", "") == source
+    assert formatted.count("\n") == source.count("\n")
+
+
+def test_existing_markdown_and_plain_followup_answer_are_preserved(tmp_path, monkeypatch):
+    from server_workspace.workspace import markdown_summary
+    markdown = "## Overview\n\n**Alex** will prepare the agenda.\n- Meet Friday."
+    assert markdown_summary(markdown) == markdown
+    assert markdown_summary("") == ""
+    assert markdown_summary('{"summary":"Exact structured data"}') == '{"summary":"Exact structured data"}'
+    value = provider(tmp_path, monkeypatch, lambda _: httpx.Response(200, json={
+        "status": "completed", "output": [{"content": [{"type": "output_text", "text": "Yes."}]}]}))
+    assert asyncio.run(value.generate("gpt-4.1-mini", "Answer the question", "Agenda Friday", [
+        {"role": "user", "content": "Is Friday confirmed?"}])) == "Yes."
 
 
 def test_reasoning_budget_exhaustion_never_saves_a_partial_answer(tmp_path, monkeypatch):

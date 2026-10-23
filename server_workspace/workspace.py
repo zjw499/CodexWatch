@@ -138,6 +138,24 @@ SUMMARY_FORMAT = (
 )
 
 
+def markdown_summary(text: str) -> str:
+    """Give plain narrative results a styled lead without rewriting any words."""
+    if text.lstrip().startswith(("{", "[")):
+        try:
+            json.loads(text)
+            return text  # Preserve assistants that explicitly return structured data.
+        except ValueError:
+            pass
+    block = r"(?m)^\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s|`{3}|~{3}|\|)"
+    inline = r"\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_|`[^`\n]+`|\[[^\]]+\]\([^)]+\)"
+    if re.search(block, text) or re.search(inline, text):
+        return text
+    lead = re.match(r"\s*(\S+(?:[ \t]+\S+){0,5})", text)
+    if not lead:
+        return text
+    return text[:lead.start(1)] + "**" + lead[1] + "**" + text[lead.end(1):]
+
+
 class RecordingSuperseded(Exception):
     pass
 
@@ -619,7 +637,8 @@ class OpenAIProvider:
             texts = [part["text"] for item in response.json().get("output", []) for part in item.get("content", []) if part.get("type") == "output_text"]
             if not texts or response.json().get("status") == "incomplete":
                 raise RuntimeError("No result returned")
-            return "\n".join(texts)
+            result = "\n".join(texts)
+            return result if chat else markdown_summary(result)
 
 
 class LoginBody(BaseModel):
