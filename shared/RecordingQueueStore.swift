@@ -171,7 +171,9 @@ final class RecordingQueueStore: ObservableObject {
                 removedIDs = snapshot.removedIDs
                 removedOwners = snapshot.removedOwners ?? [:]
                 deletedOwners = snapshot.deletedOwners ?? []
-                for index in recordings.indices where recordings[index].state == .processing {
+                // A PC job continues independently when the phone app closes.
+                // Only unfinished local uploads need to return to the retry queue.
+                for index in recordings.indices where recordings[index].state == .processing && recordings[index].serverUploaded != true {
                     recordings[index].state = .queued
                     recordings[index].error = "Processing was interrupted. Tap Process to continue."
                 }

@@ -28,8 +28,13 @@ final class RecordingProgressTests: XCTestCase {
             state: .processing, transcript: "", summary: "", error: nil, partCount: 2, duration: 600, updated: 2,
             transcribedSeconds: 120, transcriptionComplete: false, processingStage: "transcribing")
         let reopened = try XCTUnwrap(RecordingQueueStore(root: root).recording("progress"))
+        XCTAssertEqual(reopened.state, .processing)
         XCTAssertEqual(reopened.processingFraction, 0.2)
         XCTAssertEqual(reopened.processingStatus, "Transcribing on PC")
+        try queue.update("progress") { $0.serverUploaded = false; $0.processingRequested = true }
+        let interruptedUpload = try XCTUnwrap(RecordingQueueStore(root: root).recording("progress"))
+        XCTAssertEqual(interruptedUpload.state, .queued)
+        XCTAssertEqual(interruptedUpload.processingRequested, true)
         let old = QueuedRecording(id: "old", title: "Old", source: "iPhone", createdAt: Date(), state: .processing)
         let decoded = try JSONDecoder().decode(QueuedRecording.self, from: JSONEncoder().encode(old))
         XCTAssertNil(decoded.transcribedSeconds)
