@@ -29,6 +29,24 @@ enum ScribePreviewFixtures {
                 $0.protectedWorkflow = false
                 $0.transcript = "We reviewed the project timeline. Alex will prepare the agenda for Friday. The next check-in is Monday."
                 $0.summary = "Overview\nThe team reviewed the project timeline.\n\nFollow-up\nPrepare the agenda for Friday.\n\nNext meeting\nMonday."
+                if ProcessInfo.processInfo.arguments.contains("-scribe-markdown-preview") {
+                    $0.summary = """
+                    # Meeting overview
+
+                    The team reviewed the **project timeline**.
+
+                    ## Follow-up
+                    - **Alex** will prepare the agenda.
+                      - Share the draft before Friday.
+
+                    1. Confirm the next check-in.
+                    2. Send the calendar invite.
+
+                    | Owner | Due |
+                    | :--- | ---: |
+                    | Alex | Friday |
+                    """
+                }
             }
         } catch { queue.errorMessage = error.localizedDescription }
         #endif

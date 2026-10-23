@@ -47,7 +47,7 @@ struct PhoneMemoDetailView: View {
 
                     if let summary = detail.summary, !summary.isEmpty {
                         section(title: "Summary", icon: "sparkles") {
-                            Text(summary)
+                            ScribeMarkdownView(summary).textSelection(.enabled)
                         }
                     }
 

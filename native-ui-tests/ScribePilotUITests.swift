@@ -1,6 +1,33 @@
 import XCTest
 
 final class ScribePilotUITests: XCTestCase {
+    func testAssistantSummaryRendersMarkdownAndKeepsEditableSource() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-scribe-ui-preview", "-scribe-full-recording-preview", "-scribe-markdown-preview"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Your recordings"].waitForExistence(timeout: 15))
+        app.segmentedControls.buttons["Library · 1"].tap()
+        if !app.buttons["Project kickoff"].isHittable { app.swipeUp() }
+        app.buttons["Project kickoff"].tap()
+        XCTAssertTrue(app.staticTexts["Meeting overview"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["# Meeting overview"].exists)
+        XCTAssertTrue(app.staticTexts["The team reviewed the project timeline."].exists)
+        screenshot("phone-assistant-markdown-summary")
+        app.swipeUp()
+        XCTAssertTrue(app.descendants(matching: .any)["scribe-markdown-table"].firstMatch.waitForExistence(timeout: 5))
+        screenshot("phone-assistant-markdown-table")
+        let edit = app.buttons["Edit results"]
+        for _ in 0..<3 where !edit.isHittable { app.swipeUp() }
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        edit.tap()
+        let editor = app.textViews.firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertTrue((editor.value as? String)?.contains("# Meeting overview") == true)
+        XCTAssertTrue((editor.value as? String)?.contains("**project timeline**") == true)
+        app.buttons["Cancel"].tap()
+    }
+
     func testQueueRenameRemoveAndSettingsScreens() {
         continueAfterFailure = false
         let app = XCUIApplication()
